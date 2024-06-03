@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "gbrl_sb3"
+version = "1.0.0"
+description = "Gradient Boosting Reinforcement Learning for stable_baselines3"
+authors = [
+    "Benjamin Fuhrer <bfuhrer@nvidia.com>",
+    "Chen Tessler <ctessler@nvidia.com>",
+    "Gal Dalal <galal@nvidia.com>",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.13"
+Cython = "<3"
+gymnasium = {version = "0.29.1", extras = ["atari", "accept-rom-license", "box2d"]}
+numpy = "^1.21,<1.25"
+PyYAML = "6.0.1"
+rl_zoo3 = "2.1.0"
+scikit-learn = "1.2.2"
+scipy = "1.11.3"
+setuptools = "57.4.0"
+stable-baselines3 = "2.1.0"
+wandb = "0.16.0"
+torch = "2.0.0"
+pybind11 = "2.11.1"
+mujoco-py = "2.1.2.14"
+minigrid = "2.3.1"
+opencv-python = "4.7.0.72"
+tensorboard = "2.15.1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+

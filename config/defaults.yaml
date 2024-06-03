@@ -1,0 +1,280 @@
+env:
+  evaluate: False
+  env_kwargs: null
+  verbose: 1
+  seed: 0
+  num_envs: 1
+  eval_kwargs:
+    eval_freq: 25000
+    stop_train: False
+    min_evals: 5
+    record: False
+    video_length: 2000
+    max_no_improvement_evals: 10
+    n_eval_episodes: 5
+  wrapper: null
+  log_interval: 10
+  total_n_steps: 50000
+  device: 'cuda'
+  no_improvement_kwargs: null
+save:
+  save_every: 0
+  save_name: 'default_name'
+  save_path: 'saved_models/'
+logging:
+  project: ""
+  run_name: 'default'  # Logging using weights and biases
+  group_name: 'default_group'
+  entity: "nvidia-mellanox"
+gbrl_params:
+  control_variates: False
+  split_score_func: "cosine"
+  generator_type: "Quantile"
+  shared_tree_struct: True
+tree_optimizer: 
+  policy_optimizer: # PPO / AWR
+    algo: 'SGD'
+    lr: 1.0e-2
+  value_optimizer: # PPO / AWR
+    algo: 'SGD'
+    lr: 0.01
+  mu_optimizer: # SAC 
+    algo: 'SGD'
+    lr: 1.0e-2
+  std_optimizer: # SAC 
+    algo: 'SGD'
+    lr: 1.0e-4
+  weights_optimizer: # SAC 
+    algo: 'SGD'
+    lr: 1.0e-2
+  bias_optimizer: # SAC
+    algo: 'SGD'
+    lr: 1.0e-4
+  critic_optimizer: # DQN
+    algo: "SGD"
+    lr: 1.0e-1
+tree_struct:
+  max_depth: 4
+  grow_policy: oblivious
+  n_bins: 256
+  min_data_in_leaf: 0
+  par_th: 2
+ppo_gbrl:
+  wrapper_kwargs:
+    training: True
+    norm_obs: False
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  n_steps: 512
+  gamma: 0.99
+  gae_lambda: 0.95
+  normalize_advantage: True
+  target_kl: null
+  normalize_policy_grads: False
+  normalize_value_grads: False
+  batch_size: 1024
+  n_epochs: 10
+  clip_range: 0.2
+  clip_range_vf: null
+  log_std_lr: lin_0.0017
+  min_log_std_lr: 0.000475
+  ent_coef: 0.0580
+  vf_coef: 0.871923
+  max_policy_grad_norm: null
+  max_value_grad_norm: null
+  policy_bound_loss_weight: null
+  fixed_std: False
+  log_std_init: -2
+ppo_nn:
+  wrapper_kwargs:
+    training: True
+    norm_obs: True
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  n_steps: 2048
+  gamma: 0.99
+  gae_lambda: 0.95
+  normalize_advantage: True
+  target_kl: null
+  batch_size: 64
+  n_epochs: 10
+  use_sde: False
+  stats_window_size: 100
+  sde_sample_freq: -1
+  learning_rate: 3.0e-4
+  clip_range: 0.2
+  clip_range_vf: null
+  max_grad_norm: 0.5
+  ent_coef: 0.0
+  vf_coef: 0.5
+a2c_gbrl:
+  wrapper_kwargs:
+    training: True
+    norm_obs: False
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  n_steps: 512
+  gamma: 0.99
+  gae_lambda: 0.95
+  normalize_advantage: True
+  normalize_policy_grads: False
+  log_std_lr: lin_0.0017
+  min_log_std_lr: 0.000475
+  ent_coef: 0.0580
+  vf_coef: 0.871923
+  max_policy_grad_norm: null
+  max_value_grad_norm: null
+  fixed_std: False
+  log_std_init: -2
+a2c_nn:
+  wrapper_kwargs:
+    training: True
+    norm_obs: True
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  learning_rate: 7.0e-4
+  actor_learning_rate: 5.0e-5
+  critic_learning_rate: 1.0e-4
+  n_steps: 5
+  gamma: 0.99
+  gae_lambda: 1.0
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  rms_prop_eps: 1.0e-5
+  use_rms_prop: True
+  use_sde: False
+  sde_sample_freq: -1
+  normalize_advantage: False
+  stats_window_size: 100
+sac_gbrl:
+  wrapper_kwargs: null
+  train_freq: 128
+  gamma: 0.99
+  tau: 0.005
+  target_update_interval: 250
+  atari_wrapper_kwargs: null
+  ent_lr: 3.0e-4
+  gradient_steps: 10
+  buffer_size: 1000000
+  normalize_policy_grads: True
+  learning_starts: 100
+  batch_size: 256
+  ent_coef: auto
+  target_entropy: auto
+  max_policy_grad_norm: 0.0 
+  max_q_grad_norm: 0.0
+  q_func_type: 'linear'
+  n_critics: 1
+awr_gbrl:
+  wrapper_kwargs:
+    training: True
+    norm_obs: False
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  train_freq: 750
+  gamma: 0.99
+  ent_coef: 0.0
+  beta: 0.05
+  normalize_policy_grads: False
+  gae_lambda: 0.95
+  normalize_advantage: False
+  log_std_lr: lin_0.0017
+  min_log_std_lr: 0.000475
+  reward_mode: gae
+  log_std_init: -2
+  squash: false
+  max_policy_grad_norm: null
+  value_batch_size: 100000
+  policy_bound_loss_weight: null
+  max_value_grad_norm: null
+  weights_max: 20
+  gradient_steps: 50
+  policy_gradient_steps: 1000
+  value_gradient_steps: 200
+  buffer_size: 100000
+  learning_starts: 1000
+  batch_size: 512
+  vf_coef: 0.56
+  fixed_std: False
+awr_nn:
+  wrapper_kwargs:
+    training: True
+    norm_obs: True
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  train_freq: 2048
+  batch_size: 64
+  learning_rate: 3.0e-4
+  gamma: 0.99
+  ent_coef: 0.0
+  beta: 0.05
+  gae_lambda: 0.95
+  normalize_advantage: True
+  reward_mode: gae
+  max_grad_norm: null
+  value_batch_size: 8192
+  weights_max: 20
+  gradient_steps: 200
+  policy_gradient_steps: 1000
+  policy_bound_loss_weight: 1.0
+  value_gradient_steps: 200
+  buffer_size: 100000
+  learning_starts: 1000
+  vf_coef: 0.56
+dqn_gbrl:
+  wrapper_kwargs:
+    training: True
+    norm_obs: False
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  train_freq: 40
+  gamma: 0.99
+  normalize_q_grads: False
+  target_update_interval: 250
+  max_q_grad_norm: 0.0
+  gradient_steps: 10
+  buffer_size: 100000
+  learning_starts: 1000
+  batch_size: 512
+  exploration_fraction: 0.16
+  exploration_initial_eps: 1.0
+  exploration_final_eps: 0.04
+dqn_nn:
+  wrapper_kwargs:
+    training: True
+    norm_obs: True
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  train_freq: 4
+  gamma: 0.99
+  learning_rate: 1.0e-4
+  target_update_interval: 10000
+  max_grad_norm: 10.0
+  gradient_steps: 1
+  buffer_size: 1000000
+  tau: 1.0
+  learning_starts: 50000
+  batch_size: 32
+  exploration_fraction: 0.1
+  exploration_initial_eps: 1.0
+  exploration_final_eps: 0.05
+distillation: 
+  distil: False
+  distil_kwargs:
+    max_steps: 100000
+    min_steps: 20000
+    limit_steps: 20000
+    min_loss: 0.2
+    batch_size: 5000
+    max_depth: 4
+    lr: 1.0
+    capacity: 20000
