@@ -23,8 +23,6 @@ GBRL SB3 supports the following environments:
 
 
 ## Getting started
-
-## Getting started
 ### DOCKER USAGE 
 #### Prerequisites
 - Docker 19 or newer.
