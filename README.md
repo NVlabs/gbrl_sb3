@@ -1,7 +1,13 @@
-# Gradient Boosting Reinforcement Learning for stable_baselines3 (GBRL_SB3)
-GBRL is a Python-based GBT library designed and optimized for reinforcement learning (RL). GBRL is implemented in C++/CUDA. 
+# Gradient Boosting Reinforcement Learning in stable_baselines3 (GBRL_SB3)
+GBRL is a Python-based GBT library designed and optimized for reinforcement learning (RL). GBRL is implemented in C++/CUDA aimed to seamlessly integrate within popular RL libraries.
 
-This repository contains a GBRL based wrapper for stable_baselines3 [1] algorithm.
+***This repository contains a GBRL based wrapper for stable_baselines3 [1] algorithm.***
+
+### Key Features:
+- GBTs Tailored for RL: GBRL adapts the power of Gradient Boosting Trees to the unique challenges of RL environments, including non-stationarity and delayed feedback.
+- Optimized Actor-Critic Architecture: GBRL features a shared tree-based structure for policy and value functions. This significantly reduces memory and computational overhead, enabling it to tackle complex, high-dimensional RL problems.
+- Hardware Acceleration: GBRL leverages CUDA for hardware-accelerated computation, ensuring efficiency and speed.
+- Seamless Integration: GBRL is designed for easy integration with popular RL libraries, making it readily accessible for practitioners.
 
 ## Features
 GBRL based implementation of  
@@ -17,35 +23,72 @@ GBRL SB3 supports the following environments:
 
 
 ## Getting started
-### Docker 
-Building cpu only docker
+
+## Getting started
+### DOCKER USAGE 
+#### Prerequisites
+- Docker 19 or newer.
+- Access to NVIDIA Docker Catalog. Visit the [NGC website](https://ngc.nvidia.com/signup) and follow the instructions. This will grant you access to the base docker image (from the Dockerfile) and ability to run on NVIDIA GPU using the nvidia runtime flag.
+
+#### INSTALLATION
+building docker
 ```
-docker build -f Dockerfile.cpu -t <your-image-name:cpu-tag> .
+docker build -f Dockerfile -t <your-image-name:tag> .
 ```  
-Running cpu only docker
+Running docker
 ```
-docker run --runtime=nvidia -it <your-image-name:cpu-tag> /bin/bash
-```  
-Building gpu docker
-```
-docker build -f Dockerfile.gpu -t <your-image-name:gpu-tag> .
-```  
-Running gpu docker
-```
-docker run --runtime=nvidia -it <your-image-name:gpu-tag> /bin/bash
+docker run --runtime=nvidia -it <your-image-name:tag> /bin/bash
 ```  
 
-### Training
+### Local GBRL_SB3 installation
+GBRL_SB3 is based on [the GBRL library](https://github.com/NVlabs/gbrl), stable_baselines3, and other popular python libraries. To run GBRL_SB3 locally please install the necessary dependencies by running:
+```
+pip install -r requirements.txt
+``` 
+
+The Google Research Football installation is not part of the requirements due to additionaly non-python dependencies and should be installed separetly (see [gfootball repository](https://github.com/google-research/football/tree/master)).
+
+For GPU support GBRL looks for `CUDA_PATH` or `CUDA_HOME` environment variables. Unless found, GBRL will automatically compile only for CPU.
+
+Verify that GPU is visible by running  
+```
+import gbrl
+
+gbrl.cuda_available()
+```
+
+*OPTIONAL*  
+For GBRL tree visualization make sure graphviz is installed before installing GBRL.
+
+
+## Training
 A general training script is located at `scripts/train.py`.  
-Default configurations for all algorithms are provided at `config/defaults.yaml`.  
-CLI arguments are found at `config/args.py`.  
+ Configuration (not tuned hyperparameters) yaml is provided at `config/defaults.yaml`.  
+valid CLI arguments are found at `config/args.py`.  
 
-## Extra 
+Example - running from project root directory
+```
+python3 scripts/train.py --algo_type=ppo_gbrl --batch_size=512 --clip_range=0.2 --device=cuda --ent_coef=0 --env_name=MiniGrid-Unlock-v0 --env_type=minigrid --gae_lambda=0.95 --gamma=0.99 --grow_policy=oblivious  --n_epochs=20 --n_steps=256 --num_envs=16 --pg_lr=0.17  --total_n_steps=1000000 --vf_lr=0.01
+```
 
-Beta GBRL implementations (not tested):  
+For tracking with weights and biases use CLI args:
+- project=<project_name> 
+- wandb=true
+- group_name=<group_name>
+- run_name=<run_name>
+
+## Experiments Reproducibility
+Exact training reproduction with GBRL is not possible as GPU training is non-deterministic. This is due to the non-deterministic nature of floating point summation. However, running the training scripts with the reported hyperparameters are expected to produce similar results.   
+
+Experiment scripts are located at `experiments/`.  
+Running is done via a bash script per algorithm per environment with the following two arguments: `scenario_name` and `seed`. For example, the run command for `CartPole-v1`, with `seed=0` GBRL PPO is:
+```
+experiments/gym/ppo_gbrl.sh CartPole-v1 0
+```
+
+### Beta Implementations (not tested)
 - SAC
 - DQN
-
 
 ## References
 [1] Raffin et al. Stable-baselines3: Reliable reinforcement learning implementations. Journal of Machine
@@ -65,3 +108,4 @@ research football: A novel reinforcement learning environment, 2020
 customizable reinforcement learning environments for goal-oriented tasks. CoRR, abs/2306.13831,
 2023
 
+# Cite

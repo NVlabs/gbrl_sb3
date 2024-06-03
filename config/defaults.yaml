@@ -25,7 +25,7 @@ logging:
   project: ""
   run_name: 'default'  # Logging using weights and biases
   group_name: 'default_group'
-  entity: "nvidia-mellanox"
+  entity: "default_entity"
 gbrl_params:
   control_variates: False
   split_score_func: "cosine"
