@@ -66,7 +66,7 @@ valid CLI arguments are found at `config/args.py`.
 
 Example - running from project root directory
 ```
-python3 scripts/train.py --algo_type=ppo_gbrl --batch_size=512 --clip_range=0.2 --device=cuda --ent_coef=0 --env_name=MiniGrid-Unlock-v0 --env_type=minigrid --gae_lambda=0.95 --gamma=0.99 --grow_policy=oblivious  --n_epochs=20 --n_steps=256 --num_envs=16 --pg_lr=0.17  --total_n_steps=1000000 --vf_lr=0.01
+python3 scripts/train.py --algo_type=ppo_gbrl --batch_size=512 --clip_range=0.2 --device=cuda --ent_coef=0 --env_name=MiniGrid-Unlock-v0 --env_type=minigrid --gae_lambda=0.95 --gamma=0.99 --grow_policy=oblivious  --n_epochs=20 --n_steps=256 --num_envs=16 --policy_lr=0.17  --total_n_steps=1000000 --value_lr=0.01
 ```
 
 For tracking with weights and biases use CLI args:
@@ -112,3 +112,5 @@ customizable reinforcement learning environments for goal-oriented tasks. CoRR, 
 Copyright © 2024, NVIDIA Corporation. All rights reserved.
 
 This work is made available under the NVIDIA Source Code License-NC. Click [here](https://nvlabs.github.io/gbrl_sb3/license.htm). to view a copy of this license.
+
+For license information regarding the stable_baselines3 repository, please refer to [its repository(https://github.com/DLR-RM/stable-baselines3)].
