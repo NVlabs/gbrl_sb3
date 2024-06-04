@@ -1,3 +1,11 @@
+##############################################################################
+# Copyright (c) 2024, NVIDIA Corporation. All rights reserved.
+#
+# This work is made available under the Nvidia Source Code License-NC.
+# To view a copy of this license, visit
+# https://nvlabs.github.io/gbrl_sb3/license.html
+#
+##############################################################################
 import io
 import pathlib
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Type, Union

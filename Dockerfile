@@ -1,3 +1,11 @@
+##############################################################################
+# Copyright (c) 2024, NVIDIA Corporation. All rights reserved.
+#
+# This work is made available under the Nvidia Source Code License-NC.
+# To view a copy of this license, visit
+# https://nvlabs.github.io/gbrl_sb3/license.html
+#
+##############################################################################
 FROM nvcr.io/nvidian/pytorch:23.11-py3 as base
 RUN apt-get update
 RUN DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get -y install tzdata

@@ -1,3 +1,11 @@
+##############################################################################
+# Copyright (c) 2024, NVIDIA Corporation. All rights reserved.
+#
+# This work is made available under the Nvidia Source Code License-NC.
+# To view a copy of this license, visit
+# https://nvlabs.github.io/gbrl_sb3/license.html
+#
+##############################################################################
 import os
 import sys
 from pathlib import Path
@@ -8,7 +16,6 @@ sys.path.insert(0, str(ROOT_PATH))
 import sys
 import warnings
 
-# from rl_zoo3.callbacks import SaveVecNormalizeCallback
 from stable_baselines3.common.callbacks import (
     CallbackList, CheckpointCallback, EvalCallback,
     StopTrainingOnNoModelImprovement)
