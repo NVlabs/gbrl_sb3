@@ -106,4 +106,9 @@ research football: A novel reinforcement learning environment, 2020
 customizable reinforcement learning environments for goal-oriented tasks. CoRR, abs/2306.13831,
 2023
 
-# Cite
+# Citation
+
+# Licenses
+Copyright © 2024, NVIDIA Corporation. All rights reserved.
+
+This work is made available under the NVIDIA Source Code License-NC. Click [here](https://nvlabs.github.io/gbrl_sb3/license.htm). to view a copy of this license.
