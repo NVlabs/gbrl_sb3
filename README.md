@@ -1,19 +1,10 @@
-# Gradient Boosting Reinforcement Learning in stable_baselines3 (GBRL_SB3)
-GBRL is a Python-based GBT library designed and optimized for reinforcement learning (RL). GBRL is implemented in C++/CUDA aimed to seamlessly integrate within popular RL libraries.
-
-***This repository contains a GBRL based wrapper for stable_baselines3 [1] algorithm.***
+# Gradient Boosting Reinforcement Learning in stable_baselines3 GBRL_SB3
+GBRL_SB3 provides implementations for actor-critic algorithms based on Gradient Boosting Trees (GBT) within the [stable_baselines3](https://stable-baselines3.readthedocs.io/en/master) RL package. 
 
 ### Key Features:
-- GBTs Tailored for RL: GBRL adapts the power of Gradient Boosting Trees to the unique challenges of RL environments, including non-stationarity and delayed feedback.
-- Optimized Actor-Critic Architecture: GBRL features a shared tree-based structure for policy and value functions. This significantly reduces memory and computational overhead, enabling it to tackle complex, high-dimensional RL problems.
-- Hardware Acceleration: GBRL leverages CUDA for hardware-accelerated computation, ensuring efficiency and speed.
-- Seamless Integration: GBRL is designed for easy integration with popular RL libraries, making it readily accessible for practitioners.
-
-## Features
-GBRL based implementation of  
-- PPO 
-- A2C
-- AWR
+- **Integration with GBRL:** Leverages the [GBRL library](https://github.com/NVlabs/gbrl), optimized for reinforcement learning, to provide efficient GBT-based implementations capable of handling complex, high-dimensional RL tasks with millions of interactions.
+- **Implemented Algorithms:** GBRL_SB3 includes GBT-based implementations of Proximal Policy Optimization ([PPO](https://arxiv.org/abs/1707.06347)), Advantage Actor-Critic ([A2C](https://arxiv.org/abs/1602.01783)), and Advantage Weighted Regression ([AWR](https://arxiv.org/abs/1910.00177)).
+- **High Performance in Structured Environments:** GBRL based implementations are competitive with NNs across a range of environments. In addition, similarly to supervised learning, GBRL outperforms NNs on categorical tasks
 
 GBRL SB3 supports the following environments:  
 - Gymansium environments [2]
