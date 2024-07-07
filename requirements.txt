@@ -1,15 +1,12 @@
-cython<3
 gymnasium==0.29.1
 numpy<1.25,>=1.21
 PyYAML==6.0.1
 rl_zoo3==2.1.0
-scikit_learn==1.2.2
 scipy==1.11.3
 setuptools==57.4.0
 stable_baselines3==2.1.0
 wandb==0.16.0
 torch==2.0.0
-pybind11==2.11.1
 mujoco-py==2.1.2.14
 minigrid==2.3.1
 gymnasium[atari]
