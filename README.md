@@ -12,6 +12,10 @@ GBRL SB3 supports the following environments:
 - Football [4]
 - MiniGrid [5] including a custom categorical feature wrapper
 
+### Performance 
+The following results demonstrate the performance of PPO with GBRL compared to neural-networks across various scenarios and environments:
+
+![PPO GBRL results in stable_baselines3](images/relative_ppo_performance.png)
 
 ## Getting started
 ### DOCKER USAGE 
