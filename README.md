@@ -12,10 +12,16 @@ GBRL SB3 supports the following environments:
 - Football [4]
 - MiniGrid [5] including a custom categorical feature wrapper
 
+### Integration with GBRL
+This repository integrates GBRL with actor-critic algorithms.  
+GBRL's tree ensemble parameterizes the actor's policy and critic's value function. At each training iteration, the algorithm collects a rollout and computes the gradient of the objective function. This gradient is then used to fit the next tree added to the ensemble. This process repeats with each iteration fitting a new tree, refining the parameterization, and expanding the ensemble. The full process is illustrated in following diagram:
+
+![GBRL Diagram](https://github.com/NVlabs/gbrl/raw/master/docs/images/gbrl_diagram.png)
+
 ### Performance 
 The following results demonstrate the performance of PPO with GBRL compared to neural-networks across various scenarios and environments:
 
-![PPO GBRL results in stable_baselines3](images/relative_ppo_performance.png)
+![PPO GBRL results in stable_baselines3](https://github.com/NVlabs/gbrl/raw/master/docs/images/relative_ppo_performance.png)
 
 ## Getting started
 ### DOCKER USAGE 
