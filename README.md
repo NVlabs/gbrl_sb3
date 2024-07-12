@@ -108,7 +108,17 @@ customizable reinforcement learning environments for goal-oriented tasks. CoRR, 
 2023
 
 # Citation
-
+```
+@article{gbrl,
+  title={Gradient Boosting Reinforcement Learning},
+  author={Benjamin Fuhrer, Chen Tessler, Gal Dalal},
+  year={2024},
+  eprint={2407.08250},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2407.08250}, 
+}
+```
 # Licenses
 Copyright © 2024, NVIDIA Corporation. All rights reserved.
 
