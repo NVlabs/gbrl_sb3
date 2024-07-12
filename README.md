@@ -85,7 +85,7 @@ Running is done via a bash script per algorithm per environment with the followi
 experiments/gym/ppo_gbrl.sh CartPole-v1 0
 ```
 
-### Beta Implementations (not tested)
+## Beta Implementations (not tested)
 - SAC
 - DQN
 
