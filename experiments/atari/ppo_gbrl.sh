@@ -78,7 +78,7 @@ COMMAND="python scripts/train.py --algo_type=ppo_gbrl \
     --num_envs=16 \
     --policy_lr=0.05025851599867765 \
     --total_n_steps=10000000 \
-    --vf_lr=0.002167395582487048 \
+    --value_lr=0.002167395582487048 \
     --wrapper=normalize \
     --wrapper_kwargs=\"{\\\"training\\\": true, \\\"norm_obs\\\": false, \\\"norm_reward\\\": true}\""
 

@@ -81,7 +81,7 @@ COMMAND="python scripts/train.py --algo_type=awr_gbrl \
     --split_score_func=Cosine \
     --total_n_steps=10000000 \
     --train_freq=2000 \
-    --vf_lr=0.004841905701128288 \
+    --valur_lr=0.004841905701128288 \
     --wrapper=normalize \
     --wrapper_kwargs=\"{\\\"training\\\": true, \\\"norm_obs\\\": false, \\\"norm_reward\\\": true}\""
 

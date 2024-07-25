@@ -76,7 +76,7 @@ COMMAND="python scripts/train.py --algo_type=a2c_gbrl \
     --policy_lr=0.1766486093397843 \
     --total_n_steps=10000000 \
     --vf_coef=0.25 \
-    --vf_lr=0.01391718416141587 \
+    --value_lr=0.01391718416141587 \
     --wrapper=normalize \
     --wrapper_kwargs=\"{\\\"training\\\": true, \\\"norm_obs\\\": false, \\\"norm_reward\\\": true}\""
 
