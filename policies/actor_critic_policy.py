@@ -138,11 +138,21 @@ class ActorCriticPolicy(BasePolicy):
         """
 
         """ 
+        policy_optimizer = tree_optimizer['policy_optimizer']
+        policy_optimizer['start_idx'] = 0
+        policy_optimizer['stop_idx'] = self.logits_dim
+        value_optimizer = tree_optimizer.get('value_optimizer', None)
+        if  value_optimizer is not None:
+            value_start_idx = self.logits_dim if self.shared_tree_struct else 0
+            value_optimizer['start_idx'] = value_start_idx
+            value_optimizer['stop_idx'] = value_start_idx + 1
+        else:
+            policy_optimizer['stop_idx'] = self.logits_dim + 1
         self.model = ActorCritic(tree_struct=tree_struct, 
                             output_dim=self.logits_dim + 1, 
                             shared_tree_struct=self.shared_tree_struct,
-                            policy_optimizer=tree_optimizer['policy_optimizer'],
-                            value_optimizer=tree_optimizer.get('value_optimizer', None),
+                            policy_optimizer=policy_optimizer,
+                            value_optimizer=value_optimizer,
                             gbrl_params=tree_optimizer['gbrl_params'],
                             device=tree_optimizer.get('device', 'cpu'))
         if isinstance(self.action_dist, DiagGaussianDistribution) or isinstance(self.action_dist, SquashedDiagGaussianDistribution) :
@@ -192,7 +202,9 @@ class ActorCriticPolicy(BasePolicy):
             raise ValueError("Invalid action distribution")
         
     def get_schedule_learning_rates(self):
-        return self.model.get_schedule_learning_rates()
+        lrs = self.model.get_schedule_learning_rates()
+        # lrs is a numpy array for each optimizer
+        return lrs[0], lrs[1]
     
     def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False) -> th.Tensor:
         """

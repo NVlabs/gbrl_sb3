@@ -282,8 +282,8 @@ class SAC_GBRL(OffPolicyAlgorithm):
             q_s_max.append(min_qf_pi.max().item())
             q_s_min.append(min_qf_pi.min().item())
 
-            actor_grads = self.actor.step(replay_data.observations, self.max_policy_grad_norm)
-            actor_params = self.actor.model.params
+            self.actor.step(replay_data.observations, self.max_policy_grad_norm)
+            actor_params, actor_grads = self.actor.model.get_params()
             mu, log_std = actor_params 
             mu_grad, log_std_grad = actor_grads
 

@@ -87,13 +87,23 @@ class ContinuousCritic(BaseModel):
         self.n_critics = n_critics
         self.q_models = []
         self.theta_dim = 1 if q_func_type != 'quadratic' else 2
+        weights_optimizer = critic_optimizer['weights_optimizer']
+        weights_optimizer['start_idx'] = 0
+        
+        stop_idx = action_dim + self.theta_dim
+        bias_optimizer = critic_optimizer.get('bias_optimizer', None)
+        if bias_optimizer is not None:
+            stop_idx -= 1
+            bias_optimizer['start_idx'] = stop_idx
+            bias_optimizer['stop_idx'] = stop_idx + 1
+        weights_optimizer['stop_idx'] = stop_idx
         for _ in range(n_critics):
             bias = np.random.randn(action_dim + self.theta_dim) * np.sqrt(2.0 / action_dim)
             bias[-self.theta_dim:] = 0
             q_model = gbrl.ContinuousCritic(tree_struct=tree_struct, 
                                        output_dim=action_dim + self.theta_dim, 
-                                       weights_optimizer=critic_optimizer['weights_optimizer'],
-                                       bias_optimizer=critic_optimizer.get('bias_optimizer', None),
+                                       weights_optimizer=weights_optimizer,
+                                       bias_optimizer=bias_optimizer,
                                        gbrl_params=gbrl_params,
                                        target_update_interval=target_update_interval,
                                        bias=bias,
@@ -220,11 +230,20 @@ class Actor(BasePolicy):
 
         action_dim = get_action_dim(self.action_space)
         self.action_dim = action_dim
+        mu_optimizer = actor_optimizer.get('mu_optimizer', None)
+        std_optimizer = actor_optimizer.get('std_optimizer', None)
+        mu_optimizer['start_idx'] = 0
+        stop_idx = action_dim*2
+        if std_optimizer is not None:
+            stop_idx = action_dim
+            std_optimizer['start_idx'] = stop_idx
+            std_optimizer['stop_idx'] = stop_idx*2
+        mu_optimizer['stop_idx'] = stop_idx
 
         self.model = GaussianActor(tree_struct=tree_struct, 
                             output_dim=action_dim*2, 
-                            mu_optimizer=actor_optimizer['mu_optimizer'],
-                            std_optimizer=actor_optimizer.get('std_optimizer', None),
+                            mu_optimizer=mu_optimizer,
+                            std_optimizer=std_optimizer,
                             log_std_init=log_std_init,
                             gbrl_params=gbrl_params,
                             verbose=verbose,

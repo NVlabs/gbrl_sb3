@@ -110,7 +110,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
         total_num_updates = num_rollouts
         assert 'tree_optimizer' in policy_kwargs, "tree_optimizer must be a dictionary within policy_kwargs"
         assert 'gbrl_params' in policy_kwargs['tree_optimizer'], "gbrl_params must be a dictionary within policy_kwargs['tree_optimizer]"
-        policy_kwargs['tree_optimizer']['gbrl_params']['T'] = int(total_num_updates)
+        policy_kwargs['tree_optimizer']['policy_optimizer']['T'] = int(total_num_updates)
+        policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
         self.is_categorical = is_categorical
@@ -228,8 +229,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
             policy_losses.append(policy_loss.item())
             value_losses.append(value_loss.item())
 
-            grads = self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
-            params = self.policy.model.params
+            self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+            params, grads = self.policy.model.get_params()
             theta_grad, values_grad = grads
             theta = params[0]
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:

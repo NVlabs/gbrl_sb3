@@ -228,8 +228,8 @@ class DQN_GBRL(OffPolicyAlgorithm):
             # Optimize the policy
             loss.backward()
             # Fit GBRL model on gradients - Optimization step
-            q_grad = self.q_model.step(replay_data.observations, self.max_q_grad_norm)
-
+            self.q_model.step(replay_data.observations, self.max_q_grad_norm)
+            _, q_grad = self.q_model.get_params()
             q_maxs.append(current_q_values.max().item())
             q_mins.append(current_q_values.min().item())
             q_grad_maxs.append(q_grad.max().item())

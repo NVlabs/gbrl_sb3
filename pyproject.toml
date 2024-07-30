@@ -15,16 +15,14 @@ gymnasium = {version = "0.29.1", extras = ["atari", "accept-rom-license", "box2d
 numpy = "^1.21,<1.25"
 PyYAML = "6.0.1"
 rl_zoo3 = "2.1.0"
-scikit-learn = "1.2.2"
-scipy = "1.11.3"
 stable-baselines3 = "2.1.0"
 wandb = "0.16.0"
-torch = "2.0.0"
+torch = ">=2.0.0"
 mujoco-py = "2.1.2.14"
 minigrid = "2.3.1"
 opencv-python = "4.7.0.72"
 tensorboard = "2.15.1"
-gbrl = "1.0.1"
+gbrl = "1.0.2"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
