@@ -267,7 +267,8 @@ def make_ocvec_env(
 
             if isinstance(env_id, str):
                 # if the render mode was not specified, we set it to `rgb_array` as default.
-                kwargs = {"render_mode": "rgb_array"}
+                
+                kwargs = {"render_mode": "rgb_array", "obs_mode": "obj"}
                 kwargs.update(env_kwargs)
                 env = OCAtari(env_id, **kwargs)
             else:
