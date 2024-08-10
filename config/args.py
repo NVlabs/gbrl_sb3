@@ -253,6 +253,10 @@ def parse_args():
     # Distillation Params
     parser.add_argument('--distil', type=str2bool)
     parser.add_argument('--distil_kwargs', type=json_string_to_dict)
+    # Compression Params
+    parser.add_argument('--compress', type=str2bool)
+    parser.add_argument('--compress_kwargs', type=json_string_to_dict)
+    parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
     
     args = parser.parse_args()
 
@@ -403,6 +407,11 @@ def get_defaults(args, defaults):
     # Distillation Params
     args.distil = args.distil if args.distil is not None else defaults['distillation']['distil']
     args.distil_kwargs = args.distil_kwargs if args.distil_kwargs is not None else defaults['distillation']['distil_kwargs']
+    # Distillation Params
+    args.compress = args.compress if args.compress is not None else defaults['compression']['compress']
+    args.compress_kwargs = args.compress_kwargs if args.compress_kwargs is not None else defaults['compression']['compress_kwargs']
+    if args.compress_optimizer_kwargs:
+        args.compress_kwargs['optimizer_kwargs'] = args.compress_optimizer_kwargs
     return args
 
 def process_logging(args, callback_list):

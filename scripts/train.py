@@ -25,16 +25,14 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
                                               VecNormalize, VecVideoRecorder)
 
 from callback.callbacks import (OffPolicyDistillationCallback,
-                                OnPolicyDistillationCallback,
-                                StopTrainingOnNoImprovementInTraining)
+                                OnPolicyDistillationCallback, 
+                                StopTrainingOnNoImprovementInTraining,
+                                ActorCriticCompressionCallback)
 from utils.helpers import make_ram_atari_env, set_seed
 from utils.wrappers import (CategoricalDummyVecEnv,
                             CategoricalObservationWrapper)
 
 warnings.filterwarnings("ignore")
-
-import stable_baselines3
-
 
 from stable_baselines3.a2c.a2c import A2C
 from stable_baselines3.dqn.dqn import DQN
@@ -61,6 +59,8 @@ if __name__ == '__main__':
             callback_list.append(OnPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
         elif args.algo_type in OFF_POLICY_ALGOS:
             callback_list.append(OffPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
+    if args.compress and args.compress_kwargs:
+        callback_list.append(ActorCriticCompressionCallback(args.compress_kwargs, args.compress_kwargs.get('compress_verbose', 0)))
         
     tensorboard_log = process_logging(args, callback_list)
     env, eval_env = None, None

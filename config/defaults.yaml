@@ -14,7 +14,7 @@ env:
     n_eval_episodes: 5
   wrapper: null
   log_interval: 10
-  total_n_steps: 50000
+  total_n_steps: 200000
   device: 'cuda'
   no_improvement_kwargs: null
 save:
@@ -32,7 +32,7 @@ gbrl_params:
   generator_type: "Quantile"
   shared_tree_struct: True
 tree_optimizer: 
-  policy_optimizer: # PPO / AWR
+  policy_optimizer: # PPO / AWR 
     algo: 'SGD'
     lr: 1.0e-2
   value_optimizer: # PPO / AWR
@@ -278,3 +278,16 @@ distillation:
     max_depth: 4
     lr: 1.0
     capacity: 20000
+compression: 
+  compress: True
+  compress_kwargs:
+    max_steps: 1000
+    k: 500
+    gradient_steps: 500
+    method: 'best_k'
+    least_squares_W: True
+    temperature: 0.1
+    lambda_reg: 0.01
+    optimizer_kwargs:
+      lr: 0.1
+    capacity: 5000
