@@ -247,8 +247,8 @@ class AWR_GBRL(OffPolicyAlgorithm):
             value_losses.append(value_loss.item())
             entropy_losses.append(entropy_loss.item())
 
-            grads = self.policy.step(replay_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
-            params = self.policy.model.params
+            self.policy.step(replay_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+            params, grads = self.policy.model.get_params()
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                 if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
                     th.nn.utils.clip_grad_norm(self.policy.log_std, max_norm=self.max_policy_grad_norm, error_if_nonfinite=True)

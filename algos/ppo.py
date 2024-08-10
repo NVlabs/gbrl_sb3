@@ -157,7 +157,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
         total_num_updates = updates_per_rollout*num_rollouts
         assert 'tree_optimizer' in policy_kwargs, "tree_optimizer must be a dictionary within policy_kwargs"
         assert 'gbrl_params' in policy_kwargs['tree_optimizer'], "gbrl_params must be a dictionary within policy_kwargs['tree_optimizer]"
-        policy_kwargs['tree_optimizer']['gbrl_params']['T'] = int(total_num_updates)
+        policy_kwargs['tree_optimizer']['policy_optimizer']['T'] = int(total_num_updates)
+        policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
 
@@ -300,7 +301,6 @@ class PPO_GBRL(OnPolicyAlgorithm):
         # Optional: clip range for the value function
         if self.clip_range_vf is not None:
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
-
         policy_lr, value_lr = self.policy.get_schedule_learning_rates()
         self.logger.record("train/policy_learning_rate", policy_lr)
         self.logger.record("train/vf_learning_rate", value_lr)
@@ -395,7 +395,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     break
 
                 # Fit GBRL model on gradients - Optimization step
-                grads = self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+                self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+                _, grads = self.policy.model.get_params()
                 theta_grad, values_grad = grads
                 theta, values = self.policy.model.params
                 values_maxs.append(values.max().item())
