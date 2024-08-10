@@ -27,7 +27,7 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
 from callback.callbacks import (OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
-from utils.helpers import make_ram_atari_env, set_seed
+from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed
 from utils.wrappers import (CategoricalDummyVecEnv,
                             CategoricalObservationWrapper)
 
@@ -64,8 +64,12 @@ if __name__ == '__main__':
         
     tensorboard_log = process_logging(args, callback_list)
     env, eval_env = None, None
-    if args.env_type == 'atari':
+    if 'atari' in args.env_type:
         env_kwargs = {'full_action_space': False}
+        # if args.env_type == "ocatari":
+        if True:
+            make_ram_atari_env = make_ram_ocatari_env
+            print("\n\nUsing Ocatari environment\n\n")
         env = make_ram_atari_env(args.env_name, n_envs=args.num_envs, seed=args.seed, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs) 
         if args.evaluate:
             eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs) 
