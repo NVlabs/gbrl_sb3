@@ -10,12 +10,15 @@ from typing import Any, Callable, Dict, List, OrderedDict
 
 import gymnasium as gym
 import numpy as np
+from stable_baselines3.common.atari_wrappers import ClipRewardEnv, EpisodicLifeEnv, FireResetEnv, MaxAndSkipEnv, NoopResetEnv, StickyActionEnv
 import torch as th
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import obs_space_info
+
+from gym.core import ObsType
 
 IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 MAX_TEXT_LENGTH = 128 - 1
@@ -83,3 +86,80 @@ class CategoricalDummyVecEnv(DummyVecEnv):
         self.buf_dones = np.zeros((self.num_envs,), dtype=bool)
         self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos: List[Dict[str, Any]] = [{} for _ in range(self.num_envs)]
+
+
+class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
+    """
+    Atari 2600 preprocessings
+
+    Specifically:
+
+    * Noop reset: obtain initial state by taking random number of no-ops on reset.
+    * Frame skipping: 4 by default
+    * Max-pooling: most recent two observations
+    * Termination signal when a life is lost.
+    * Resize to a square image: 84x84 by default
+    * Grayscale observation
+    * Clip reward to {-1, 0, 1}
+    * Sticky actions: disabled by default
+
+    See https://danieltakeshi.github.io/2016/11/25/frame-skipping-and-preprocessing-for-deep-q-networks-on-atari-2600-games/
+    for a visual explanation.
+
+    .. warning::
+        Use this wrapper only with Atari v4 without frame skip: ``env_id = "*NoFrameskip-v4"``.
+
+    :param env: Environment to wrap
+    :param noop_max: Max number of no-ops
+    :param frame_skip: Frequency at which the agent experiences the game.
+        This correspond to repeating the action ``frame_skip`` times.
+    :param screen_size: Resize Atari frame
+    :param terminal_on_life_loss: If True, then step() returns done=True whenever a life is lost.
+    :param clip_reward: If True (default), the reward is clip to {-1, 0, 1} depending on its sign.
+    :param action_repeat_probability: Probability of repeating the last action
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        noop_max: int = 30,
+        frame_skip: int = 4,
+        terminal_on_life_loss: bool = True,
+        clip_reward: bool = True,
+        action_repeat_probability: float = 0.0,
+    ) -> None:
+        if action_repeat_probability > 0.0:
+            env = StickyActionEnv(env, action_repeat_probability)
+        if noop_max > 0:
+            env = NoopResetEnv(env, noop_max=noop_max)
+        # frame_skip=1 is the same as no frame-skip (action repeat)
+        if frame_skip > 1:
+            env = MaxAndSkipEnv(env, skip=frame_skip)
+        if terminal_on_life_loss:
+            env = EpisodicLifeEnv(env)
+        if "FIRE" in env.unwrapped.get_action_meanings():  # type: ignore[attr-defined]
+            env = FireResetEnv(env)
+        if clip_reward:
+            env = ClipRewardEnv(env)
+
+        super().__init__(env)
+
+
+class NeuroSymbolicAtariWrapper(ObservationWrapper):
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        flattened_shape = env.observation_space.shape[0]
+        if len(env.observation_space.shape) > 1:
+            flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2]
+        env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
+        
+    def observation(self, observation):
+        # Transform the observation in some way
+        frame_t = observation[0][:, :2]
+        frame_prev_t = observation[1][:, :2]
+        delta_frame = frame_t - frame_prev_t
+        return np.concatenate([frame_t, delta_frame], axis=-1).flatten()
+        
+    def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
+        observation, info = self.env.reset(seed=seed)
+        return self.observation(observation), info

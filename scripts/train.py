@@ -29,7 +29,8 @@ from callback.callbacks import (OffPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed
 from utils.wrappers import (CategoricalDummyVecEnv,
-                            CategoricalObservationWrapper)
+                            CategoricalObservationWrapper,
+                            NeuroSymbolicAtariWrapper)
 
 warnings.filterwarnings("ignore")
 
@@ -66,8 +67,7 @@ if __name__ == '__main__':
     env, eval_env = None, None
     if 'atari' in args.env_type:
         env_kwargs = {'full_action_space': False}
-        # if args.env_type == "ocatari":
-        if True:
+        if args.env_type == "ocatari":
             make_ram_atari_env = make_ram_ocatari_env
             print("\n\nUsing Ocatari environment\n\n")
         env = make_ram_atari_env(args.env_name, n_envs=args.num_envs, seed=args.seed, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs) 

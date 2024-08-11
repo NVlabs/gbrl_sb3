@@ -262,7 +262,7 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    args.env_type = args.env_type if args.env_type else 'atari'
+    args.env_type = args.env_type if args.env_type else 'ocatari'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # Set defaults from YAML
