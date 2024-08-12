@@ -12,4 +12,6 @@ gymnasium[accept-rom-license]
 gymnasium[box2d]
 opencv-python==4.7.0.72
 tensorboard==2.15.1
-gbrl==1.0.2
+--index-url https://test.pypi.org/simple/
+--pre
+gbrl==1.1.0.dev1
