@@ -410,6 +410,7 @@ def get_defaults(args, defaults):
     # Distillation Params
     args.compress = args.compress if args.compress is not None else defaults['compression']['compress']
     args.compress_kwargs = args.compress_kwargs if args.compress_kwargs is not None else defaults['compression']['compress_kwargs']
+    print(args.compress_kwargs)
     if args.compress_optimizer_kwargs:
         args.compress_kwargs['optimizer_kwargs'] = args.compress_optimizer_kwargs
     return args

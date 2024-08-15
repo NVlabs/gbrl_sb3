@@ -170,9 +170,11 @@ class ActorCriticCompressionCallback(BaseCallback):
         super().__init__(verbose=verbose)
         self.max_steps = params['max_steps']
         self.capacity = params['capacity']
+        print('capacity', self.capacity)
         del params['max_steps']
         del params['capacity']
         self.params = params
+        
         self.dist_type = None 
        
         self.reset()
@@ -198,8 +200,9 @@ class ActorCriticCompressionCallback(BaseCallback):
         if self.model.policy.model.shared_tree_struct:
             num_trees = self.model.policy.model.get_num_trees()
             if num_trees >= self.max_steps:
-                print("Compressing")
-                obs = np.concatenate(self.compression_data, axis=0)
+                print(f"Compressing with: {len(self.compression_data)}")
+                obs = np.concatenate(list(self.compression_data), axis=0)
+                print(obs.shape)
                 self.logger.record("compression/num_samples", len(obs))
                 actions = self.model.policy._predict(obs, deterministic=False)
                 log_std = None if self.dist_type != 'gaussian' else self.model.policy.log_std.detach().cpu().numpy()

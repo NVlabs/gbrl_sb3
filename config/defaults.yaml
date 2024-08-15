@@ -287,7 +287,7 @@ compression:
     method: 'best_k'
     least_squares_W: True
     temperature: 0.1
-    lambda_reg: 0.01
+    lambda_reg: 0.001
     optimizer_kwargs:
       lr: 0.1
     capacity: 5000

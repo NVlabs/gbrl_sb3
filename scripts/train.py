@@ -60,6 +60,7 @@ if __name__ == '__main__':
         elif args.algo_type in OFF_POLICY_ALGOS:
             callback_list.append(OffPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
     if args.compress and args.compress_kwargs:
+        args.compress_kwargs['capacity'] = int(args.compress_kwargs['capacity'] / args.num_envs)
         callback_list.append(ActorCriticCompressionCallback(args.compress_kwargs, args.compress_kwargs.get('compress_verbose', 0)))
         
     tensorboard_log = process_logging(args, callback_list)
