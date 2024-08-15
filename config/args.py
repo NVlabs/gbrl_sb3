@@ -139,6 +139,7 @@ def parse_args():
     parser.add_argument('--log_std_init', type=float)
     parser.add_argument('--squash', type=float) # squash continuous actions using tanh
     parser.add_argument('--normalize_policy_grads', type=str2bool)
+    parser.add_argument('--nn_critic', type=str2bool)
     # NN parameters
     parser.add_argument('--learning_rate', type=str)
     parser.add_argument('--use_sde', type=str2bool)
@@ -300,6 +301,7 @@ def get_defaults(args, defaults):
     args.target_kl = args.target_kl if args.target_kl is not None else algo_defaults.get('target_kl', None)
     args.log_std_init = args.log_std_init if args.log_std_init is not None else algo_defaults.get('log_std_init', -2)
     args.squash = args.squash if args.squash is not None else algo_defaults.get('squash', False)
+    args.nn_critic = args.nn_critic if args.nn_critic is not None else algo_defaults.get('nn_critic', False)
     args.normalize_policy_grads = args.normalize_policy_grads if args.normalize_policy_grads is not None else algo_defaults.get('normalize_policy_grads', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
     args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else algo_defaults.get('clip_range', 0.2)
@@ -454,6 +456,7 @@ def process_policy_kwargs(args):
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "log_std_init": args.log_std_init,
                 "squash": args.squash,
+                "nn_critic": args.nn_critic,
                 "shared_tree_struct": args.shared_tree_struct,
                 "tree_struct": {
                     "max_depth": args.max_depth,
@@ -511,6 +514,7 @@ def process_policy_kwargs(args):
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "log_std_init": args.log_std_init,
                 "squash": args.squash,
+                "nn_critic": args.nn_critic,
                 "shared_tree_struct": args.shared_tree_struct,
                 "tree_struct": {
                     "max_depth": args.max_depth,

@@ -68,8 +68,10 @@ ppo_gbrl:
     clip_reward: True
   n_steps: 512
   gamma: 0.99
+  nn_critic: False
   gae_lambda: 0.95
   normalize_advantage: True
+  learning_rate: 3.0e-4
   target_kl: null
   normalize_policy_grads: False
   normalize_value_grads: False

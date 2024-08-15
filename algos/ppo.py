@@ -107,6 +107,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  n_epochs: int = 4,
                  n_steps: int = 512,
                  total_n_steps: int = 1e6,
+                 learning_rate: float = 1e-3,
                  policy_kwargs: Dict = {
                     'shared_tree_struct': True,
                     'tree_struct': {
@@ -170,6 +171,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
             else:
                 log_std_lr = float(log_std_lr)
+        policy_kwargs['log_std_schedule'] = log_std_lr
         super().__init__(policy=policy,
         env=env,
         seed=seed,
@@ -180,7 +182,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 spaces.MultiBinary,
             ),
         tensorboard_log=tensorboard_log,
-        learning_rate=log_std_lr, # not used
+        learning_rate=learning_rate, # not used
         vf_coef=vf_coef, # not used
         ent_coef=ent_coef,
         n_steps=n_steps,
@@ -191,7 +193,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         sde_sample_freq=-1,
         policy_kwargs=policy_kwargs,
         verbose=verbose,
-        device='cpu',
+        device=device,
         _init_setup_model=not is_categorical,
          )
         self.env = env
@@ -306,6 +308,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
         self.logger.record("train/vf_learning_rate", value_lr)
         if isinstance(self.policy.action_dist, DiagGaussianDistribution):
             self._update_learning_rate(self.policy.log_std_optimizer)
+        if self.policy.nn_critic:
+            self._update_learning_rate(self.policy.value_optimizer)
 
         entropy_losses = []
         policy_losses, value_losses = [], []
@@ -352,7 +356,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                         values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                     )
                 # Value loss using the TD(gae_lambda) target
-                value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                value_loss = 0.5*F.mse_loss(rollout_data.returns, values_pred)
             
                 if entropy is None:
                     # Approximate entropy when no analytical form
@@ -361,9 +365,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     entropy_loss = -th.mean(entropy)
 
                 loss = policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss
-
+                if self.policy.nn_critic:
+                    self.policy.value_optimizer.zero_grad()
                 loss.backward()
-  
                 # Entropy loss favor exploration
                 entropy_losses.append(entropy_loss.item())
                     # Logging
@@ -397,12 +401,17 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
                 _, grads = self.policy.model.get_params()
-                theta_grad, values_grad = grads
-                theta, values = self.policy.model.params
+                if isinstance(grads, tuple):
+                    theta_grad, values_grad = grads
+                    theta, values = self.policy.model.params
+                    values_grad_maxs.append(values_grad.max().item())
+                    values_grad_mins.append(values_grad.min().item())
+                else:
+                    theta_grad = grads
+                    theta = self.policy.model.params
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
-                values_grad_maxs.append(values_grad.max().item())
-                values_grad_mins.append(values_grad.min().item())
+  
                 theta_maxs.append(theta.max().item())
                 theta_mins.append(theta.min().item())
                 theta_grad_maxs.append(theta_grad.max().item())
@@ -440,8 +449,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.logger.record("param/value_min", np.mean(values_mins))
             self.logger.record("param/theta_grad_max", np.mean(theta_grad_maxs))
             self.logger.record("param/theta_grad_min", np.mean(theta_grad_mins))
-            self.logger.record("param/value_grad_max", np.mean(values_grad_maxs))
-            self.logger.record("param/value_grad_min", np.mean(values_grad_mins))
+            if values_grad_maxs:
+                self.logger.record("param/value_grad_max", np.mean(values_grad_maxs))
+                self.logger.record("param/value_grad_min", np.mean(values_grad_mins))
             self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
             self.logger.record("train/clip_fraction", np.mean(clip_fractions))
             self.logger.record("train/explained_variance", explained_var)

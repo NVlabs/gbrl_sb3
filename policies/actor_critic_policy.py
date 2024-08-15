@@ -23,9 +23,10 @@ from stable_baselines3.common.torch_layers import (BaseFeaturesExtractor,
                                                    FlattenExtractor)
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import is_vectorized_observation
+from stable_baselines3.common.torch_layers import create_mlp
 from torch import nn
 
-from gbrl import ActorCritic
+from gbrl import ActorCritic, ParametricActor
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
@@ -79,10 +80,12 @@ class ActorCriticPolicy(BasePolicy):
         squash: bool = False,
         log_std_init: float = -2.0,
         shared_tree_struct: bool=True,
+        log_std_schedule: float = 1e-3,
         full_std: bool = True,
         sde_net_arch: Optional[List[int]] = None,
         use_expln: bool = False,
         squash_output: bool = False,
+        nn_critic: bool = False,
         features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
         normalize_images: bool = True,
@@ -109,15 +112,17 @@ class ActorCriticPolicy(BasePolicy):
 
         # Default network architecture, from stable-baselines
         if net_arch is None:
-            net_arch = [dict(vf=[64, 64])]
+            net_arch = [64, 64]
 
         self.net_arch = net_arch
         self.activation_fn = activation_fn
         self.ortho_init = ortho_init
         self.is_categorical = is_categorical
         self.distribution = None
-
+        self.nn_critic = nn_critic
+        assert (nn_critic and not shared_tree_struct) or (not nn_critic), "Cannot use shared tree structure with NN critic"
         self.shared_tree_struct = shared_tree_struct
+        self.value_net = None
 
         self.logits_dim = get_action_dim(action_space)
         self.discrete = isinstance(action_space, gym.spaces.Discrete)
@@ -126,15 +131,16 @@ class ActorCriticPolicy(BasePolicy):
 
         self.features_extractor = features_extractor_class(self.observation_space, **self.features_extractor_kwargs)
         self.features_dim = self.features_extractor.features_dim
+        self.value_optimizer = None
 
         self.normalize_images = normalize_images
         self.log_std_init = log_std_init
         
         # Action distribution
         self.action_dist = SquashedDiagGaussianDistribution(get_action_dim(action_space)) if isinstance(action_space, spaces.Box) and squash else make_proba_distribution(action_space)  
-        self._build(tree_struct, tree_optimizer, lr_schedule)
+        self._build(tree_struct, tree_optimizer, lr_schedule, log_std_schedule)
     
-    def _build(self, tree_struct: Dict, tree_optimizer: Dict, lr_schedule: Schedule) -> None:
+    def _build(self, tree_struct: Dict, tree_optimizer: Dict, lr_schedule: Schedule, log_std_schedule: Schedule) -> None:
         """
 
         """ 
@@ -148,17 +154,32 @@ class ActorCriticPolicy(BasePolicy):
             value_optimizer['stop_idx'] = value_start_idx + 1
         else:
             policy_optimizer['stop_idx'] = self.logits_dim + 1
-        self.model = ActorCritic(tree_struct=tree_struct, 
+
+        if isinstance(self.action_dist, DiagGaussianDistribution) or isinstance(self.action_dist, SquashedDiagGaussianDistribution) :
+            self.log_std = nn.Parameter(th.ones(self.action_dist.action_dim) * self.log_std_init, requires_grad=True)
+            self.log_std_optimizer = th.optim.Adam([self.log_std], lr=log_std_schedule(1))
+        
+        if self.nn_critic:
+            self.value_net = nn.Sequential(*create_mlp(input_dim=self.features_dim,
+                                        output_dim=1,
+                                        net_arch=self.net_arch,
+                                        activation_fn=self.activation_fn,
+                                        )).to(self.device)
+            self.model = ParametricActor(tree_struct=tree_struct, 
+                output_dim=self.logits_dim, 
+                policy_optimizer=policy_optimizer,
+                gbrl_params=tree_optimizer['gbrl_params'],
+                device=tree_optimizer.get('device', 'cpu'))
+                            # Setup optimizer with initial learning rate
+            self.value_optimizer = self.optimizer_class(self.value_net.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)  # type: ignore[call-arg]
+        else:
+            self.model = ActorCritic(tree_struct=tree_struct, 
                             output_dim=self.logits_dim + 1, 
                             shared_tree_struct=self.shared_tree_struct,
                             policy_optimizer=policy_optimizer,
                             value_optimizer=value_optimizer,
                             gbrl_params=tree_optimizer['gbrl_params'],
                             device=tree_optimizer.get('device', 'cpu'))
-        if isinstance(self.action_dist, DiagGaussianDistribution) or isinstance(self.action_dist, SquashedDiagGaussianDistribution) :
-            self.log_std = nn.Parameter(th.ones(self.action_dist.action_dim) * self.log_std_init, requires_grad=True)
-            self.log_std_optimizer = th.optim.Adam([self.log_std], lr=lr_schedule(1))
-
 
     def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False, requires_grad: bool=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
@@ -181,7 +202,11 @@ class ActorCriticPolicy(BasePolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
-        mean_actions, values = self.model(obs, requires_grad)
+        if self.nn_critic:
+            mean_actions = self.model(obs, requires_grad)
+            values = self.value_net(obs)
+        else:
+            mean_actions, values = self.model(obs, requires_grad)
         if isinstance(self.action_dist, SquashedDiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, DiagGaussianDistribution):
@@ -204,6 +229,8 @@ class ActorCriticPolicy(BasePolicy):
     def get_schedule_learning_rates(self):
         lrs = self.model.get_schedule_learning_rates()
         # lrs is a numpy array for each optimizer
+        if len(lrs) == 1:
+            return lrs[0], 0.0
         return lrs[0], lrs[1]
     
     def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False) -> th.Tensor:
@@ -306,12 +333,18 @@ class ActorCriticPolicy(BasePolicy):
         :param obs:
         :return: the estimated values.
         """
+        if self.nn_critic:
+            if not isinstance(obs, th.Tensor):
+                obs = th.tensor(obs, device=self.device)
+            return self.value_net(obs)
         return self.model.predict_values(obs, requires_grad)
 
     def critic(self, obs: Union[th.Tensor, np.ndarray]) -> th.Tensor:
         return self.predict_values(obs)
     
     def step(self, observations: Union[np.array, th.Tensor], policy_grad_clip: float=None, value_grad_clip: float=None) -> None:
+        if self.nn_critic:
+            self.value_optimizer.step()
         return self.model.step(observations, policy_grad_clip, value_grad_clip)
     
     def actor_step(self, obs: Union[th.Tensor, np.ndarray], policy_grad_clip: float=None) -> None:
