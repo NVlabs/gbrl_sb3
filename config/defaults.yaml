@@ -26,6 +26,7 @@ logging:
   run_name: 'default'  # Logging using weights and biases
   group_name: 'default_group'
   entity: "default_entity"
+  desc: "" # run/sweep description for experiment tracking
 gbrl_params:
   control_variates: False
   split_score_func: "cosine"

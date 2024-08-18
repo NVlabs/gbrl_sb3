@@ -126,6 +126,7 @@ def parse_args():
     parser.add_argument('--group_name', type=str, help='wandb group name')
     parser.add_argument('--project', type=str)
     parser.add_argument('--entity', type=str)
+    parser.add_argument('--desc', type=str)
     # algo parameters
     parser.add_argument('--normalize_advantage', type=str2bool)
     parser.add_argument('--policy_kwargs', type=json_string_to_dict)
