@@ -150,7 +150,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         super().__init__(env)
         flattened_shape = env.observation_space.shape[0]
         if len(env.observation_space.shape) > 1:
-            flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2]
+            flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
     def observation(self, observation):
@@ -158,7 +158,13 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         frame_t = observation[0][:, :2]
         frame_prev_t = observation[1][:, :2]
         delta_frame = frame_t - frame_prev_t
-        return np.concatenate([frame_t, delta_frame], axis=-1).flatten()
+        player_position = frame_t[0, :2]
+        other_positions = frame_t[1:, :2]
+        
+        # Vectorized L2 norm (Euclidean distance)
+        distances = np.linalg.norm(other_positions - player_position, axis=1)
+        pos_and_speed = np.concatenate([frame_t, delta_frame], axis=-1).flatten()
+        return np.concatenate([pos_and_speed, distances])
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)
