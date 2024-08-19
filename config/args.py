@@ -264,9 +264,11 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    args.env_type = args.env_type if args.env_type else 'ocatari'
+    # args.env_type = args.env_type if args.env_type else 'ocatari'
+    args.env_type = args.env_type if args.env_type else 'gym'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.env_name = args.env_name if args.env_name else 'Pong-v4'
+    # args.env_name = args.env_name if args.env_name else 'Pong-v4'
+    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -493,6 +495,7 @@ def process_policy_kwargs(args):
             },
             "fixed_std": args.fixed_std,
             "log_std_lr": args.log_std_lr,
+            "learning_rate": args.learning_rate,
             "min_log_std_lr": args.min_log_std_lr,
             "policy_bound_loss_weight": args.policy_bound_loss_weight,
             "device": args.device,
