@@ -191,7 +191,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         n_steps=n_steps,
         gamma=gamma,
         gae_lambda=gae_lambda,
-        max_grad_norm=1.0, # not relevant,
+        max_grad_norm=max_value_grad_norm, # not relevant,
         use_sde=False,
         sde_sample_freq=-1,
         policy_kwargs=policy_kwargs,
@@ -371,6 +371,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 if self.policy.nn_critic:
                     self.policy.value_optimizer.zero_grad()
                 loss.backward()
+                if self.policy.nn_critic:
+                    # Clip grad norm
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 # Entropy loss favor exploration
                 entropy_losses.append(entropy_loss.item())
                     # Logging
