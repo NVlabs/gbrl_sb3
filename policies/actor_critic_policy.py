@@ -346,6 +346,7 @@ class ActorCriticPolicy(BasePolicy):
     def step(self, observations: Union[np.array, th.Tensor], policy_grad_clip: float=None, value_grad_clip: float=None) -> None:
         if self.nn_critic:
             self.value_optimizer.step()
+            return self.model.step(observations, policy_grad_clip)
         return self.model.step(observations, policy_grad_clip, value_grad_clip)
     
     def actor_step(self, obs: Union[th.Tensor, np.ndarray], policy_grad_clip: float=None) -> None:
