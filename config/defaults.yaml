@@ -14,7 +14,7 @@ env:
     n_eval_episodes: 5
   wrapper: null
   log_interval: 10
-  total_n_steps: 50000
+  total_n_steps: 500000
   device: 'cuda'
   no_improvement_kwargs: null
 save:
@@ -35,7 +35,7 @@ gbrl_params:
 tree_optimizer: 
   policy_optimizer: # PPO / AWR
     algo: 'SGD'
-    lr: 1.0e-2
+    lr: 5.0e-2
   value_optimizer: # PPO / AWR
     algo: 'SGD'
     lr: 0.01
@@ -63,26 +63,27 @@ tree_struct:
 ppo_gbrl:
   wrapper_kwargs:
     training: True
-    norm_obs: False
+    norm_obs: True
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-  n_steps: 512
+    frame_skip: 2
+  n_steps: 128
   gamma: 0.99
   nn_critic: False
   gae_lambda: 0.95
   normalize_advantage: True
-  learning_rate: 3.0e-4
+  learning_rate: 3.0e-1
   target_kl: null
   normalize_policy_grads: False
   normalize_value_grads: False
-  batch_size: 1024
+  batch_size: 128
   n_epochs: 10
   clip_range: 0.2
   clip_range_vf: null
   log_std_lr: lin_0.0017
   min_log_std_lr: 0.000475
-  ent_coef: 0.0580
+  ent_coef: 0.0
   vf_coef: 0.871923
   max_policy_grad_norm: null
   max_value_grad_norm: null
@@ -93,7 +94,7 @@ ppo_nn:
   wrapper_kwargs:
     training: True
     norm_obs: True
-    norm_reward: True
+    norm_reward: False
   atari_wrapper_kwargs:
     clip_reward: True
   n_steps: 2048

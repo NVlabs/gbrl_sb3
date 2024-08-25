@@ -112,7 +112,7 @@ if __name__ == '__main__':
             eval_env = VecNormalize(eval_env, **args.wrapper_kwargs)
 
     if args.save_every and args.save_every > 0:
-        callback_list.append(CheckpointCallback(save_freq=args.save_every, save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.algo_type}_{args.save_name}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
+        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
     if args.no_improvement_kwargs:
         callback_list.append(StopTrainingOnNoImprovementInTraining(**args.no_improvement_kwargs, verbose=args.verbose))
     if eval_env is not None:
@@ -121,10 +121,10 @@ if __name__ == '__main__':
             stop_train_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=args.eval_kwargs.get('max_no_improvement_evals', 3),
                                                                     min_evals=args.eval_kwargs.get('min_evals', 5), verbose=1)
         if args.eval_kwargs.get('record', False):
-            video_path = ROOT_PATH  / f'videos/{args.env_type}/{args.env_name}'
+            video_path = ROOT_PATH  / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
             if not os.path.exists(video_path):
                 os.makedirs(video_path, exist_ok=True)
-            eval_env = VecVideoRecorder(eval_env, video_folder=video_path,  record_video_trigger=lambda x: x == args.eval_kwargs['eval_freq'], name_prefix=f"eval_{args.algo_type}", video_length=args.eval_kwargs.get('video_length', 2000))
+            eval_env = VecVideoRecorder(eval_env, video_folder=video_path,  record_video_trigger=lambda x: x == args.eval_kwargs['eval_freq'], name_prefix=f'{args.save_name}_seed_{args.seed}_eval', video_length=args.eval_kwargs.get('video_length', 2000))
         # save_vec_normalize = SaveVecNormalizeCallback(save_freq=1, save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'))
         callback_list.append(EvalCallback(
                                     eval_env,
@@ -144,6 +144,6 @@ if __name__ == '__main__':
     algo_kwargs = process_policy_kwargs(args)
     print(f"Training with algo_kwargs: {algo_kwargs}")
     
-    algo = NAME_TO_ALGO[args.algo_type](env=env, tensorboard_log=tensorboard_log, **algo_kwargs)
+    algo = NAME_TO_ALGO[args.algo_type](env=env, tensorboard_log=tensorboard_log, _init_setup_model=True, **algo_kwargs)
 
     algo.learn(total_timesteps=args.total_n_steps, callback=callback, log_interval=args.log_interval, progress_bar=False)
