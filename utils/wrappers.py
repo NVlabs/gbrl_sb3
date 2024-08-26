@@ -154,9 +154,12 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
     def observation(self, observation):
+        # if self.env.game == 'Gopher':
+
+        # else:
         # Transform the observation in some way
-        frame_t = observation[0][:, :2]
-        frame_prev_t = observation[1][:, :2]
+        frame_t = observation[-1][:, :2]
+        frame_prev_t = observation[-2][:, :2]
         delta_frame = frame_t - frame_prev_t
         player_position = frame_t[0, :2]
         enemy_position = frame_t[1, :2]
