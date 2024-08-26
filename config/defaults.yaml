@@ -67,7 +67,7 @@ ppo_gbrl:
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-    frame_skip: 2
+    frame_skip: 4
   n_steps: 128
   gamma: 0.99
   nn_critic: False
@@ -86,7 +86,7 @@ ppo_gbrl:
   ent_coef: 0.0
   vf_coef: 0.871923
   max_policy_grad_norm: null
-  max_value_grad_norm: null
+  max_value_grad_norm: 1.0
   policy_bound_loss_weight: null
   fixed_std: False
   log_std_init: -2
