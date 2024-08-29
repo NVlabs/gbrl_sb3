@@ -11,12 +11,9 @@ import pathlib
 import sys
 import time
 import warnings
-from typing import Any, Dict, Iterable, List, Optional, Type, Union
+from typing import Any, Dict, Iterable, List, Optional, Type, Union, Tuple
 
-import gymnasium as gym
 import numpy as np
-import pandas as pd
-import torch
 import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.buffers import RolloutBuffer
@@ -24,15 +21,20 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.distributions import DiagGaussianDistribution
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
+from stable_baselines3.common.save_util import (recursive_getattr,
+                                                recursive_setattr)
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
-from stable_baselines3.common.utils import (explained_variance, get_linear_fn,
-                                            get_schedule_fn, obs_as_tensor,
-                                            safe_mean)
+from stable_baselines3.common.utils import (check_for_correct_spaces,
+                                            explained_variance, get_linear_fn,
+                                            get_schedule_fn, get_system_info,
+                                            obs_as_tensor, safe_mean)
 from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
 from buffers.rollout_buffer import CategoricalRolloutBuffer
 from policies.actor_critic_policy import ActorCriticPolicy
+from utils.io_util import load_from_zip_file, save_to_zip_file
 
 
 class PPO_GBRL(OnPolicyAlgorithm):
@@ -107,6 +109,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  n_epochs: int = 4,
                  n_steps: int = 512,
                  total_n_steps: int = 1e6,
+                 learning_rate: float = 1e-3,
                  policy_kwargs: Dict = {
                     'shared_tree_struct': True,
                     'tree_struct': {
@@ -140,7 +143,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  device: str = "cpu",
                  seed: Optional[int] = None,
                  verbose: int = 1,
-                 tensorboard_log: str = None):
+                 tensorboard_log: str = None,
+                 _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
@@ -170,6 +174,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
             else:
                 log_std_lr = float(log_std_lr)
+        policy_kwargs['log_std_schedule'] = log_std_lr
         super().__init__(policy=policy,
         env=env,
         seed=seed,
@@ -180,19 +185,19 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 spaces.MultiBinary,
             ),
         tensorboard_log=tensorboard_log,
-        learning_rate=log_std_lr, # not used
+        learning_rate=learning_rate, # not used
         vf_coef=vf_coef, # not used
         ent_coef=ent_coef,
         n_steps=n_steps,
         gamma=gamma,
         gae_lambda=gae_lambda,
-        max_grad_norm=1.0, # not relevant,
+        max_grad_norm=max_value_grad_norm, # not relevant,
         use_sde=False,
         sde_sample_freq=-1,
         policy_kwargs=policy_kwargs,
         verbose=verbose,
-        device='cpu',
-        _init_setup_model=not is_categorical,
+        device=device,
+        _init_setup_model=_init_setup_model and not is_categorical,
          )
         self.env = env
         self.is_categorical = is_categorical
@@ -288,9 +293,6 @@ class PPO_GBRL(OnPolicyAlgorithm):
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
-    def load(self, load_name):
-        self.policy.model.load_model(load_name)
-
     def train(self) -> None:
         """
         Update policy using the currently gathered rollout buffer.
@@ -303,9 +305,14 @@ class PPO_GBRL(OnPolicyAlgorithm):
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
         policy_lr, value_lr = self.policy.get_schedule_learning_rates()
         self.logger.record("train/policy_learning_rate", policy_lr)
-        self.logger.record("train/vf_learning_rate", value_lr)
+        self.logger.record("train/value_learning_rate", value_lr)
         if isinstance(self.policy.action_dist, DiagGaussianDistribution):
             self._update_learning_rate(self.policy.log_std_optimizer)
+        if self.policy.nn_critic:
+            self._update_learning_rate(self.policy.value_optimizer)
+            self.logger.record("train/nn_critic", "True")
+        else: 
+            self.logger.record("train/nn_critic", "False")
 
         entropy_losses = []
         policy_losses, value_losses = [], []
@@ -352,7 +359,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                         values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                     )
                 # Value loss using the TD(gae_lambda) target
-                value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                value_loss = 0.5*F.mse_loss(rollout_data.returns, values_pred)
             
                 if entropy is None:
                     # Approximate entropy when no analytical form
@@ -361,9 +368,12 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     entropy_loss = -th.mean(entropy)
 
                 loss = policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss
-
+                if self.policy.nn_critic:
+                    self.policy.value_optimizer.zero_grad()
                 loss.backward()
-  
+                if self.policy.nn_critic:
+                    # Clip grad norm
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 # Entropy loss favor exploration
                 entropy_losses.append(entropy_loss.item())
                     # Logging
@@ -397,12 +407,17 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
                 _, grads = self.policy.model.get_params()
-                theta_grad, values_grad = grads
-                theta, values = self.policy.model.params
+                if isinstance(grads, tuple):
+                    theta_grad, values_grad = grads
+                    theta, values = self.policy.model.params
+                    values_grad_maxs.append(values_grad.max().item())
+                    values_grad_mins.append(values_grad.min().item())
+                else:
+                    theta_grad = grads
+                    theta = self.policy.model.params
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
-                values_grad_maxs.append(values_grad.max().item())
-                values_grad_mins.append(values_grad.min().item())
+  
                 theta_maxs.append(theta.max().item())
                 theta_mins.append(theta.min().item())
                 theta_grad_maxs.append(theta_grad.max().item())
@@ -440,8 +455,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.logger.record("param/value_min", np.mean(values_mins))
             self.logger.record("param/theta_grad_max", np.mean(theta_grad_maxs))
             self.logger.record("param/theta_grad_min", np.mean(theta_grad_mins))
-            self.logger.record("param/value_grad_max", np.mean(values_grad_maxs))
-            self.logger.record("param/value_grad_min", np.mean(values_grad_mins))
+            if values_grad_maxs:
+                self.logger.record("param/value_grad_max", np.mean(values_grad_maxs))
+                self.logger.record("param/value_grad_min", np.mean(values_grad_mins))
             self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
             self.logger.record("train/clip_fraction", np.mean(clip_fractions))
             self.logger.record("train/explained_variance", explained_var)
@@ -621,4 +637,215 @@ class PPO_GBRL(OnPolicyAlgorithm):
         exclude: Optional[Iterable[str]] = None,
         include: Optional[Iterable[str]] = None,
     ) -> None:
-        self.policy.model.save_model(path)
+        print(f"saving model to: {path}")
+        self.policy.model.save_model(path.replace('.zip', ''))
+         # Copy parameter list so we don't mutate the original dict
+        data = self.__dict__.copy()
+
+        # Exclude is union of specified parameters (if any) and standard exclusions
+        if exclude is None:
+            exclude = []
+        exclude = set(exclude).union(self._excluded_save_params())
+
+        # Do not exclude params if they are specifically included
+        if include is not None:
+            exclude = exclude.difference(include)
+        state_dicts_names, torch_variable_names = self._get_torch_save_params()
+        all_pytorch_variables = state_dicts_names + torch_variable_names
+        for torch_var in all_pytorch_variables:
+            # We need to get only the name of the top most module as we'll remove that
+            var_name = torch_var.split(".")[0]
+            # Any params that are in the save vars must not be saved by data
+            exclude.add(var_name)
+
+        # Remove parameter entries of parameters which are to be excluded
+        for param_name in exclude:
+            data.pop(param_name, None)
+
+        # Build dict of torch variables and state_dicts
+        pytorch_variables = None
+        params_to_save = {}
+        if torch_variable_names is not None:
+            pytorch_variables = {}
+            for name in torch_variable_names:
+                attr = recursive_getattr(self, name)
+                pytorch_variables[name] = attr
+
+        for name in state_dicts_names:
+            attr = recursive_getattr(self, name)
+            # Retrieve state dict
+            params_to_save[name] = attr.state_dict()
+
+        data['gbrl'] = True
+        data['nn_critic'] = self.policy.nn_critic
+        data['shared_tree_struct'] = self.policy.shared_tree_struct
+   
+        save_to_zip_file(path, data=data, params=params_to_save, pytorch_variables=pytorch_variables)
+
+    @classmethod
+    def load(  # noqa: C901
+        cls: Type["PPO_GBRL"],
+        path: Union[str, pathlib.Path, io.BufferedIOBase],
+        env: Optional[GymEnv] = None,
+        device: Union[th.device, str] = "auto",
+        custom_objects: Optional[Dict[str, Any]] = None,
+        print_system_info: bool = False,
+        force_reset: bool = True,
+        **kwargs,
+    ) -> "PPO_GBRL":
+        """
+        Load the model from a zip-file.
+        Warning: ``load`` re-creates the model from scratch, it does not update it in-place!
+        For an in-place load use ``set_parameters`` instead.
+
+        :param path: path to the file (or a file-like) where to
+            load the agent from
+        :param env: the new environment to run the loaded model on
+            (can be None if you only need prediction from a trained model) has priority over any saved environment
+        :param device: Device on which the code should run.
+        :param custom_objects: Dictionary of objects to replace
+            upon loading. If a variable is present in this dictionary as a
+            key, it will not be deserialized and the corresponding item
+            will be used instead. Similar to custom_objects in
+            ``keras.models.load_model``. Useful when you have an object in
+            file that can not be deserialized.
+        :param print_system_info: Whether to print system info from the saved model
+            and the current system info (useful to debug loading issues)
+        :param force_reset: Force call to ``reset()`` before training
+            to avoid unexpected behavior.
+            See https://github.com/DLR-RM/stable-baselines3/issues/597
+        :param kwargs: extra arguments to change the model when loading
+        :return: new model instance with loaded parameters
+        """
+        if print_system_info:
+            print("== CURRENT SYSTEM INFO ==")
+            get_system_info()
+
+        data, params, pytorch_variables, gbrl_model = load_from_zip_file(
+            path,
+            device=device,
+            custom_objects=custom_objects,
+            print_system_info=print_system_info,
+        )
+
+        assert data is not None, "No data found in the saved file"
+        assert params is not None, "No params found in the saved file"
+
+        # Remove stored device information and replace with ours
+        if "policy_kwargs" in data:
+            if "device" in data["policy_kwargs"]:
+                del data["policy_kwargs"]["device"]
+            # backward compatibility, convert to new format
+            if "net_arch" in data["policy_kwargs"] and len(data["policy_kwargs"]["net_arch"]) > 0:
+                saved_net_arch = data["policy_kwargs"]["net_arch"]
+                if isinstance(saved_net_arch, list) and isinstance(saved_net_arch[0], dict):
+                    data["policy_kwargs"]["net_arch"] = saved_net_arch[0]
+
+        if "policy_kwargs" in kwargs and kwargs["policy_kwargs"] != data["policy_kwargs"]:
+            raise ValueError(
+                f"The specified policy kwargs do not equal the stored policy kwargs."
+                f"Stored kwargs: {data['policy_kwargs']}, specified kwargs: {kwargs['policy_kwargs']}"
+            )
+
+        if "observation_space" not in data or "action_space" not in data:
+            raise KeyError("The observation_space and action_space were not given, can't verify new environments")
+
+        # Gym -> Gymnasium space conversion
+        for key in {"observation_space", "action_space"}:
+            data[key] = _convert_space(data[key])  # pytype: disable=unsupported-operands
+
+        if env is not None:
+            # Wrap first if needed
+            env = cls._wrap_env(env, data["verbose"])
+            # Check if given env is valid
+            check_for_correct_spaces(env, data["observation_space"], data["action_space"])
+            # Discard `_last_obs`, this will force the env to reset before training
+            # See issue https://github.com/DLR-RM/stable-baselines3/issues/597
+            if force_reset and data is not None:
+                data["_last_obs"] = None
+            # `n_envs` must be updated. See issue https://github.com/DLR-RM/stable-baselines3/issues/1018
+            if data is not None:
+                data["n_envs"] = env.num_envs
+        else:
+            # Use stored env, if one exists. If not, continue as is (can be used for predict)
+            if "env" in data:
+                env = data["env"]
+
+        # pytype: disable=not-instantiable,wrong-keyword-args
+        model = cls(
+            policy=data["policy_class"],
+            env=env,
+            device=device,
+            _init_setup_model=False,  # type: ignore[call-arg]
+        )
+        # pytype: enable=not-instantiable,wrong-keyword-args
+
+        # load parameters
+        model.__dict__.update(data)
+        model.__dict__.update(kwargs)
+        model._setup_model()
+
+        try:
+            # put state_dicts back in place
+            model.set_parameters(params, exact_match=True, device=device)
+        except RuntimeError as e:
+            # Patch to load Policy saved using SB3 < 1.7.0
+            # the error is probably due to old policy being loaded
+            # See https://github.com/DLR-RM/stable-baselines3/issues/1233
+            if "pi_features_extractor" in str(e) and "Missing key(s) in state_dict" in str(e):
+                model.set_parameters(params, exact_match=False, device=device)
+                warnings.warn(
+                    "You are probably loading a model saved with SB3 < 1.7.0, "
+                    "we deactivated exact_match so you can save the model "
+                    "again to avoid issues in the future "
+                    "(see https://github.com/DLR-RM/stable-baselines3/issues/1233 for more info). "
+                    f"Original error: {e} \n"
+                    "Note: the model should still work fine, this only a warning."
+                )
+            else:
+                raise e
+        # put other pytorch variables back in place
+        if pytorch_variables is not None:
+            for name in pytorch_variables:
+                # Skip if PyTorch variable was not defined (to ensure backward compatibility).
+                # This happens when using SAC/TQC.
+                # SAC has an entropy coefficient which can be fixed or optimized.
+                # If it is optimized, an additional PyTorch variable `log_ent_coef` is defined,
+                # otherwise it is initialized to `None`.
+                if pytorch_variables[name] is None:
+                    continue
+                # Set the data attribute directly to avoid issue when using optimizers
+                # See https://github.com/DLR-RM/stable-baselines3/issues/391
+                recursive_setattr(model, f"{name}.data", pytorch_variables[name].data)
+
+        # Sample gSDE exploration matrix, so it uses the right device
+        # see issue #44
+        if model.use_sde:
+            model.policy.reset_noise()  # type: ignore[operator]  # pytype: disable=attribute-error
+        model.policy.model = gbrl_model
+        return model
+
+    def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
+        """
+        Get the name of the torch variables that will be saved with
+        PyTorch ``th.save``, ``th.load`` and ``state_dicts`` instead of the default
+        pickling strategy. This is to handle device placement correctly.
+
+        Names can point to specific variables under classes, e.g.
+        "policy.optimizer" would point to ``optimizer`` object of ``self.policy``
+        if this object.
+
+        :return:
+            List of Torch variables whose state dicts to save (e.g. th.nn.Modules),
+            and list of other Torch variables to store with ``th.save``.
+        """
+        state_dicts = []
+        if self.policy.nn_critic and self.policy.value_net is not None:
+            state_dicts = ["policy", "policy.value_optimizer"] 
+            if self.policy.log_std_optimizer is not None:
+                state_dicts.append("policy.log_std_optimizer")
+
+
+        return state_dicts, []
+        
+

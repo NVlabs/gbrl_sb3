@@ -101,7 +101,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco', 'football']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -126,6 +126,7 @@ def parse_args():
     parser.add_argument('--group_name', type=str, help='wandb group name')
     parser.add_argument('--project', type=str)
     parser.add_argument('--entity', type=str)
+    parser.add_argument('--desc', type=str)
     # algo parameters
     parser.add_argument('--normalize_advantage', type=str2bool)
     parser.add_argument('--policy_kwargs', type=json_string_to_dict)
@@ -139,6 +140,7 @@ def parse_args():
     parser.add_argument('--log_std_init', type=float)
     parser.add_argument('--squash', type=float) # squash continuous actions using tanh
     parser.add_argument('--normalize_policy_grads', type=str2bool)
+    parser.add_argument('--nn_critic', type=str2bool)
     # NN parameters
     parser.add_argument('--learning_rate', type=str)
     parser.add_argument('--use_sde', type=str2bool)
@@ -266,9 +268,12 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    args.env_type = args.env_type if args.env_type else 'gym'
+    args.env_type = args.env_type if args.env_type else 'ocatari'
+    # args.env_type = args.env_type if args.env_type else 'gym'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
+    # args.env_name = args.env_name if args.env_name else 'Pong-v4'
+    args.env_name = args.env_name if args.env_name else 'Gopher-v4'
+    # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -304,6 +309,7 @@ def get_defaults(args, defaults):
     args.target_kl = args.target_kl if args.target_kl is not None else algo_defaults.get('target_kl', None)
     args.log_std_init = args.log_std_init if args.log_std_init is not None else algo_defaults.get('log_std_init', -2)
     args.squash = args.squash if args.squash is not None else algo_defaults.get('squash', False)
+    args.nn_critic = args.nn_critic if args.nn_critic is not None else algo_defaults.get('nn_critic', False)
     args.normalize_policy_grads = args.normalize_policy_grads if args.normalize_policy_grads is not None else algo_defaults.get('normalize_policy_grads', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
     args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else algo_defaults.get('clip_range', 0.2)
@@ -464,6 +470,7 @@ def process_policy_kwargs(args):
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "log_std_init": args.log_std_init,
                 "squash": args.squash,
+                "nn_critic": args.nn_critic,
                 "shared_tree_struct": args.shared_tree_struct,
                 "tree_struct": {
                     "max_depth": args.max_depth,
@@ -499,6 +506,7 @@ def process_policy_kwargs(args):
             },
             "fixed_std": args.fixed_std,
             "log_std_lr": args.log_std_lr,
+            "learning_rate": args.learning_rate,
             "min_log_std_lr": args.min_log_std_lr,
             "policy_bound_loss_weight": args.policy_bound_loss_weight,
             "device": args.device,
@@ -521,6 +529,7 @@ def process_policy_kwargs(args):
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "log_std_init": args.log_std_init,
                 "squash": args.squash,
+                "nn_critic": args.nn_critic,
                 "shared_tree_struct": args.shared_tree_struct,
                 "tree_struct": {
                     "max_depth": args.max_depth,
