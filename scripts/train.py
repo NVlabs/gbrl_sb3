@@ -28,7 +28,7 @@ from callback.callbacks import (OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback, 
                                 StopTrainingOnNoImprovementInTraining,
                                 ActorCriticCompressionCallback)
-from utils.helpers import make_ram_atari_env, set_seed
+from utils.helpers import make_ram_atari_env, set_seed, make_ram_ocatari_env
 from utils.wrappers import (CategoricalDummyVecEnv,
                             CategoricalObservationWrapper,
                             NeuroSymbolicAtariWrapper)

@@ -197,17 +197,18 @@ class ActorCriticCompressionCallback(BaseCallback):
                 self.dist_type = 'gaussain'
             elif isinstance(self.model.policy.action_dist, CategoricalDistribution):
                 self.dist_type = 'categorical'
-        if self.model.policy.model.shared_tree_struct:
-            num_trees = self.model.policy.model.get_num_trees()
-            if num_trees >= self.max_steps:
-                print(f"Compressing with: {len(self.compression_data)}")
-                obs = np.concatenate(list(self.compression_data), axis=0)
-                print(obs.shape)
-                self.logger.record("compression/num_samples", len(obs))
-                actions = self.model.policy._predict(obs, deterministic=False)
-                log_std = None if self.dist_type != 'gaussian' else self.model.policy.log_std.detach().cpu().numpy()
-                compression_params = {**self.params, 'features': obs, 'actions': actions.detach().cpu(), 'log_std': log_std, 'dist_type': self.dist_type}
-                self.model.policy.model.compress(**compression_params)
+        num_trees = self.model.policy.model.get_num_trees()
+        if not self.model.policy.model.shared_tree_struct:
+            num_trees = num_trees[0]
+        if num_trees >= self.max_steps:
+            print(f"Compressing with: {len(self.compression_data)}")
+            obs = np.concatenate(list(self.compression_data), axis=0)
+            print(obs.shape)
+            self.logger.record("compression/num_samples", len(obs))
+            actions = self.model.policy._predict(obs, deterministic=False)
+            log_std = None if self.dist_type != 'gaussian' else self.model.policy.log_std.detach().cpu().numpy()
+            compression_params = {**self.params, 'features': obs, 'actions': actions.detach().cpu(), 'log_std': log_std, 'dist_type': self.dist_type}
+            self.model.policy.model.compress(**compression_params)
         # else:
         #     policy_num_trees, value_num_trees = self.model.policy.model.get_num_trees()
         #     if policy_num_trees > self.distil_steps or value_num_trees > self.distil_steps:
