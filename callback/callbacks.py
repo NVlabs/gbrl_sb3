@@ -203,7 +203,6 @@ class ActorCriticCompressionCallback(BaseCallback):
         if num_trees >= self.max_steps:
             print(f"Compressing with: {len(self.compression_data)}")
             obs = np.concatenate(list(self.compression_data), axis=0)
-            print(obs.shape)
             self.logger.record("compression/num_samples", len(obs))
             actions = self.model.policy._predict(obs, deterministic=False)
             log_std = None if self.dist_type != 'gaussian' else self.model.policy.log_std.detach().cpu().numpy()

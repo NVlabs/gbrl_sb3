@@ -303,9 +303,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         # Optional: clip range for the value function
         if self.clip_range_vf is not None:
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
-        policy_lr, value_lr = self.policy.get_schedule_learning_rates()
-        self.logger.record("train/policy_learning_rate", policy_lr)
-        self.logger.record("train/value_learning_rate", value_lr)
+
         if isinstance(self.policy.action_dist, DiagGaussianDistribution):
             self._update_learning_rate(self.policy.log_std_optimizer)
         if self.policy.nn_critic:
@@ -313,6 +311,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.logger.record("train/nn_critic", "True")
         else: 
             self.logger.record("train/nn_critic", "False")
+        policy_lr, value_lr = self.policy.get_schedule_learning_rates()
+        self.logger.record("train/policy_learning_rate", policy_lr)
+        self.logger.record("train/value_learning_rate", value_lr)
 
         entropy_losses = []
         policy_losses, value_losses = [], []
