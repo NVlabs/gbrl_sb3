@@ -130,7 +130,7 @@ class DQN_GBRL(OffPolicyAlgorithm):
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
-            device='cpu',
+            device=device,
             seed=seed,
             sde_support=False,
             optimize_memory_usage=optimize_memory_usage,

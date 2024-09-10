@@ -101,7 +101,6 @@ class SAC_GBRL(OffPolicyAlgorithm):
             gradient_steps: int = 1,
             max_q_grad_norm: float = None,
             max_policy_grad_norm: float = None,
-            normalize_policy_grads: bool = True,
             policy_kwargs: Dict = None,
             tensorboard_log: str = None, 
             verbose: int = 1,
@@ -130,7 +129,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
             stats_window_size=100,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
-            device='cpu',
+            device=device,
             seed=seed,
             use_sde=False,
             sde_sample_freq=-1,
@@ -153,16 +152,16 @@ class SAC_GBRL(OffPolicyAlgorithm):
         self.reg_coef = 1
         self.accum_gradient_steps = 0
         self.prev_timesteps = 0
-        self.normalize_policy_grads = normalize_policy_grads
 
         self._setup_model()
 
     def _setup_model(self) -> None:
         super()._setup_model()
         self._create_aliases()
-        # # Running mean and running var
-        # self.batch_norm_stats = get_parameters_by_name(self.critic, ["running_"])
-        # self.batch_norm_stats_target = get_parameters_by_name(self.critic_target, ["running_"])
+        # Running mean and running var
+        if self.policy.nn_critic:
+            self.batch_norm_stats = get_parameters_by_name(self.critic, ["running_"])
+            self.batch_norm_stats_target = get_parameters_by_name(self.policy.critic_target, ["running_"])
         # Target entropy is used when learning the entropy coefficient
         if self.target_entropy == "auto":
             # automatically set target entropy if needed
@@ -201,9 +200,15 @@ class SAC_GBRL(OffPolicyAlgorithm):
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizers learning rate
-        # optimizers = [self.actor.optimizer, self.critic.optimizer]
-        # if self.ent_coef_optimizer is not None:
-        #     optimizers += [self.ent_coef_optimizer]
+        optimizers = []
+        if self.critic.optimizer is not None:
+            optimizers += [self.critic.optimizer]
+        if self.ent_coef_optimizer is not None:
+            optimizers += [self.ent_coef_optimizer]
+
+        # Update learning rate according to lr schedule
+        if optimizers:
+            self._update_learning_rate(optimizers)
 
         ent_coef_losses, ent_coefs, log_ent_coefs = [], [], []
         actor_losses, critic_losses = [], []
@@ -241,15 +246,11 @@ class SAC_GBRL(OffPolicyAlgorithm):
                 ent_coef_loss.backward()
                 self.ent_coef_optimizer.step()
 
-
             with th.no_grad():
                 # Select action according to policy
                 next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
                 # Compute the next Q values: min over all critics targets
-                # if self.use_target:
-                next_q_values = th.cat(self.critic.predict_target(replay_data.next_observations, next_actions), dim=1) # concatenation already done within critic
-                # else:
-                    # next_q_values = th.cat(self.critic(replay_data.next_observations, next_actions, train_mode=False), dim=1) # concatenation already done within critic
+                next_q_values = th.cat(self.policy.predict_critic(replay_data.next_observations, next_actions, target=True), dim=1) # concatenation already done within critic
                 next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
                 # add entropy term
                 next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
@@ -261,8 +262,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
 
             # Get current Q-values estimates for each critic network
             # using action from the replay buffer
-            current_q_values = self.critic(replay_data.observations, replay_data.actions, requires_grad=True)
-
+            current_q_values = self.policy.predict_critic(replay_data.observations, replay_data.actions, requires_grad=True)
             # Compute critic loss
             critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
             assert isinstance(critic_loss, th.Tensor)  # for type checker
@@ -271,7 +271,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
             critic_loss.backward()
             self.critic.step(replay_data.observations, self.max_q_grad_norm)
 
-            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+            q_values_pi = th.cat(self.policy.predict_critic(replay_data.observations, actions_pi), dim=1)
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
 
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
@@ -283,6 +283,12 @@ class SAC_GBRL(OffPolicyAlgorithm):
             q_s_min.append(min_qf_pi.min().item())
 
             self.actor.step(replay_data.observations, self.max_policy_grad_norm)
+            # Update target networks
+            if self.policy.nn_critic and gradient_step % self.target_update_interval == 0:
+                polyak_update(self.critic.parameters(), self.policy.critic_target.parameters(), self.tau)
+                # Copy running stats, see GH issue #996
+                polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+            
             actor_params, actor_grads = self.actor.model.get_params()
             mu, log_std = actor_params 
             mu_grad, log_std_grad = actor_grads
@@ -296,18 +302,13 @@ class SAC_GBRL(OffPolicyAlgorithm):
             log_std_grads_maxs.append(np.max(log_std_grad))
             log_std_grads_mins.append(np.min(log_std_grad))
 
-
-                
         self._n_updates += gradient_steps
         
         actor_iteration = self.actor.get_iteration()
         actor_num_trees = self.actor.get_num_trees()
-        critic_iteration = self.critic.get_iteration()
-        critic_num_trees = self.critic.get_num_trees()
-
-        # if self.save_every > 0 and self.num_timesteps - self.prev_timesteps > self.save_every:
-        #     self.policy.save_model(self.save_name + f'_{self.num_timesteps}_steps', self.config.env.env_name)
-        #     self.prev_timesteps = self.num_timesteps
+        
+        critic_iteration = 0 if self.policy.nn_critic else self.critic.get_iteration()
+        critic_num_trees = 0 if self.policy.nn_critic else self.critic.get_num_trees()
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))

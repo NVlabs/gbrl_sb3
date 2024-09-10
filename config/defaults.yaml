@@ -14,7 +14,7 @@ env:
     n_eval_episodes: 5
   wrapper: null
   log_interval: 10
-  total_n_steps: 500000
+  total_n_steps: 150000
   device: 'cuda'
   no_improvement_kwargs: null
 save:
@@ -41,7 +41,7 @@ tree_optimizer:
     lr: 0.01
   mu_optimizer: # SAC 
     algo: 'SGD'
-    lr: 1.0e-2
+    lr: 5.0e-4
   std_optimizer: # SAC 
     algo: 'SGD'
     lr: 1.0e-4
@@ -75,7 +75,6 @@ ppo_gbrl:
   normalize_advantage: True
   learning_rate: 3.0e-1
   target_kl: null
-  normalize_policy_grads: False
   normalize_value_grads: False
   batch_size: 128
   n_epochs: 10
@@ -156,24 +155,26 @@ a2c_nn:
   normalize_advantage: False
   stats_window_size: 100
 sac_gbrl:
-  wrapper_kwargs: null
-  train_freq: 128
+  wrapper_kwargs:     
+    training: True
+    norm_obs: True
+    norm_reward: True
+  train_freq: 1
   gamma: 0.99
   tau: 0.005
-  target_update_interval: 250
+  target_update_interval: 1
   atari_wrapper_kwargs: null
-  ent_lr: 3.0e-4
-  gradient_steps: 10
+  ent_lr: 3.0e-3 # also NN critic learning rate when using an NN-based q-function
+  gradient_steps: 1
   buffer_size: 1000000
-  normalize_policy_grads: True
   learning_starts: 100
   batch_size: 256
   ent_coef: auto
   target_entropy: auto
   max_policy_grad_norm: 0.0 
   max_q_grad_norm: 0.0
-  q_func_type: 'linear'
-  n_critics: 1
+  q_func_type: 'nn'
+  n_critics: 2
 awr_gbrl:
   wrapper_kwargs:
     training: True
@@ -185,7 +186,6 @@ awr_gbrl:
   gamma: 0.99
   ent_coef: 0.0
   beta: 0.05
-  normalize_policy_grads: False
   gae_lambda: 0.95
   normalize_advantage: False
   log_std_lr: lin_0.0017

@@ -43,7 +43,6 @@ class AWR_GBRL(OffPolicyAlgorithm):
                  policy_bound_loss_weight: float = None,
                  max_policy_grad_norm: float = None,
                  max_value_grad_norm: float = None,
-                 normalize_policy_grads: bool = False,
                  batch_size: int = 256,
                  buffer_size: int = 1000000,
                  vf_coef: float = 0.56,
@@ -81,7 +80,6 @@ class AWR_GBRL(OffPolicyAlgorithm):
         self.policy_bound_loss_weight = policy_bound_loss_weight
         self.max_policy_grad_norm = max_policy_grad_norm
         self.max_value_grad_norm = max_value_grad_norm
-        self.normalize_policy_grads = normalize_policy_grads
         self.fixed_std = fixed_std
         self.value_batch_size = value_batch_size
         buffer_kwargs = {'gae_lambda': gae_lambda, 'gamma': gamma, 'return_type': reward_mode}
@@ -98,7 +96,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
         seed=seed,
         train_freq = tr_freq,
         verbose=verbose,
-        device='cpu',
+        device=device,
         learning_starts=learning_starts,
         learning_rate=log_std_lr,
         batch_size=batch_size,

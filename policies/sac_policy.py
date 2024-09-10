@@ -15,7 +15,8 @@ from stable_baselines3.common.distributions import \
 from stable_baselines3.common.policies import BaseModel, BasePolicy
 from stable_baselines3.common.preprocessing import get_action_dim
 from stable_baselines3.common.torch_layers import (BaseFeaturesExtractor,
-                                                   FlattenExtractor)
+                                                   FlattenExtractor,
+                                                   create_mlp)
 from stable_baselines3.common.type_aliases import Schedule
 from torch import nn
 
@@ -32,6 +33,7 @@ import numpy as np
 class ContinuousCritic(BaseModel):
     """
     Critic network(s) for DDPG/SAC/TD3.
+    Adaptation of stable_baselines3 class to incorporate GBRL.
     It represents the action-state value function (Q-value function).
     Compared to A2C/PPO critics, this one represents the Q-value
     and takes the continuous action as input. It is concatenated with the state
@@ -65,6 +67,10 @@ class ContinuousCritic(BaseModel):
         critic_optimizer: Dict = None,
         normalize_images: bool = True,
         n_critics: int = 2,
+        net_arch: List[int] = None,
+        features_dim: int = None,
+        activation_fn: Type[nn.Module] = nn.ReLU,
+        share_features_extractor: bool = True,
         q_func_type: str = 'linear',
         gbrl_params: Dict=dict(),
         target_update_interval: int = 100,
@@ -83,56 +89,53 @@ class ContinuousCritic(BaseModel):
         action_dim = get_action_dim(self.action_space)
         self.action_dim = action_dim
         self.q_func_type = q_func_type
+        self.share_features_extractor = share_features_extractor
+        self.optimizer = None
 
         self.n_critics = n_critics
         self.q_models = []
-        self.theta_dim = 1 if q_func_type != 'quadratic' else 2
-        weights_optimizer = critic_optimizer['weights_optimizer']
-        weights_optimizer['start_idx'] = 0
-        
-        stop_idx = action_dim + self.theta_dim
-        bias_optimizer = critic_optimizer.get('bias_optimizer', None)
-        if bias_optimizer is not None:
-            stop_idx -= 1
-            bias_optimizer['start_idx'] = stop_idx
-            bias_optimizer['stop_idx'] = stop_idx + 1
-        weights_optimizer['stop_idx'] = stop_idx
-        for _ in range(n_critics):
-            bias = np.random.randn(action_dim + self.theta_dim) * np.sqrt(2.0 / action_dim)
-            bias[-self.theta_dim:] = 0
-            q_model = gbrl.ContinuousCritic(tree_struct=tree_struct, 
-                                       output_dim=action_dim + self.theta_dim, 
-                                       weights_optimizer=weights_optimizer,
-                                       bias_optimizer=bias_optimizer,
-                                       gbrl_params=gbrl_params,
-                                       target_update_interval=target_update_interval,
-                                       bias=bias,
-                                       verbose=verbose,
-                                       device=device
-                                        )
-            self.q_models.append(q_model)
+        if self.q_func_type == 'nn':
+            for idx in range(n_critics):
+                q_net = create_mlp(features_dim + action_dim, 1, net_arch, activation_fn)
+                q_net = nn.Sequential(*q_net)
+                self.add_module(f"qf{idx}", q_net)
+                self.q_models.append(q_net)
+        else:
+                
+            self.theta_dim = 1 if q_func_type != 'quadratic' else 2
+            weights_optimizer = critic_optimizer['weights_optimizer']
+            weights_optimizer['start_idx'] = 0
+            bias_optimizer = critic_optimizer.get('bias_optimizer', None)
+            if bias_optimizer is not None:
+                bias_optimizer['start_idx'] = action_dim
+                bias_optimizer['stop_idx'] = action_dim + self.theta_dim
+            weights_optimizer['stop_idx'] = action_dim
+            for _ in range(n_critics):
+                bias = np.random.randn(action_dim + self.theta_dim) * np.sqrt(2.0 / action_dim)
+                bias[-self.theta_dim:] = 0
+                q_model = gbrl.ContinuousCritic(tree_struct=tree_struct, 
+                                        output_dim=action_dim + self.theta_dim, 
+                                        weights_optimizer=weights_optimizer,
+                                        bias_optimizer=bias_optimizer,
+                                        gbrl_params=gbrl_params,
+                                        target_update_interval=target_update_interval,
+                                        bias=bias,
+                                        verbose=verbose,
+                                        device=device
+                                            )
+                self.q_models.append(q_model)
 
-    def forward(self, obs: th.Tensor, actions: th.Tensor, requires_grad: bool = False) -> Tuple[th.Tensor, ...]:
+    def forward(self, obs: th.Tensor, actions: th.Tensor, target: bool, requires_grad: bool = False) -> Tuple[th.Tensor, ...]:
+        if self.optimizer:
+            self.optimizer.zero_grad()
+        if self.q_func_type == 'nn':
+            with th.set_grad_enabled(not self.share_features_extractor):
+                features = self.extract_features(obs, self.features_extractor)
+                qvalue_input = th.cat([features, actions], dim=1)
+                return tuple(q_net(qvalue_input) for q_net in self.q_models)
         q_s = []
         for q_net in self.q_models:
-            weights, bias = q_net(obs, requires_grad)
-            dot = (weights * actions).sum(dim=1)
-            # print(self.q_func_type)
-            if self.q_func_type == 'linear':
-                q = (dot + bias.squeeze())
-            elif self.q_func_type == 'tanh':
-                q = (bias.squeeze()*th.tanh(dot))
-            elif self.q_func_type == 'quadratic':
-                q = -((dot - bias[:, 0])**2) + bias[:, 1]
-            q_s.append(q.unsqueeze(-1))
-        return tuple(q_s)
-    
-
-    def predict_target(self, obs: th.Tensor, actions: th.Tensor):
-        q_s = []
-        obs = obs.detach().cpu().numpy().astype(np.single)
-        for q_net in self.q_models:
-            weights, bias = q_net.predict_target(obs)
+            weights, bias = q_net(obs, requires_grad, target) 
             dot = (weights * actions).sum(dim=1)
             if self.q_func_type == 'linear':
                 q = (dot + bias.squeeze())
@@ -142,10 +145,23 @@ class ContinuousCritic(BaseModel):
                 q = -((dot - bias[:, 0])**2) + bias[:, 1]
             q_s.append(q.unsqueeze(-1))
         return tuple(q_s)
+
+    def q1_forward(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
+        """
+        Only predict the Q-value using the first network.
+        This allows to reduce computation when all the estimates are not needed
+        (e.g. when updating the policy in TD3).
+        """
+        with th.no_grad():
+            features = self.extract_features(obs, self.features_extractor)
+        return self.q_models[0](th.cat([features, actions], dim=1))
     
     def step(self, observations: Union[np.array, th.Tensor], q_grad_clip: float=None) -> None:
-         for idx in range(self.n_critics):
-            self.q_models[idx].step(observations, q_grad_clip)
+        if self.q_func_type == 'nn':
+             self.optimizer.step()
+        else:
+            for idx in range(self.n_critics):
+                self.q_models[idx].step(observations, q_grad_clip)
 
     def get_num_trees(self):
         return self.q_models[0].get_num_trees()
@@ -168,7 +184,7 @@ class ContinuousCritic(BaseModel):
 
     def load_model(self, name: str, env_name: str):
         for i in range(self.n_critics):
-            self.q_models[i].load_model(name + f'_critic_{i+1}', env_name)
+            self.q_models[i] = ContinuousCritic.load_model(name + f'_critic_{i+1}', env_name)
 
 class Actor(BasePolicy):
     """
@@ -329,9 +345,10 @@ class SACPolicy(BasePolicy):
         use_sde: bool = False,
         log_std_init: float = -3,
         use_expln: bool = False,
+        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
+        activation_fn: Type[nn.Module] = nn.ReLU,
         clip_mean: float = 2.0,
         q_func_type: str = 'linear',
-        shared_tree_struct: bool = True,
         features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
         normalize_images: bool = True,
@@ -350,6 +367,12 @@ class SACPolicy(BasePolicy):
             normalize_images=normalize_images,
         )
 
+        if net_arch is None:
+            net_arch = [256, 256]
+
+        self.nn_critic = q_func_type == 'nn'
+        self.critic_target = None
+
         self.actor_kwargs = {
             "observation_space": self.observation_space,
             "action_space": self.action_space,
@@ -362,27 +385,60 @@ class SACPolicy(BasePolicy):
             "normalize_images": normalize_images,
             "gbrl_params": tree_optimizer.get("gbrl_params", dict())
         }
-
-        self.critic_kwargs =  {
+        if self.nn_critic:
+            self.net_args = {
                 "observation_space": self.observation_space,
                 "action_space": self.action_space,
-                "features_extractor": self.make_features_extractor(),
-                "tree_struct": tree_struct,
-                "critic_optimizer": tree_optimizer['critic_optimizer'],
-                "device": tree_optimizer.get('device', 'cpu'),
-                "target_update_interval": tree_optimizer.get('target_update_interval', 100),
-                "verbose": tree_optimizer.get('verbose', 1),
-                "n_critics": n_critics,
-                "q_func_type": q_func_type,
-                "gbrl_params": tree_optimizer.get("gbrl_params", dict())
+                "net_arch": net_arch,
+                "activation_fn": activation_fn,
+                "normalize_images": normalize_images,
+                "q_func_type": "nn",
             }
+            self.net_arch = net_arch
+            self.activation_fn = activation_fn
+            self.critic_kwargs = self.net_args.copy()
+            self.critic_kwargs.update(
+                {
+                    "n_critics": n_critics,
+                    "share_features_extractor": False,
+                }
+            )
+
+            self.share_features_extractor = False
+        else:
+            self.critic_kwargs =  {
+                    "observation_space": self.observation_space,
+                    "action_space": self.action_space,
+                    "features_extractor": self.make_features_extractor(),
+                    "tree_struct": tree_struct,
+                    "critic_optimizer": tree_optimizer['critic_optimizer'],
+                    "device": tree_optimizer.get('device', 'cpu'),
+                    "target_update_interval": tree_optimizer.get('target_update_interval', 100),
+                    "verbose": tree_optimizer.get('verbose', 1),
+                    "n_critics": n_critics,
+                    "q_func_type": q_func_type,
+                    "gbrl_params": tree_optimizer.get("gbrl_params", dict())
+                }   
 
         self._build(lr_schedule)
         
 
     def _build(self, lr_schedule: Schedule) -> None:
         self.actor = self.make_actor()
-        self.critic = self.make_critic()
+        self.critic = self.make_critic(features_extractor=None)
+        
+        if self.nn_critic:
+            critic_parameters = list(self.critic.parameters())
+            # Critic target should not share the features extractor with critic
+            self.critic_target = self.make_critic(features_extractor=None)
+            self.critic_target.load_state_dict(self.critic.state_dict())
+            self.critic.optimizer = self.optimizer_class(
+            critic_parameters,
+            lr=lr_schedule(1),  # type: ignore[call-arg]
+            **self.optimizer_kwargs,
+        )
+            # Target networks should always be in eval mode
+            self.critic_target.set_training_mode(False)
 
     def reset_noise(self, batch_size: int = 1) -> None:
         """
@@ -395,8 +451,11 @@ class SACPolicy(BasePolicy):
     def make_actor(self) -> Actor:
         return Actor(**self.actor_kwargs)
 
-    def make_critic(self) -> ContinuousCritic:
-        return ContinuousCritic(**self.critic_kwargs)
+    def make_critic(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> Union[ContinuousCritic, ContinuousCritic]:
+        critic_kwargs = self.critic_kwargs
+        if self.nn_critic:
+            critic_kwargs = self._update_features_extractor(self.critic_kwargs, features_extractor)
+        return ContinuousCritic(**critic_kwargs).to(self.device)
 
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic)
@@ -420,6 +479,13 @@ class SACPolicy(BasePolicy):
 
         :param mode: if true, set to training mode, else set to evaluation mode
         """
+        if self.nn_critic:
+            self.critic.set_training_mode(mode)
         self.training = mode
+
+    def predict_critic(self,  obs: th.Tensor, actions: th.Tensor, target: bool = False, requires_grad: bool = False):
+        if self.critic_target is not None and target:
+            return self.critic_target(obs, actions, target)
+        return self.critic(obs, actions, target, requires_grad=requires_grad)
 
 

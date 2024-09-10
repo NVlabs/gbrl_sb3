@@ -102,7 +102,6 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  max_value_grad_norm: float = None,
                  vf_coef: float = 0.5,
                  ent_coef: float = 0.0,
-                 normalize_policy_grads: bool = False,
                  batch_size: int = 256,
                  gamma: float = 0.99,
                  gae_lambda: float = 0.95,
@@ -153,7 +152,6 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.target_kl = None
         self.max_policy_grad_norm = max_policy_grad_norm
         self.max_value_grad_norm = max_value_grad_norm
-        self.normalize_policy_grads =normalize_policy_grads
         self.batch_size = batch_size
         num_envs = 1 if isinstance(env, str) else env.num_envs
         updates_per_rollout =  ((n_steps * num_envs) / batch_size) * n_epochs

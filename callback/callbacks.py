@@ -22,7 +22,6 @@ from stable_baselines3.common.distributions import (
     SquashedDiagGaussianDistribution, 
 )
 
-from algos.sac_nn_critic import SAC_GBRLCriticNN
 
 
 class GradientHistogramCallback(BaseCallback):

@@ -85,7 +85,6 @@ class A2C_GBRL(OnPolicyAlgorithm):
         vf_coef: float = 0.5,
         normalize_advantage: bool = False,
         stats_window_size: int = 100,
-        normalize_policy_grads: bool = False,
         max_policy_grad_norm: float = None,
         max_value_grad_norm: float = None,
         tensorboard_log: Optional[str] = None,
@@ -104,8 +103,6 @@ class A2C_GBRL(OnPolicyAlgorithm):
         self.normalize_advantage = normalize_advantage
         self.max_policy_grad_norm = max_policy_grad_norm
         self.max_value_grad_norm = max_value_grad_norm
-        self.normalize_policy_grads = normalize_policy_grads
-        num_envs = 1 if isinstance(env, str) else env.num_envs
         num_rollouts = total_n_steps / (n_steps  * env.num_envs)
         total_num_updates = num_rollouts
         assert 'tree_optimizer' in policy_kwargs, "tree_optimizer must be a dictionary within policy_kwargs"
@@ -140,7 +137,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
             tensorboard_log=tensorboard_log,
             policy_kwargs=policy_kwargs,
             verbose=verbose,
-            device='cpu',
+            device=device,
             seed=seed,
             _init_setup_model=not is_categorical,
             supported_action_spaces=(
