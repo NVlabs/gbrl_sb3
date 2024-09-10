@@ -138,7 +138,6 @@ def parse_args():
     parser.add_argument('--target_kl', type=float)
     parser.add_argument('--log_std_init', type=float)
     parser.add_argument('--squash', type=float) # squash continuous actions using tanh
-    parser.add_argument('--normalize_policy_grads', type=str2bool)
     # NN parameters
     parser.add_argument('--learning_rate', type=str)
     parser.add_argument('--use_sde', type=str2bool)
@@ -220,7 +219,7 @@ def parse_args():
     parser.add_argument('--target_update_interval', type=int)
     parser.add_argument('--buffer_size', type=int)
     parser.add_argument('--max_q_grad_norm', type=float)
-    parser.add_argument('--q_func_type', type=str, choices=['linear', 'tanh', 'quadratic'])
+    parser.add_argument('--q_func_type', type=str, choices=['linear', 'tanh', 'quadratic', 'nn'])
     # AWR Params
     parser.add_argument('--beta', type=float)
     parser.add_argument('--policy_gradient_steps', type=int)
@@ -264,7 +263,7 @@ def get_defaults(args, defaults):
     # Set hardcoded defaults
     args.env_type = args.env_type if args.env_type else 'gym'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
+    args.env_name = args.env_name if args.env_name else 'Pendulum-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -300,7 +299,6 @@ def get_defaults(args, defaults):
     args.target_kl = args.target_kl if args.target_kl is not None else algo_defaults.get('target_kl', None)
     args.log_std_init = args.log_std_init if args.log_std_init is not None else algo_defaults.get('log_std_init', -2)
     args.squash = args.squash if args.squash is not None else algo_defaults.get('squash', False)
-    args.normalize_policy_grads = args.normalize_policy_grads if args.normalize_policy_grads is not None else algo_defaults.get('normalize_policy_grads', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
     args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else algo_defaults.get('clip_range', 0.2)
     args.clip_range_vf = convert_clip_range(args.clip_range_vf) if args.clip_range_vf is not None else algo_defaults.get('clip_range_vf', 0.2)
@@ -446,7 +444,6 @@ def process_policy_kwargs(args):
             "ent_coef": args.ent_coef,
             "vf_coef": args.vf_coef,
             "n_steps": args.n_steps,
-            "normalize_policy_grads": args.normalize_policy_grads,
             "batch_size": args.batch_size,
             "gae_lambda": args.gae_lambda,
             "gamma": args.gamma,
@@ -504,7 +501,6 @@ def process_policy_kwargs(args):
             "ent_coef": args.ent_coef,
             "n_steps": args.n_steps,
             "vf_coef": args.vf_coef,
-            "normalize_policy_grads": args.normalize_policy_grads,
             "gae_lambda": args.gae_lambda,
             "gamma": args.gamma,
             "total_n_steps": args.total_n_steps,
@@ -567,11 +563,10 @@ def process_policy_kwargs(args):
             "gradient_steps": args.gradient_steps,
             "max_q_grad_norm": args.max_q_grad_norm,
             "max_policy_grad_norm": args.max_policy_grad_norm,
-            "normalize_policy_grads": args.normalize_policy_grads,
             "verbose": args.verbose,
              "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
-                "shared_tree_struct": args.shared_tree_struct,
                 "n_critics": args.n_critics,
+                "q_func_type": args.q_func_type,
                 "tree_struct": {
                     "max_depth": args.max_depth,
                     "n_bins": args.n_bins,
@@ -632,7 +627,6 @@ def process_policy_kwargs(args):
             "max_value_grad_norm": args.max_value_grad_norm,
             "is_categorical": True if args.env_type == 'minigrid' else False,
             "ent_coef": args.ent_coef,
-            "normalize_policy_grads": args.normalize_policy_grads,
             "batch_size": args.batch_size,
             "beta": args.beta,
             "buffer_size": args.buffer_size,

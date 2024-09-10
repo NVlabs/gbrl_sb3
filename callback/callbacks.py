@@ -18,7 +18,6 @@ from typing import Any, Dict
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
-from algos.sac_nn_critic import SAC_GBRLCriticNN
 
 
 class GradientHistogramCallback(BaseCallback):
