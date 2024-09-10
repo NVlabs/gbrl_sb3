@@ -105,6 +105,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
             tensorboard_log: str = None, 
             verbose: int = 1,
             device: str = 'cpu',
+            _init_setup_model: bool= False,
     ):
         
         tr_freq = TrainFreq(train_freq, TrainFrequencyUnit.STEP)
@@ -153,7 +154,8 @@ class SAC_GBRL(OffPolicyAlgorithm):
         self.accum_gradient_steps = 0
         self.prev_timesteps = 0
 
-        self._setup_model()
+        if _init_setup_model:
+            self._setup_model()
 
     def _setup_model(self) -> None:
         super()._setup_model()

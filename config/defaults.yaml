@@ -283,7 +283,7 @@ distillation:
     lr: 1.0
     capacity: 20000
 compression: 
-  compress: True
+  compress: False
   compress_kwargs:
     max_steps: 1000
     k: 500
