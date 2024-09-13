@@ -238,9 +238,6 @@ class ActorCriticPolicy(BasePolicy):
                 value_lr = 0.0
         else:
             policy_lr, value_lr = lrs
-            policy_lr = policy_lr[0]
-            value_lr = value_lr[0]
-
         return policy_lr, value_lr
     
     def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False) -> th.Tensor:

@@ -31,7 +31,7 @@ gbrl_params:
   control_variates: False
   split_score_func: "cosine"
   generator_type: "Quantile"
-  shared_tree_struct: False
+  shared_tree_struct: True
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
@@ -57,7 +57,7 @@ tree_optimizer:
 tree_struct:
   max_depth: 4
   grow_policy: oblivious
-  n_bins: 50
+  n_bins: 250
   min_data_in_leaf: 0
   par_th: 2
 ppo_gbrl:
@@ -67,7 +67,7 @@ ppo_gbrl:
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-    frame_skip: 4
+    frame_skip: 1
   n_steps: 128
   gamma: 0.99
   nn_critic: False
@@ -85,7 +85,7 @@ ppo_gbrl:
   ent_coef: 0.0
   vf_coef: 0.871923
   max_policy_grad_norm: null
-  max_value_grad_norm: 1.0
+  max_value_grad_norm: null
   policy_bound_loss_weight: null
   fixed_std: False
   log_std_init: -2
