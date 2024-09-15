@@ -158,10 +158,10 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
 
         # else:
         # Transform the observation in some way
-        frame_t = observation[0][:, :2]
-        frame_prev_t = observation[1][:, :2]
-        # frame_t = observation[-1][:, :2]
-        # frame_prev_t = observation[-2][:, :2]
+        # frame_t = observation[0][:, :2]
+        # frame_prev_t = observation[1][:, :2]
+        frame_t = observation[-1][:, :2]
+        frame_prev_t = observation[-2][:, :2]
         delta_frame = frame_t - frame_prev_t
         player_position = frame_t[0, :2]
         enemy_position = frame_t[1, :2]
