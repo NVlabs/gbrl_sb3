@@ -164,7 +164,6 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         frame_prev_t = observation[-2][:, :2]
         delta_frame = frame_t - frame_prev_t
         player_position = frame_t[0, :2]
-        # enemy_position = frame_t[1, :2]
         other_positions = frame_t[1:, :2]
         
         # Vectorized L2 norm (Euclidean distance)

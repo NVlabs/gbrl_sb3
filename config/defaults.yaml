@@ -286,7 +286,7 @@ compression:
   compress: False
   compress_kwargs:
     max_steps: 1000
-    k: 500
+    trees_to_keep: 500
     gradient_steps: 500
     method: 'best_k'
     least_squares_W: True

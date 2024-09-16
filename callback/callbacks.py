@@ -172,6 +172,8 @@ class ActorCriticCompressionCallback(BaseCallback):
         print('capacity', self.capacity)
         del params['max_steps']
         del params['capacity']
+        params['k'] = params['max_steps'] - params['trees_to_keep']
+        del params['trees_to_keep']
         self.params = params
         
         self.dist_type = None 
