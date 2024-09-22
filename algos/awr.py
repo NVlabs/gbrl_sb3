@@ -57,7 +57,9 @@ class AWR_GBRL(OffPolicyAlgorithm):
                  is_categorical: bool = False,
                  reward_mode: str = 'gae',
                  device: str = 'cpu',
-                 tensorboard_log: str = None):
+                 tensorboard_log: str = None,
+                 _init_setup_model: bool = True,
+                 ):
 
         assert policy_kwargs is not None, "Policy kwargs cannot be none!"
         self.shared_tree_struct = policy_kwargs.get("shared_tree_struct", True)

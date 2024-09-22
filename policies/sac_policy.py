@@ -135,7 +135,7 @@ class ContinuousCritic(BaseModel):
                 return tuple(q_net(qvalue_input) for q_net in self.q_models)
         q_s = []
         for q_net in self.q_models:
-            weights, bias = q_net(obs, requires_grad, target) 
+            weights, bias = q_net(obs, requires_grad, target, tensor=True) 
             dot = (weights * actions).sum(dim=1)
             if self.q_func_type == 'linear':
                 q = (dot + bias.squeeze())
@@ -274,7 +274,7 @@ class Actor(BasePolicy):
         :return:
             Mean, standard deviation and optional keyword arguments.
         """
-        mean_actions, log_std = self.model(obs, requires_grad)
+        mean_actions, log_std = self.model(obs, requires_grad, tensor=True)
         # Unstructured exploration (Original implementation)
         # Original Implementation to cap the standard deviation
         return mean_actions, th.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX), {}

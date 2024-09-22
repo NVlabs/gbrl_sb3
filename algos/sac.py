@@ -299,10 +299,10 @@ class SAC_GBRL(OffPolicyAlgorithm):
             mu_mins.append(mu.min().item())
             log_std_maxs.append(log_std.max().item())
             log_std_mins.append(log_std.min().item())
-            mu_grads_maxs.append(np.max(mu_grad))
-            mu_grads_mins.append(np.min(mu_grad))
-            log_std_grads_maxs.append(np.max(log_std_grad))
-            log_std_grads_mins.append(np.min(log_std_grad))
+            mu_grads_maxs.append(mu_grad.max().item())
+            mu_grads_mins.append(mu_grad.min().item())
+            log_std_grads_maxs.append(log_std_grad.max().item())
+            log_std_grads_mins.append(log_std_grad.min().item())
 
         self._n_updates += gradient_steps
         

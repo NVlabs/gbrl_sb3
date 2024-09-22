@@ -204,10 +204,10 @@ class ActorCriticPolicy(BasePolicy):
         :return: Action distribution
         """
         if self.nn_critic:
-            mean_actions = self.model(obs, requires_grad)
+            mean_actions = self.model(obs, requires_grad, tensor=True)
             values = self.value_net(obs)
         else:
-            mean_actions, values = self.model(obs, requires_grad)
+            mean_actions, values = self.model(obs, requires_grad, tensor=True)
         if isinstance(self.action_dist, SquashedDiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, DiagGaussianDistribution):
@@ -333,7 +333,7 @@ class ActorCriticPolicy(BasePolicy):
     def get_num_trees(self):
         return self.model.get_num_trees()
     
-    def predict_values(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool=False) -> th.Tensor:
+    def predict_values(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True) -> th.Tensor:
         """
         Get the estimated values according to the current policy given the observations.
 
@@ -344,7 +344,7 @@ class ActorCriticPolicy(BasePolicy):
             if not isinstance(obs, th.Tensor):
                 obs = th.tensor(obs, device=self.device)
             return self.value_net(obs)
-        return self.model.predict_values(obs, requires_grad)
+        return self.model.predict_values(obs, requires_grad, tensor=True)
 
     def critic(self, obs: Union[th.Tensor, np.ndarray]) -> th.Tensor:
         return self.predict_values(obs)

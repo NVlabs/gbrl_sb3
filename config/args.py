@@ -267,11 +267,12 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    args.env_type = args.env_type if args.env_type else 'ocatari'
+    # args.env_type = args.env_type if args.env_type else 'ocatari'
+    args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
-    args.env_name = args.env_name if args.env_name else 'Gopher-v4'
+    args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
