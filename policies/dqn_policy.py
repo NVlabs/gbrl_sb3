@@ -81,13 +81,13 @@ class DQNPolicy(BasePolicy):
         return self._predict(obs, deterministic=deterministic, requires_grad=requires_grad)
 
     def _predict(self, obs: th.Tensor, deterministic: bool = True, requires_grad: bool = False) -> th.Tensor:
-        q_values = self.q_model(obs, requires_grad)
+        q_values = self.q_model(obs, requires_grad, tensor=True)
         # Greedy action
         action = q_values.argmax(dim=1).reshape(-1)
         return action
 
     def predict_target(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
-        return self.q_model.predict_target(obs)
+        return self.q_model.predict_target(obs, tensor=True)
 
     def set_training_mode(self, mode: bool) -> None:
         """

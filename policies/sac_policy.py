@@ -125,7 +125,7 @@ class ContinuousCritic(BaseModel):
                                             )
                 self.q_models.append(q_model)
 
-    def forward(self, obs: th.Tensor, actions: th.Tensor, target: bool, requires_grad: bool = False) -> Tuple[th.Tensor, ...]:
+    def forward(self, obs: th.Tensor, actions: th.Tensor, target: bool, requires_grad: bool = False, tensor: bool = True) -> Tuple[th.Tensor, ...]:
         if self.optimizer:
             self.optimizer.zero_grad()
         if self.q_func_type == 'nn':
@@ -135,7 +135,7 @@ class ContinuousCritic(BaseModel):
                 return tuple(q_net(qvalue_input) for q_net in self.q_models)
         q_s = []
         for q_net in self.q_models:
-            weights, bias = q_net(obs, requires_grad, target) 
+            weights, bias = q_net(obs, requires_grad, target, tensor=tensor) 
             dot = (weights * actions).sum(dim=1)
             if self.q_func_type == 'linear':
                 q = (dot + bias.squeeze())
@@ -274,7 +274,7 @@ class Actor(BasePolicy):
         :return:
             Mean, standard deviation and optional keyword arguments.
         """
-        mean_actions, log_std = self.model(obs, requires_grad)
+        mean_actions, log_std = self.model(obs, requires_grad, tensor=True)
         # Unstructured exploration (Original implementation)
         # Original Implementation to cap the standard deviation
         return mean_actions, th.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX), {}
@@ -485,6 +485,7 @@ class SACPolicy(BasePolicy):
 
     def predict_critic(self,  obs: th.Tensor, actions: th.Tensor, target: bool = False, requires_grad: bool = False):
         if self.critic_target is not None and target:
+            kwargs = {}
             return self.critic_target(obs, actions, target)
         return self.critic(obs, actions, target, requires_grad=requires_grad)
 

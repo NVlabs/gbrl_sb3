@@ -181,7 +181,7 @@ class ActorCriticPolicy(BasePolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
-        mean_actions, values = self.model(obs, requires_grad)
+        mean_actions, values = self.model(obs, requires_grad, tensor=True)
         if isinstance(self.action_dist, SquashedDiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, DiagGaussianDistribution):
@@ -306,7 +306,7 @@ class ActorCriticPolicy(BasePolicy):
         :param obs:
         :return: the estimated values.
         """
-        return self.model.predict_values(obs, requires_grad)
+        return self.model.predict_values(obs, requires_grad, tensor=True)
 
     def critic(self, obs: Union[th.Tensor, np.ndarray]) -> th.Tensor:
         return self.predict_values(obs)
