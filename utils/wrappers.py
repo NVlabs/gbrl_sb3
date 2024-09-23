@@ -151,26 +151,47 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         flattened_shape = env.observation_space.shape[0]
         if len(env.observation_space.shape) > 1:
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
+        if self.env.game_name == 'Gopher':
+            flattened_shape += 2*env.observation_space.shape[1]
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
-    def observation(self, observation):
-        # if self.env.game == 'Gopher':
-
-        # else:
-        # Transform the observation in some way
-        # frame_t = observation[0][:, :2]
-        # frame_prev_t = observation[1][:, :2]
+    def observation(self, observation: np.ndarray):
         frame_t = observation[-1][:, :2]
         frame_prev_t = observation[-2][:, :2]
-        delta_frame = frame_t - frame_prev_t
-        player_position = frame_t[0, :2]
-        other_positions = frame_t[1:, :2]
         
-        # Vectorized L2 norm (Euclidean distance)
-        distances = np.linalg.norm(other_positions - player_position, axis=1)
-        pos_and_speed = np.concatenate([frame_t, delta_frame], axis=-1).flatten()
-        return np.concatenate([pos_and_speed, distances])
+        player_position = frame_t[0, :2]
+        if self.env.game_name == 'Gopher':
+            positions = gopher_extraction(frame_t)
+            prev_positions = gopher_extraction(frame_prev_t)
+            delta_frame = positions - prev_positions
+            other_positions = positions[1:, :2]
+            distances = np.linalg.norm(other_positions - player_position, axis=1)
+            pos_and_speed = np.concatenate([positions, delta_frame], axis=-1).flatten()
+            return np.concatenate([pos_and_speed, distances])
+        else:
+            delta_frame = frame_t - frame_prev_t
+            other_positions = frame_t[1:, :2]
+            distances = np.linalg.norm(other_positions - player_position, axis=1)
+            pos_and_speed = np.concatenate([frame_t, delta_frame], axis=-1).flatten()
+            return np.concatenate([pos_and_speed, distances])
+        
+
+
+
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)
         return self.observation(observation), info
+
+def gopher_extraction(positions: np.ndarray) -> np.ndarray:
+    fixed_positions = np.zeros((len(positions), 3), dtype=numerical_dtype)
+    x_positions = positions[:, 0]
+    _, unique_idx = np.unique(x_positions, return_index=True)
+    unique_idx = sorted(unique_idx)
+    unique_y = positions[unique_idx, 1]
+    counts = np.sum(positions[:, 0][:, None] == x_positions[unique_idx], axis=0)
+    counts[positions[unique_idx][:, 0] == 0] = 0
+    final_positions = np.column_stack((x_positions[unique_idx], unique_y, counts))
+    fixed_positions[unique_idx, :2] = positions[unique_idx, :2]
+    fixed_positions[unique_idx, 2] = counts
+    return fixed_positions
