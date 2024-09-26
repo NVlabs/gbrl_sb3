@@ -17,6 +17,7 @@ from minigrid.wrappers import ObservationWrapper
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import obs_space_info
+from stable_baselines3.common.type_aliases import AtariResetReturn, AtariStepReturn
 
 from gym.core import ObsType
 
@@ -92,7 +93,50 @@ class CategoricalDummyVecEnv(DummyVecEnv):
         self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos: List[Dict[str, Any]] = [{} for _ in range(self.num_envs)]
 
+class CategoricalMaxAndSkipEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
+    """
+    Return only every ``skip``-th frame (frameskipping)
+    and return the max between the two last frames.
 
+    :param env: Environment to wrap
+    :param skip: Number of ``skip``-th frame
+        The same action will be taken ``skip`` times.
+    :param env: Environment dtype
+    """
+
+    def __init__(self, env: gym.Env, skip: int = 4, wrapper_dtype: np.dtype = np.float32) -> None:
+        super().__init__(env)
+        # most recent raw observations (for max pooling across time steps)
+        assert env.observation_space.dtype is not None, "No dtype specified for the observation space"
+        assert env.observation_space.shape is not None, "No shape defined for the observation space"
+        self._obs_buffer = np.zeros((2, *env.observation_space.shape), dtype=wrapper_dtype)
+        self._skip = skip
+
+    def step(self, action: int) -> AtariStepReturn:
+        """
+        Step the environment with the given action
+        Repeat action, sum reward, and max over last observations.
+
+        :param action: the action
+        :return: observation, reward, terminated, truncated, information
+        """
+        total_reward = 0.0
+        terminated = truncated = False
+        for i in range(self._skip):
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            done = terminated or truncated
+            if i == self._skip - 2:
+                self._obs_buffer[0] = obs
+            if i == self._skip - 1:
+                self._obs_buffer[1] = obs
+            total_reward += float(reward)
+            if done:
+                break
+        # Note that the observation on the done=True frame
+        # doesn't matter
+        max_frame = self._obs_buffer.max(axis=0)
+
+        return max_frame, total_reward, terminated, truncated, info
 class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
     """
     Atari 2600 preprocessings
@@ -139,7 +183,7 @@ class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
             env = NoopResetEnv(env, noop_max=noop_max)
         # frame_skip=1 is the same as no frame-skip (action repeat)
         if frame_skip > 1:
-            env = MaxAndSkipEnv(env, skip=frame_skip)
+            env = CategoricalMaxAndSkipEnv(env, skip=frame_skip, wrapper_dtype=object if hasattr(env, 'is_mixed') and env.is_mixed else env.observation_space.dtype)
         if terminal_on_life_loss:
             env = EpisodicLifeEnv(env)
         if "FIRE" in env.unwrapped.get_action_meanings():  # type: ignore[attr-defined]
@@ -181,10 +225,6 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             distances = np.linalg.norm(other_positions - player_position, axis=1)
             pos_and_speed = np.concatenate([frame_t, delta_frame], axis=-1).flatten()
             return np.concatenate([pos_and_speed, distances])
-        
-
-
-
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)
