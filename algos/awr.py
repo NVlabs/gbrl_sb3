@@ -54,7 +54,6 @@ class AWR_GBRL(OffPolicyAlgorithm):
                  policy_kwargs: Dict = None,
                  seed: int = 0,
                  verbose: int = 1,
-                 is_categorical: bool = False,
                  reward_mode: str = 'gae',
                  device: str = 'cpu',
                  tensorboard_log: str = None,
@@ -68,6 +67,10 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
             else:
                 log_std_lr = float(log_std_lr)
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
+        self.is_categorical = is_categorical
+        self.is_mixed = is_mixed
         if is_categorical:
             policy_kwargs['is_categorical'] = True
         print("is_Categorical: ", is_categorical)
@@ -87,6 +90,8 @@ class AWR_GBRL(OffPolicyAlgorithm):
         buffer_kwargs = {'gae_lambda': gae_lambda, 'gamma': gamma, 'return_type': reward_mode}
         if not is_categorical:
             buffer_kwargs['env'] = env
+        if is_mixed:
+            buffer_kwargs['is_mixed'] = True
         
         tr_freq = train_freq // env.num_envs
         policy_kwargs['tree_optimizer']['device'] = device

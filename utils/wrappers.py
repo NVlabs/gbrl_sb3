@@ -26,6 +26,8 @@ MAX_TEXT_LENGTH = 128 - 1
 numerical_dtype = np.dtype('float32')
 categorical_dtype = np.dtype('S128')  
 
+MIXED_ENVS = ['Gopher']
+
 class CategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -33,6 +35,7 @@ class CategoricalObservationWrapper(ObservationWrapper):
         self.image_shape = self.observation_space['image'].shape
         self.flattened_shape = self.image_shape[0]*self.image_shape[1] + 2
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
+        env.is_categorical = True
          
     def observation(self, observation):
         # Transform the observation in some way
@@ -65,7 +68,7 @@ class CategoricalDummyVecEnv(DummyVecEnv):
 
     actions: np.ndarray
 
-    def __init__(self, env_fns: List[Callable[[], gym.Env]]):
+    def __init__(self, env_fns: List[Callable[[], gym.Env]], is_mixed: bool = False):
         self.envs = [_patch_env(fn()) for fn in env_fns]
         if len(set([id(env.unwrapped) for env in self.envs])) != len(self.envs):
             raise ValueError(
@@ -81,8 +84,10 @@ class CategoricalDummyVecEnv(DummyVecEnv):
         super().__init__(env_fns)
         obs_space = env.observation_space
         self.keys, shapes, _ = obs_space_info(obs_space)
+        self.is_mixed = is_mixed
+        self.is_categorical = True
 
-        self.buf_obs = OrderedDict([(k, np.zeros((self.num_envs, *tuple(shapes[k])), dtype=categorical_dtype)) for k in self.keys])
+        self.buf_obs = OrderedDict([(k, np.zeros((self.num_envs, *tuple(shapes[k])), dtype=object if is_mixed else categorical_dtype)) for k in self.keys])
         self.buf_dones = np.zeros((self.num_envs,), dtype=bool)
         self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos: List[Dict[str, Any]] = [{} for _ in range(self.num_envs)]
@@ -152,23 +157,25 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         if len(env.observation_space.shape) > 1:
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         if self.env.game_name == 'Gopher':
-            flattened_shape += 2*env.observation_space.shape[1]
-        env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
+            flattened_shape = 12
+            env.is_mixed = True
+        env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32 )
         
     def observation(self, observation: np.ndarray):
         frame_t = observation[-1][:, :2]
         frame_prev_t = observation[-2][:, :2]
         
-        player_position = frame_t[0, :2]
+        
         if self.env.game_name == 'Gopher':
-            positions = gopher_extraction(frame_t)
-            prev_positions = gopher_extraction(frame_prev_t)
-            delta_frame = positions - prev_positions
-            other_positions = positions[1:, :2]
-            distances = np.linalg.norm(other_positions - player_position, axis=1)
-            pos_and_speed = np.concatenate([positions, delta_frame], axis=-1).flatten()
-            return np.concatenate([pos_and_speed, distances])
+            return gopher_extraction(frame_t)
+            # prev_positions = gopher_extraction(frame_prev_t)
+            # delta_frame = positions - prev_positions
+            # other_positions = positions[1:, :2]
+            # distances = np.linalg.norm(other_positions - player_position, axis=1)
+            # pos_and_speed = np.concatenate([positions, delta_frame], axis=-1).flatten()
+            # return np.concatenate([pos_and_speed, distances])
         else:
+            player_position = frame_t[0, :2]
             delta_frame = frame_t - frame_prev_t
             other_positions = frame_t[1:, :2]
             distances = np.linalg.norm(other_positions - player_position, axis=1)
@@ -184,14 +191,57 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         return self.observation(observation), info
 
 def gopher_extraction(positions: np.ndarray) -> np.ndarray:
-    fixed_positions = np.zeros((len(positions), 3), dtype=numerical_dtype)
-    x_positions = positions[:, 0]
-    _, unique_idx = np.unique(x_positions, return_index=True)
-    unique_idx = sorted(unique_idx)
-    unique_y = positions[unique_idx, 1]
-    counts = np.sum(positions[:, 0][:, None] == x_positions[unique_idx], axis=0)
-    counts[positions[unique_idx][:, 0] == 0] = 0
-    final_positions = np.column_stack((x_positions[unique_idx], unique_y, counts))
-    fixed_positions[unique_idx, :2] = positions[unique_idx, :2]
-    fixed_positions[unique_idx, 2] = counts
-    return fixed_positions
+    def get_orientation(player_x, object_x):
+        if player_x > object_x:
+            return 'right'
+        elif player_x < object_x:
+            return 'left'
+        else:
+            return 'below'
+    
+    player_position = positions[0]
+    empty_block_first_idx = 5
+    empty_blocks = positions[empty_block_first_idx:]
+    unique_x, unique_idx = np.unique(empty_blocks[:, 0], return_index=True)
+    counts = np.sum(empty_blocks[:, 0][:, None] == empty_blocks[unique_idx, 0], axis=0)
+    counts[empty_blocks[unique_idx][:, 0] == 0] = 0
+    aligned_blocks_exist = (counts == 3).any()
+    almost_aligned_block_exist = (counts == 2).any()
+
+    nearest_aligned_pos = np.array([0, 0])
+    aligned_orientation = 'None'
+    aligned_dist = 0
+    if aligned_blocks_exist:
+        aligned_x = unique_x[counts == 3]
+        aligned_pos = empty_blocks[np.isin(empty_blocks[:, 0], aligned_x)]
+        aligned_dist = np.linalg.norm(player_position - aligned_pos, axis=1)
+        nearest_aligned_pos = aligned_pos[np.argmin(aligned_dist)]
+        aligned_dist = np.min(aligned_dist)
+        aligned_orientation = get_orientation(player_position[0], aligned_x[0])
+
+    nearest_almost_aligned_pos = np.array([0, 0])
+    almost_aligned_orientation = 'None'
+    almost_aligned_dist = 0
+    if almost_aligned_block_exist:
+        almost_aligned_x = unique_x[counts == 2]
+        almost_aligned_pos = empty_blocks[np.isin(empty_blocks[:, 0], almost_aligned_x)]
+        almost_aligned_dist = np.linalg.norm(player_position - almost_aligned_pos, axis=1)
+        nearest_almost_aligned_pos = almost_aligned_pos[np.argmin(almost_aligned_dist)]
+        almost_aligned_dist = np.min(almost_aligned_dist)
+        almost_aligned_orientation = get_orientation(player_position[0], almost_aligned_x[0])
+    
+    return np.array([player_position[0], player_position[1], str(aligned_blocks_exist), nearest_aligned_pos[0], nearest_aligned_pos[1],
+                     aligned_dist, aligned_orientation, str(almost_aligned_block_exist), nearest_almost_aligned_pos[0], 
+                     nearest_almost_aligned_pos[1], almost_aligned_dist, almost_aligned_orientation], dtype=object)
+    # fixed_positions = np.zeros((len(positions), 3), dtype=numerical_dtype)
+    # x_positions = positions[:, 0]
+    # _, unique_idx = np.unique(x_positions, return_index=True)
+    # unique_idx = sorted(unique_idx)
+    # unique_y = positions[unique_idx, 1]
+    # counts = np.sum(positions[:, 0][:, None] == x_positions[unique_idx], axis=0)
+    # counts[positions[unique_idx][:, 0] == 0] = 0
+    
+    # final_positions = np.column_stack((x_positions[unique_idx], unique_y, counts))
+    # fixed_positions[unique_idx, :2] = positions[unique_idx, :2]
+    # fixed_positions[unique_idx, 2] = counts
+    # return fixed_positions

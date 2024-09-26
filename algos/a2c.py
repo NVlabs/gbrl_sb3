@@ -93,7 +93,6 @@ class A2C_GBRL(OnPolicyAlgorithm):
         log_std_lr: float = 3e-4,
         min_log_std_lr: float = 3e-45,
         verbose: int = 0,
-        is_categorical: bool = False,
         seed: Optional[int] = None,
         total_n_steps: int = 1e6,
         device: str = "cpu",
@@ -111,7 +110,10 @@ class A2C_GBRL(OnPolicyAlgorithm):
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         self.is_categorical = is_categorical
+        self.is_mixed = is_mixed
 
         if is_categorical:
             policy_kwargs['is_categorical'] = True
@@ -165,6 +167,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.env.num_envs,
+            is_mixed=self.is_mixed,
         )
         # pytype:disable=not-instantiable
         self.policy = self.policy_class(  # type: ignore[assignment]

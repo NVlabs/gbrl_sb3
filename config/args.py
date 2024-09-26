@@ -267,13 +267,16 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    # args.env_type = args.env_type if args.env_type else 'ocatari'
-    args.env_type = args.env_type if args.env_type else 'mujoco'
+    args.env_type = args.env_type if args.env_type else 'ocatari'
+    # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
-    args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
+    # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
-    args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
+    # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
+    args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -457,7 +460,6 @@ def process_policy_kwargs(args):
             "n_epochs": args.n_epochs,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "ent_coef": args.ent_coef,
             "vf_coef": args.vf_coef,
             "n_steps": args.n_steps,
@@ -516,7 +518,6 @@ def process_policy_kwargs(args):
             "normalize_advantage": args.normalize_advantage,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "ent_coef": args.ent_coef,
             "n_steps": args.n_steps,
             "vf_coef": args.vf_coef,
@@ -645,7 +646,6 @@ def process_policy_kwargs(args):
             "normalize_advantage": args.normalize_advantage,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "ent_coef": args.ent_coef,
             "batch_size": args.batch_size,
             "beta": args.beta,
@@ -705,7 +705,6 @@ def process_policy_kwargs(args):
     elif args.algo_type == 'dqn_gbrl':
         return {
             "max_q_grad_norm": args.max_q_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "normalize_q_grads": args.normalize_q_grads,
             "batch_size": args.batch_size,
             "buffer_size": args.buffer_size,

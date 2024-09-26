@@ -97,7 +97,6 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  policy: Type[BasePolicy]= ActorCriticPolicy,
                  normalize_advantage: bool = True, 
                  target_kl: float = None,
-                 is_categorical: bool = False, 
                  max_policy_grad_norm: float = None,
                  max_value_grad_norm: float = None,
                  vf_coef: float = 0.5,
@@ -163,7 +162,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
-
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         if is_categorical:
             policy_kwargs['is_categorical'] = True
 
@@ -199,6 +199,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
          )
         self.env = env
         self.is_categorical = is_categorical
+        self.is_mixed = is_mixed
 
         self.log_data = None
         self.rollout_cntr = 0
@@ -251,6 +252,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.env.num_envs,
+            is_mixed=self.is_mixed
         )
         # pytype:disable=not-instantiable
         self.policy = self.policy_class(  # type: ignore[assignment]

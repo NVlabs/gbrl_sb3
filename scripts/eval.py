@@ -56,7 +56,6 @@ if __name__ == '__main__':
     parser.add_argument('--env_name', type=str)  
     parser.add_argument('--folder_path', type=str, default=str(ROOT_PATH / 'saved_models'))
     # env args
-    parser.add_argument('--verbose', type=int)
     # parser.add_argument('--total_n_steps', type=int)
     parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cpu')
     parser.add_argument('--model_name', type=str)

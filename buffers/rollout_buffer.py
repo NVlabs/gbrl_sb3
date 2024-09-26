@@ -72,15 +72,18 @@ class CategoricalRolloutBuffer(BaseBuffer):
         gae_lambda: float = 1,
         gamma: float = 0.99,
         n_envs: int = 1,
+        is_mixed: bool = False,
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
         self.gae_lambda = gae_lambda
         self.gamma = gamma
         self.generator_ready = False
+        self.is_mixed = is_mixed
         self.reset()
+        
 
     def reset(self) -> None:
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=categorical_dtype)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if self.is_mixed else categorical_dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -208,10 +211,10 @@ class CategoricalRolloutBuffer(BaseBuffer):
         :return:
         """
         if copy:
-            if array.dtype == categorical_dtype:
+            if array.dtype == categorical_dtype or array.dtype == object:
                 return np.copy(array)
             return th.tensor(array, device=self.device)
-        if array.dtype == categorical_dtype:
+        if array.dtype == categorical_dtype or array.dtype == object:
             return array
         return th.as_tensor(array, device=self.device)
 
