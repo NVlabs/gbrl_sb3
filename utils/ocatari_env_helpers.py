@@ -67,7 +67,6 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
     ball_distance = np.linalg.norm(player_position - ball_position)
     ball_orientation = get_x_orientation(player_position[0], ball_position[0])
     ball_velocity = ball_position - prev_ball_position
-    n_columns = 8
     n_rows  = 6
 
     empty_block_first_idx = 2
@@ -91,3 +90,24 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
                      str(ball_orientation), ball_velocity[0], ball_velocity[1]], dtype=object)
 
     return np.append(info, columns)
+
+def general_extraction(positions: np.ndarray) -> np.ndarray:
+    player_position = positions[0]
+    distances = np.linalg.norm(player_position - positions, axis=1)
+    delta_x = player_position[0] - positions[:, 0]
+    delta_x[delta_x < 0] = -1
+    delta_x[delta_x > 0] = 1
+    delta_y = player_position[1] - positions[:, 1]
+    delta_y[delta_y < 0] = -1
+    delta_y[delta_y > 0] = 1
+    delta_x = delta_x.astype(str)
+    delta_x[delta_x == '-1.0'] = 'left'
+    delta_x[delta_x == '1.0'] = 'right'
+    delta_y = delta_y.astype(str)
+    delta_y[delta_y == '-1.0'] = 'below'
+    delta_y[delta_y == '1.0'] = 'above'
+    info = np.concatenate([player_position, distances, delta_x, delta_y], axis=0, dtype=object)
+    return info.flatten()
+
+    
+    

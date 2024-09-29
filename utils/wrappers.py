@@ -14,7 +14,10 @@ from gym.core import ObsType
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
 from utils.ocatari_env_helpers import (gopher_extraction,
-                                       breakout_extraction)
+                                       breakout_extraction,
+                                    #    alien_extraction,
+                                    #    kangaroo_extraction,
+                                       general_extraction)
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
                                                      EpisodicLifeEnv,
                                                      FireResetEnv,
@@ -32,7 +35,7 @@ MAX_TEXT_LENGTH = 128 - 1
 numerical_dtype = np.dtype('float32')
 categorical_dtype = np.dtype('S128')  
 
-MIXED_ENVS = ['Gopher', 'Breakout']
+MIXED_ENVS = ['Gopher', 'Breakout', 'Alien', 'Kangaroo', 'SpaceInvaders']
 
 class CategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
@@ -211,6 +214,15 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'Breakout':
             flattened_shape = 26
             env.is_mixed = True
+        elif self.env.game_name == 'Alien':
+            flattened_shape = 485
+            env.is_mixed = True
+        elif self.env.game_name == 'Kangaroo':
+            flattened_shape = 146
+            env.is_mixed = True
+        elif self.env.game_name == 'SpaceInvaders':
+            flattened_shape = 134
+            env.is_mixed = True
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32 )
         
     def observation(self, observation: np.ndarray):
@@ -222,13 +234,18 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             return gopher_extraction(frame_t)
         elif self.env.game_name == 'Breakout':
             return breakout_extraction(frame_t, frame_prev_t)
+        # elif self.env.game_name == 'Alien':
+        #     return alien_extraction(frame_t)
+        # elif self.env.game_name == 'Kangaroo':
+        #     return kangaroo_extraction(frame_t)
         else:
-            player_position = frame_t[0, :2]
-            delta_frame = frame_t - frame_prev_t
-            other_positions = frame_t[1:, :2]
-            distances = np.linalg.norm(other_positions - player_position, axis=1)
-            pos_and_speed = np.concatenate([frame_t, delta_frame], axis=-1).flatten()
-            return np.concatenate([pos_and_speed, distances])
+            return general_extraction(frame_t)
+            # player_position = frame_t[0, :2]
+            # delta_frame = frame_t - frame_prev_t
+            # other_positions = frame_t[1:, :2]
+            # distances = np.linalg.norm(other_positions - player_position, axis=1)
+            # pos_and_speed = np.concatenate([frame_t, delta_frame], axis=-1).flatten()
+            # return np.concatenate([pos_and_speed, distances])
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)
