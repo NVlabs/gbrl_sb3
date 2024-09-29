@@ -10,16 +10,21 @@ from typing import Any, Callable, Dict, List, OrderedDict
 
 import gymnasium as gym
 import numpy as np
-from stable_baselines3.common.atari_wrappers import ClipRewardEnv, EpisodicLifeEnv, FireResetEnv, MaxAndSkipEnv, NoopResetEnv, StickyActionEnv
-import torch as th
+from gym.core import ObsType
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
+from utils.ocatari_env_helpers import (gopher_extraction,
+                                       breakout_extraction)
+from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
+                                                     EpisodicLifeEnv,
+                                                     FireResetEnv,
+                                                     NoopResetEnv,
+                                                     StickyActionEnv)
+from stable_baselines3.common.type_aliases import (
+                                                   AtariStepReturn)
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import obs_space_info
-from stable_baselines3.common.type_aliases import AtariResetReturn, AtariStepReturn
-
-from gym.core import ObsType
 
 IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 MAX_TEXT_LENGTH = 128 - 1
@@ -218,6 +223,8 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             # distances = np.linalg.norm(other_positions - player_position, axis=1)
             # pos_and_speed = np.concatenate([positions, delta_frame], axis=-1).flatten()
             # return np.concatenate([pos_and_speed, distances])
+        elif self.env.game_name == 'Breakout':
+            return breakout_extraction(frame_t, frame_prev_t)
         else:
             player_position = frame_t[0, :2]
             delta_frame = frame_t - frame_prev_t
@@ -230,53 +237,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         observation, info = self.env.reset(seed=seed)
         return self.observation(observation), info
 
-def gopher_extraction(positions: np.ndarray) -> np.ndarray:
-    def get_orientation(player_x, object_x):
-        if player_x > object_x:
-            return 'right'
-        elif player_x < object_x:
-            return 'left'
-        else:
-            return 'below'
-    
-    player_position = positions[0]
-    gopher_position = positions[1]
-    gopher_distance = np.linalg.norm(player_position - gopher_position, axis=1)
-    gopher_orientation = get_orientation(player_position[0], gopher_position[0])
-    empty_block_first_idx = 5
-    empty_blocks = positions[empty_block_first_idx:]
-    unique_x, unique_idx = np.unique(empty_blocks[:, 0], return_index=True)
-    counts = np.sum(empty_blocks[:, 0][:, None] == empty_blocks[unique_idx, 0], axis=0)
-    counts[empty_blocks[unique_idx][:, 0] == 0] = 0
-    aligned_blocks_exist = (counts == 3).any()
-    almost_aligned_block_exist = (counts == 2).any()
 
-    nearest_aligned_pos = np.array([0, 0])
-    aligned_orientation = 'None'
-    aligned_dist = 0
-    if aligned_blocks_exist:
-        aligned_x = unique_x[counts == 3]
-        aligned_pos = empty_blocks[np.isin(empty_blocks[:, 0], aligned_x)]
-        aligned_dist = np.linalg.norm(player_position - aligned_pos, axis=1)
-        nearest_aligned_pos = aligned_pos[np.argmin(aligned_dist)]
-        aligned_dist = np.min(aligned_dist)
-        aligned_orientation = get_orientation(player_position[0], aligned_x[0])
-
-    nearest_almost_aligned_pos = np.array([0, 0])
-    almost_aligned_orientation = 'None'
-    almost_aligned_dist = 0
-    if almost_aligned_block_exist:
-        almost_aligned_x = unique_x[counts == 2]
-        almost_aligned_pos = empty_blocks[np.isin(empty_blocks[:, 0], almost_aligned_x)]
-        almost_aligned_dist = np.linalg.norm(player_position - almost_aligned_pos, axis=1)
-        nearest_almost_aligned_pos = almost_aligned_pos[np.argmin(almost_aligned_dist)]
-        almost_aligned_dist = np.min(almost_aligned_dist)
-        almost_aligned_orientation = get_orientation(player_position[0], almost_aligned_x[0])
-    
-    return np.array([player_position[0], player_position[1], gopher_position[0], gopher_position[1], gopher_distance, 
-                     str(gopher_orientation),str(aligned_blocks_exist), nearest_aligned_pos[0], nearest_aligned_pos[1],
-                     aligned_dist, aligned_orientation, str(almost_aligned_block_exist), nearest_almost_aligned_pos[0], 
-                     nearest_almost_aligned_pos[1], almost_aligned_dist, almost_aligned_orientation], dtype=object)
     # fixed_positions = np.zeros((len(positions), 3), dtype=numerical_dtype)
     # x_positions = positions[:, 0]
     # _, unique_idx = np.unique(x_positions, return_index=True)

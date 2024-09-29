@@ -74,7 +74,7 @@ if __name__ == '__main__':
             make_ram_atari_env = make_ram_ocatari_env
             print("Using Ocatari environment")
             vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ENVS else vec_env_cls
-            vec_env_kwargs = {'is_mixed': True}
+            vec_env_kwargs = {'is_mixed': True} if args.env_name.split('-')[0] in MIXED_ENVS else vec_env_kwargs
         env = make_ram_atari_env(args.env_name, n_envs=args.num_envs, seed=args.seed, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
         if args.evaluate:
             eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
