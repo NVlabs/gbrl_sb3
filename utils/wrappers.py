@@ -212,7 +212,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             flattened_shape = 16
             env.is_mixed = True
         elif self.env.game_name == 'Breakout':
-            flattened_shape = 26
+            flattened_shape = 29
             env.is_mixed = True
         elif self.env.game_name == 'Alien':
             flattened_shape = 485
@@ -228,7 +228,6 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
     def observation(self, observation: np.ndarray):
         frame_t = observation[-1][:, :2]
         frame_prev_t = observation[-2][:, :2]
-        
         
         if self.env.game_name == 'Gopher':
             return gopher_extraction(frame_t)
