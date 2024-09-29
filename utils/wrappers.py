@@ -201,7 +201,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         if len(env.observation_space.shape) > 1:
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         if self.env.game_name == 'Gopher':
-            flattened_shape = 12
+            flattened_shape = 16
             env.is_mixed = True
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32 )
         
@@ -240,6 +240,9 @@ def gopher_extraction(positions: np.ndarray) -> np.ndarray:
             return 'below'
     
     player_position = positions[0]
+    gopher_position = positions[1]
+    gopher_distance = np.linalg.norm(player_position - gopher_position, axis=1)
+    gopher_orientation = get_orientation(player_position[0], gopher_position[0])
     empty_block_first_idx = 5
     empty_blocks = positions[empty_block_first_idx:]
     unique_x, unique_idx = np.unique(empty_blocks[:, 0], return_index=True)
@@ -270,7 +273,8 @@ def gopher_extraction(positions: np.ndarray) -> np.ndarray:
         almost_aligned_dist = np.min(almost_aligned_dist)
         almost_aligned_orientation = get_orientation(player_position[0], almost_aligned_x[0])
     
-    return np.array([player_position[0], player_position[1], str(aligned_blocks_exist), nearest_aligned_pos[0], nearest_aligned_pos[1],
+    return np.array([player_position[0], player_position[1], gopher_position[0], gopher_position[1], gopher_distance, 
+                     str(gopher_orientation),str(aligned_blocks_exist), nearest_aligned_pos[0], nearest_aligned_pos[1],
                      aligned_dist, aligned_orientation, str(almost_aligned_block_exist), nearest_almost_aligned_pos[0], 
                      nearest_almost_aligned_pos[1], almost_aligned_dist, almost_aligned_orientation], dtype=object)
     # fixed_positions = np.zeros((len(positions), 3), dtype=numerical_dtype)

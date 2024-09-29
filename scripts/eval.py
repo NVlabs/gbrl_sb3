@@ -28,7 +28,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed
 from utils.wrappers import (CategoricalDummyVecEnv,
                             CategoricalObservationWrapper,
-                            NeuroSymbolicAtariWrapper)
+                            MIXED_ENVS)
 
 warnings.filterwarnings("ignore")
 
@@ -94,10 +94,14 @@ if __name__ == '__main__':
     eval_env = None
     if 'atari' in args.env_type:
         env_kwargs = {'full_action_space': False}
+        vec_env_cls = None
+        vec_env_kwargs = None
         if args.env_type == "ocatari":
             make_ram_atari_env = make_ram_ocatari_env
-            print("\n\nUsing Ocatari environment\n\n")
-        eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs) 
+            print("Using Ocatari environment")
+            vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ENVS else vec_env_cls
+            vec_env_kwargs = {'is_mixed': True}
+        eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
 
         if args.atari_wrapper_kwargs and 'frame_stack' in args.atari_wrapper_kwargs:
             eval_env = VecFrameStack(eval_env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
