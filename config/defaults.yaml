@@ -63,11 +63,11 @@ tree_struct:
 ppo_gbrl:
   wrapper_kwargs:
     training: True
-    norm_obs: True
+    norm_obs: False
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-    frame_skip: 1
+    # frame_skip: 4
   n_steps: 128
   gamma: 0.99
   nn_critic: False
