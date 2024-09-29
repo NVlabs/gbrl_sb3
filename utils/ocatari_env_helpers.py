@@ -84,7 +84,7 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
 
     columns[:, 0] = columns[:, 0].astype(float)
     columns[:, 1] = columns[:, 0].astype(float)
-    columns[:, 2] = columns[:, 2].astype(str)
+    columns[:, 2] = columns[:, 2].astype(float)
     columns = columns.flatten()
 
     info = np.array([player_position[0], player_position[1], ball_position[0], ball_position[1], ball_distance, 
