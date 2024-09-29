@@ -67,7 +67,7 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
     ball_distance = np.linalg.norm(player_position - ball_position)
     ball_orientation = get_x_orientation(player_position[0], ball_position[0])
     ball_velocity = ball_position - prev_ball_position
-    n_rows  = 7 # + 0
+    n_rows  = 9
 
     empty_block_first_idx = 2
     empty_blocks = positions[empty_block_first_idx:]
