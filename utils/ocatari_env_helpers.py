@@ -67,7 +67,7 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
     ball_distance = np.linalg.norm(player_position - ball_position)
     ball_orientation = get_x_orientation(player_position[0], ball_position[0])
     ball_velocity = ball_position - prev_ball_position
-    n_rows  = 9
+    n_rows  = 10
 
     empty_block_first_idx = 2
     empty_blocks = positions[empty_block_first_idx:]
@@ -75,9 +75,12 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
     counts = np.sum(empty_blocks[:, 0][:, None] == empty_blocks[unique_idx, 0], axis=0)
     counts[empty_blocks[unique_idx][:, 0] == 0] = 0
     columns = np.zeros((n_rows, 3), dtype=object)
-    columns[:len(unique_idx), 0] = unique_x
-    columns[:len(unique_idx), 2] = counts
-    
+    try:
+        columns[:len(unique_idx), 0] = unique_x
+        columns[:len(unique_idx), 2] = counts
+    except:
+        print(f"unique_x: {unique_x}, empty_blocks: {empty_blocks}")
+        
     for i, x in enumerate(unique_x):
         columns[i, 1] = np.max(empty_blocks[empty_blocks[:, 0] == x, 1])
 

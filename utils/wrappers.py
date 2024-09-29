@@ -212,7 +212,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             flattened_shape = 16
             env.is_mixed = True
         elif self.env.game_name == 'Breakout':
-            flattened_shape = 35
+            flattened_shape = 38
             env.is_mixed = True
         elif self.env.game_name == 'Alien':
             flattened_shape = 485
