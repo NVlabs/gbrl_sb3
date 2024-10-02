@@ -174,6 +174,7 @@ class ActorCriticCompressionCallback(BaseCallback):
         self.params = params
         self.dist_type = None 
         self.reset()
+        
     def reset(self):
         self.compression_data = deque(maxlen=self.capacity)
 
@@ -202,20 +203,6 @@ class ActorCriticCompressionCallback(BaseCallback):
             log_std = None if self.dist_type != 'gaussian' else self.model.policy.log_std.detach().cpu().numpy()
             compression_params = {**self.params, 'features': obs, 'actions': actions.detach().cpu(), 'log_std': log_std, 'dist_type': self.dist_type}
             self.model.policy.model.compress(**compression_params)
-        # else:
-        #     policy_num_trees, value_num_trees = self.model.policy.model.get_num_trees()
-        #     if policy_num_trees > self.distil_steps or value_num_trees > self.distil_steps:
-        #         obs = np.concatenate(self.distil_data, axis=0).astype(np.single)
-        #         pg_targets, vf_targets = self.model.policy.model.predict(obs)
-        #         self.logger.record("distill/num_samples", len(obs))
-        #         if policy_num_trees > self.distil_steps:
-        #             distil_loss, self.params = self.model.policy.model.model.distil_policy(obs, pg_targets, self.params)
-        #             self.logger.record("distill/pg_distilation_loss", distil_loss)
-        #         else:
-        #             distil_loss, self.params = self.model.policy.model.model.distil_value(obs, vf_targets, self.params)
-        #             self.logger.record("distill/vf_distilation_loss", distil_loss)
-        #         self.logger.record("distill/max_steps", self.params['max_steps'])
-        #         self.logger.record("distill/min_steps", self.params['min_steps'])
 
     def _on_step(self) -> bool:
         return True

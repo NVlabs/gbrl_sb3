@@ -3,7 +3,7 @@ env:
   env_kwargs: null
   verbose: 1
   seed: 0
-  num_envs: 1
+  num_envs: 16
   eval_kwargs:
     eval_freq: 25000
     stop_train: False
@@ -286,12 +286,13 @@ compression:
   compress: False
   compress_kwargs:
     max_steps: 1000
-    trees_to_keep: 50
+    trees_to_keep: 100
     gradient_steps: 100
     method: 'first_k'
+    policy_only: False
     least_squares_W: True
     temperature: 0.1
     lambda_reg: 0.001
     optimizer_kwargs:
       lr: 0.1
-    capacity: 5000
+    capacity: 20000
