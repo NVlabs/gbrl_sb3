@@ -35,7 +35,7 @@ MAX_TEXT_LENGTH = 128 - 1
 numerical_dtype = np.dtype('float32')
 categorical_dtype = np.dtype('S128')  
 
-MIXED_ENVS = ['Gopher', 'Breakout', 'Alien', 'Kangaroo', 'SpaceInvaders']
+MIXED_ENVS = ['Gopher', 'Breakout', 'Alien', 'Kangaroo', 'SpaceInvaders', 'Pong']
 
 class CategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
@@ -223,6 +223,9 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'SpaceInvaders':
             flattened_shape = 134
             env.is_mixed = True
+        elif self.env.game_name == 'Pong':
+            flattened_shape = 11
+            env.is_mixed = True
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32 )
         
     def observation(self, observation: np.ndarray):
@@ -233,18 +236,8 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             return gopher_extraction(frame_t)
         elif self.env.game_name == 'Breakout':
             return breakout_extraction(frame_t, frame_prev_t)
-        # elif self.env.game_name == 'Alien':
-        #     return alien_extraction(frame_t)
-        # elif self.env.game_name == 'Kangaroo':
-        #     return kangaroo_extraction(frame_t)
         else:
             return general_extraction(frame_t)
-            # player_position = frame_t[0, :2]
-            # delta_frame = frame_t - frame_prev_t
-            # other_positions = frame_t[1:, :2]
-            # distances = np.linalg.norm(other_positions - player_position, axis=1)
-            # pos_and_speed = np.concatenate([frame_t, delta_frame], axis=-1).flatten()
-            # return np.concatenate([pos_and_speed, distances])
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)
