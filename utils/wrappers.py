@@ -209,35 +209,40 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         if len(env.observation_space.shape) > 1:
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         if self.env.game_name == 'Gopher':
-            flattened_shape = 16
+            # flattened_shape = 16
+            flattened_shape = 20
             env.is_mixed = True
         elif self.env.game_name == 'Breakout':
             flattened_shape = 158
             env.is_mixed = True
         elif self.env.game_name == 'Alien':
-            flattened_shape = 485
+            # flattened_shape = 485
+            flattened_shape = 807
             env.is_mixed = True
         elif self.env.game_name == 'Kangaroo':
-            flattened_shape = 149
+            # flattened_shape = 149
+            flattened_shape = 247
             env.is_mixed = True
         elif self.env.game_name == 'SpaceInvaders':
-            flattened_shape = 134
+            # flattened_shape = 134
+            flattened_shape = 222
             env.is_mixed = True
         elif self.env.game_name == 'Pong':
-            flattened_shape = 11
+            flattened_shape = 17
             env.is_mixed = True
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32 )
         
     def observation(self, observation: np.ndarray):
         frame_t = observation[-1][:, :2]
+        # frame_t = observation[0][:, :2]
         frame_prev_t = observation[-2][:, :2]
         
         if self.env.game_name == 'Gopher':
-            return gopher_extraction(frame_t)
+            return gopher_extraction(frame_t, frame_prev_t)
         elif self.env.game_name == 'Breakout':
             return breakout_extraction(frame_t, frame_prev_t)
         else:
-            return general_extraction(frame_t)
+            return general_extraction(frame_t, frame_prev_t)
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)

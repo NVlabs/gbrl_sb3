@@ -17,11 +17,11 @@ def get_x_orientation(player_x, object_x):
         return 'below'
     
 
-def gopher_extraction(positions: np.ndarray) -> np.ndarray:
-
-
+def gopher_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np.ndarray:
     player_position = positions[0]
     gopher_position = positions[1]
+    delta_player_position = player_position - prev_positions[0]
+    delta_gopher_position = gopher_position - prev_positions[1]
     gopher_distance = np.linalg.norm(player_position - gopher_position)
     gopher_orientation = get_x_orientation(player_position[0], gopher_position[0])
     empty_block_first_idx = 5
@@ -54,7 +54,8 @@ def gopher_extraction(positions: np.ndarray) -> np.ndarray:
         almost_aligned_dist = np.min(almost_aligned_dist)
         almost_aligned_orientation = get_x_orientation(player_position[0], almost_aligned_x[0])
     
-    return np.array([player_position[0], player_position[1], gopher_position[0], gopher_position[1], gopher_distance, 
+    return np.array([player_position[0], player_position[1], delta_player_position[0], delta_player_position[1],
+                     gopher_position[0], gopher_position[1], delta_gopher_position[0], delta_gopher_position[1], gopher_distance, 
                      str(gopher_orientation),str(aligned_blocks_exist), nearest_aligned_pos[0], nearest_aligned_pos[1],
                      aligned_dist, aligned_orientation, str(almost_aligned_block_exist), nearest_almost_aligned_pos[0], 
                      nearest_almost_aligned_pos[1], almost_aligned_dist, almost_aligned_orientation], dtype=object)
@@ -94,7 +95,7 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
 
     return np.append(info, columns)
 
-def general_extraction(positions: np.ndarray) -> np.ndarray:
+def general_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np.ndarray:
     player_position = positions[0]
     distances = np.linalg.norm(player_position - positions, axis=1)
     delta_x = player_position[0] - positions[:, 0]
@@ -109,7 +110,9 @@ def general_extraction(positions: np.ndarray) -> np.ndarray:
     delta_y = delta_y.astype(str)
     delta_y[delta_y == '-1.0'] = 'below'
     delta_y[delta_y == '1.0'] = 'above'
-    info = np.concatenate([player_position, distances, delta_x, delta_y], axis=0, dtype=object)
+    change_x = positions[:, 0] - prev_positions[:, 0]
+    change_y = positions[:, 1] - prev_positions[:, 1]
+    info = np.concatenate([player_position, distances, delta_x, delta_y, change_x, change_y], axis=0, dtype=object)
     return info.flatten()
 
     
