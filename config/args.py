@@ -9,9 +9,8 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Callable, Union
+from typing import Callable, Dict, Union
 
-import torch as th
 import yaml
 from torch.nn import ReLU, Tanh
 from torch.optim import SGD, Adam
@@ -55,7 +54,15 @@ def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float
 
     return func
 
-def preprocess_lr(lr: Union[str, float]):
+def preprocess_lr(lr: Union[str, float]) -> Union[float, Callable[[float], float]]:
+    """Pre-process learning rate
+
+    Args:
+        lr (Union[str, float]): learning rate
+
+    Returns:
+        Union[float, Callable[[float], float]]: processed learning rate
+    """
     if isinstance(lr, str):
         if ("_") in lr:
             _, initial_value = lr.split("_")
@@ -257,6 +264,15 @@ def parse_args():
     # Compression Params
     parser.add_argument('--compress', type=str2bool)
     parser.add_argument('--compress_kwargs', type=json_string_to_dict)
+    parser.add_argument('--compress_max_steps', type=int)
+    parser.add_argument('--compress_trees_to_keep', type=int)
+    parser.add_argument('--compress_method', type=str, choices=['first_k', 'best_k'])
+    parser.add_argument('--compress_gradient_steps', type=int)
+    parser.add_argument('--compress_policy_only', type=str2bool)
+    parser.add_argument('--compress_least_squares_W', type=str2bool)
+    parser.add_argument('--compress_temperature', type=float)
+    parser.add_argument('--compress_lambda_reg', type=float)
+    parser.add_argument('--compress_capacity', type=int)
     parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
     
     args = parser.parse_args()
@@ -275,8 +291,9 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
-    args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
+    args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -415,10 +432,27 @@ def get_defaults(args, defaults):
     # Distillation Params
     args.distil = args.distil if args.distil is not None else defaults['distillation']['distil']
     args.distil_kwargs = args.distil_kwargs if args.distil_kwargs is not None else defaults['distillation']['distil_kwargs']
-    # Distillation Params
+    # Distillation/Compression Params
     args.compress = args.compress if args.compress is not None else defaults['compression']['compress']
     args.compress_kwargs = args.compress_kwargs if args.compress_kwargs is not None else defaults['compression']['compress_kwargs']
-    print(args.compress_kwargs)
+    if args.compress_max_steps:
+        args.compress_kwargs['max_steps'] = args.compress_max_steps
+    if args.compress_trees_to_keep:
+        args.compress_kwargs['trees_to_keep'] = args.compress_trees_to_keep
+    if args.compress_method:
+        args.compress_kwargs['method'] = args.compress_method
+    if args.compress_gradient_steps:
+        args.compress_kwargs['gradient_steps'] = args.compress_gradient_steps
+    if args.compress_policy_only:
+        args.compress_kwargs['policy_only'] = args.compress_policy_only
+    if args.compress_least_squares_W:
+        args.compress_kwargs['least_squares_W'] = args.compress_least_squares_W
+    if args.compress_temperature:
+        args.compress_kwargs['temperature'] = args.compress_temperature
+    if args.compress_lambda_reg:
+        args.compress_kwargs['lambda_reg'] = args.compress_lambda_reg
+    if args.compress_capacity:
+        args.compress_kwargs['capacity'] = args.compress_capacity
     if args.compress_optimizer_kwargs:
         args.compress_kwargs['optimizer_kwargs'] = args.compress_optimizer_kwargs
     return args
