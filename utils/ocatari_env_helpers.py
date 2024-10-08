@@ -28,6 +28,14 @@ def get_orientation(player_position, other_positions):
     delta[(delta_x == 0) & (delta_y == 0)] = 'x_aligned and y_aligned'
     return delta
 
+def get_x_orientation(player_x, object_x):
+    if player_x > object_x:
+        return 'right'
+    elif player_x < object_x:
+        return 'left'
+    else:
+        return 'below'
+
 
 def gopher_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np.ndarray:
     player_position = positions[0]
@@ -53,7 +61,7 @@ def gopher_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np.n
         aligned_dist = np.linalg.norm(player_position - aligned_pos, axis=1)
         nearest_aligned_pos = aligned_pos[np.argmin(aligned_dist)]
         aligned_dist = np.min(aligned_dist)
-        aligned_orientation = get_orientation(player_position, aligned_x)
+        aligned_orientation = get_x_orientation(player_position[0], aligned_x[0])
 
     nearest_almost_aligned_pos = np.array([0, 0])
     almost_aligned_orientation = 'None'
@@ -64,7 +72,7 @@ def gopher_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np.n
         almost_aligned_dist = np.linalg.norm(player_position - almost_aligned_pos, axis=1)
         nearest_almost_aligned_pos = almost_aligned_pos[np.argmin(almost_aligned_dist)]
         almost_aligned_dist = np.min(almost_aligned_dist)
-        almost_aligned_orientation = get_orientation(player_position, almost_aligned_x)
+        almost_aligned_orientation = get_x_orientation(player_position[0], almost_aligned_x[0])
     
     block_count_below = (player_position[0] == empty_blocks[:, 0]).sum()
     prev_block_count_below = (prev_positions[0, 0] == prev_positions[empty_block_first_idx:, 0]).sum()
@@ -82,6 +90,7 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
     prev_ball_position = prev_positions[1]
     # return player_position
     ball_distance = np.linalg.norm(player_position - ball_position)
+    prev_ball_distance = np.linalg.norm(prev_positions[0] - prev_ball_position)
     ball_orientation = get_orientation(player_position, ball_position)
     ball_velocity = ball_position - prev_ball_position
     n_rows  = 50
@@ -105,8 +114,10 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray) -> np
     columns[:, 1] = columns[:, 0].astype(float)
     columns[:, 2] = columns[:, 2].astype(float)
     columns = columns.flatten()
+    delta_player = player_position - prev_positions[0]
+    delta_distance = ball_distance - prev_ball_distance
 
-    info = np.array([player_position[0], player_position[1], ball_position[0], ball_position[1], ball_distance, 
+    info = np.array([player_position[0], player_position[1], delta_player[0], delta_player[1], ball_position[0], ball_position[1], ball_distance, delta_distance,
                      str(ball_orientation), ball_velocity[0], ball_velocity[1]], dtype=object)
 
     return np.append(info, columns)
