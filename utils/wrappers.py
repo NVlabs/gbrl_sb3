@@ -15,8 +15,9 @@ from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
 from utils.ocatari_env_helpers import (gopher_extraction,
                                        breakout_extraction,
-                                    #    alien_extraction,
-                                    #    kangaroo_extraction,
+                                       alien_extraction,
+                                       kangaroo_extraction,
+                                       pong_extraction,
                                        general_extraction)
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
                                                      EpisodicLifeEnv,
@@ -210,25 +211,25 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         if self.env.game_name == 'Gopher':
             # flattened_shape = 16
-            flattened_shape = 20
+            flattened_shape = 23
             env.is_mixed = True
         elif self.env.game_name == 'Breakout':
             flattened_shape = 158
             env.is_mixed = True
         elif self.env.game_name == 'Alien':
             # flattened_shape = 485
-            flattened_shape = 807
+            flattened_shape = 32
             env.is_mixed = True
         elif self.env.game_name == 'Kangaroo':
             # flattened_shape = 149
-            flattened_shape = 247
+            flattened_shape = 120
             env.is_mixed = True
         elif self.env.game_name == 'SpaceInvaders':
             # flattened_shape = 134
-            flattened_shape = 222
+            flattened_shape = 132
             env.is_mixed = True
         elif self.env.game_name == 'Pong':
-            flattened_shape = 17
+            flattened_shape = 19
             env.is_mixed = True
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32 )
         
@@ -241,6 +242,12 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             return gopher_extraction(frame_t, frame_prev_t)
         elif self.env.game_name == 'Breakout':
             return breakout_extraction(frame_t, frame_prev_t)
+        elif self.env.game_name == 'Pong':
+            return pong_extraction(frame_t, frame_prev_t)
+        elif self.env.game_name == 'Alien':
+            return alien_extraction(frame_t, frame_prev_t)
+        elif self.env.game_name == 'Kangaroo':
+            return kangaroo_extraction(frame_t, frame_prev_t)
         else:
             return general_extraction(frame_t, frame_prev_t)
         
