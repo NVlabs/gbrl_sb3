@@ -204,34 +204,25 @@ class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
 
 
 class NeuroSymbolicAtariWrapper(ObservationWrapper):
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, is_mixed: bool = True):
         super().__init__(env)
         flattened_shape = env.observation_space.shape[0]
         if len(env.observation_space.shape) > 1:
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         if self.env.game_name == 'Gopher':
-            # flattened_shape = 16
-            flattened_shape = 23
-            env.is_mixed = True
+            flattened_shape = 23 if is_mixed else 37
         elif self.env.game_name == 'Breakout':
-            flattened_shape = 161
-            env.is_mixed = True
+            flattened_shape = 161 if is_mixed else 169
         elif self.env.game_name == 'Alien':
-            # flattened_shape = 485
-            flattened_shape = 32
-            env.is_mixed = True
+            flattened_shape = 32 if is_mixed else 112
         elif self.env.game_name == 'Kangaroo':
-            # flattened_shape = 149
-            flattened_shape = 120
-            env.is_mixed = True
+            flattened_shape = 120 if is_mixed else 440
         elif self.env.game_name == 'SpaceInvaders':
-            # flattened_shape = 134
-            flattened_shape = 132
-            env.is_mixed = True
+            flattened_shape = 132 if is_mixed else 484
         elif self.env.game_name == 'Pong':
-            flattened_shape = 19
-            env.is_mixed = True
-        env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32 )
+            flattened_shape = 19 if is_mixed else 67
+        env.is_mixed = is_mixed
+        env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
     def observation(self, observation: np.ndarray):
         frame_t = observation[-1][:, :2]
@@ -239,17 +230,17 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         frame_prev_t = observation[-2][:, :2]
         
         if self.env.game_name == 'Gopher':
-            return gopher_extraction(frame_t, frame_prev_t)
+            return gopher_extraction(frame_t, frame_prev_t, self.env.is_mixed)
         elif self.env.game_name == 'Breakout':
-            return breakout_extraction(frame_t, frame_prev_t)
+            return breakout_extraction(frame_t, frame_prev_t, self.env.is_mixed)
         elif self.env.game_name == 'Pong':
-            return pong_extraction(frame_t, frame_prev_t)
+            return pong_extraction(frame_t, frame_prev_t, self.env.is_mixed)
         elif self.env.game_name == 'Alien':
-            return alien_extraction(frame_t, frame_prev_t)
+            return alien_extraction(frame_t, frame_prev_t, self.env.is_mixed)
         elif self.env.game_name == 'Kangaroo':
-            return kangaroo_extraction(frame_t, frame_prev_t)
+            return kangaroo_extraction(frame_t, frame_prev_t, self.env.is_mixed)
         else:
-            return general_extraction(frame_t, frame_prev_t)
+            return general_extraction(frame_t, frame_prev_t, self.env.is_mixed)
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)

@@ -223,7 +223,7 @@ def make_ocvec_env(
                 os.makedirs(monitor_dir, exist_ok=True)
             env = Monitor(env, filename=monitor_path, **monitor_kwargs)
             # Optionally, wrap the environment with the provided wrapper
-            env = NeuroSymbolicAtariWrapper(env)
+            env = NeuroSymbolicAtariWrapper(env, vec_env_kwargs.get('is_mixed', False))
             if wrapper_class is not None:
                 env = wrapper_class(env, **wrapper_kwargs)
             return env
