@@ -80,7 +80,7 @@ COMMAND="python scripts/train.py --algo_type=ppo_nn \
     --learning_rate=0.00015830694177269876 \
     --total_n_steps=10000000 \
     --wrapper=normalize \
-    --wrapper_kwargs=\"{\\\"training\\\": true, \\\"norm_obs\\\": false, \\\"norm_reward\\\": true}\""
+    --wrapper_kwargs=\"{\\\"training\\\": true, \\\"norm_obs\\\": true, \\\"norm_reward\\\": true}\""
 
 # Add the seed argument if provided
 if [ ! -z "$SEED" ]; then

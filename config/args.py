@@ -287,13 +287,15 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
-    args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
+    args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'Kangaroo-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -801,7 +803,6 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
-            "_init_setup_model": True
         }
     elif args.algo_type == 'a2c_nn':
         from stable_baselines3.common.policies import ActorCriticPolicy
@@ -824,7 +825,6 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
-            "_init_setup_model": True
         }
     elif args.algo_type == 'awr_nn':
         from policies.awr_nn_policy import AWRPolicy
