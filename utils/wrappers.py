@@ -226,7 +226,6 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         
     def observation(self, observation: np.ndarray):
         frame_t = observation[-1][:, :2]
-        # frame_t = observation[0][:, :2]
         frame_prev_t = observation[-2][:, :2]
         
         if self.env.game_name == 'Gopher':

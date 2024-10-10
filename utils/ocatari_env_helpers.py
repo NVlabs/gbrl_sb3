@@ -246,7 +246,11 @@ def alien_extraction(positions: np.ndarray, prev_positions: np.ndarray, is_mixed
     
     pulsar_distance = np.array([distances[pulsar_index]])
     prev_pulsar_distance = np.array([prev_distances[pulsar_index]])
+    if np.isinf(pulsar_distance).any():
+        pulsar_distance = np.array([distances[distances < np.inf].max()])
     delta_pulsar = pulsar_distance - prev_pulsar_distance
+    if np.isnan(delta_pulsar).any():
+        delta_pulsar = np.array([0])
     pulsar_orientation = get_orientation(player_position, pulsar_position)
     pulsar_orientation = pulsar_orientation[np.newaxis]
     egg_distances = distances[egg_start_index:]
