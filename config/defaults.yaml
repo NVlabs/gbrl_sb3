@@ -3,7 +3,7 @@ env:
   env_kwargs: null
   verbose: 1
   seed: 0
-  num_envs: 16
+  num_envs: 1
   eval_kwargs:
     eval_freq: 25000
     stop_train: False
@@ -92,7 +92,7 @@ ppo_nn:
   wrapper_kwargs:
     training: True
     norm_obs: True
-    norm_reward: False
+    norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
   n_steps: 2048

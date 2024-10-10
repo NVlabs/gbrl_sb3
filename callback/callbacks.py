@@ -202,7 +202,12 @@ class ActorCriticCompressionCallback(BaseCallback):
             actions = self.model.policy._predict(obs, deterministic=False)
             log_std = None if self.dist_type != 'gaussian' else self.model.policy.log_std.detach().cpu().numpy()
             compression_params = {**self.params, 'features': obs, 'actions': actions.detach().cpu(), 'log_std': log_std, 'dist_type': self.dist_type}
-            self.model.policy.model.compress(**compression_params)
+            loss = self.model.policy.model.compress(**compression_params)
+            if isinstance(loss, tuple):
+                self.logger.record("compression/policy_loss", loss[0])
+                self.logger.record("compression/value_loss", loss[1])
+            else:
+                self.logger.record("compression/loss", loss)
 
     def _on_step(self) -> bool:
         return True
