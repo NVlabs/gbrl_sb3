@@ -273,6 +273,7 @@ def parse_args():
     parser.add_argument('--compress_temperature', type=float)
     parser.add_argument('--compress_lambda_reg', type=float)
     parser.add_argument('--compress_capacity', type=int)
+    parser.add_argument('--compress_optimizer_lr', type=float)
     parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
     
     args = parser.parse_args()
@@ -457,6 +458,8 @@ def get_defaults(args, defaults):
         args.compress_kwargs['capacity'] = args.compress_capacity
     if args.compress_optimizer_kwargs:
         args.compress_kwargs['optimizer_kwargs'] = args.compress_optimizer_kwargs
+        if args.compress_optimizer_lr:
+            args.compress_kwargs['optimizer_kwargs']['lr'] = args.compress_optimizer_lr
     return args
 
 def process_logging(args, callback_list):
