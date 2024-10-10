@@ -17,7 +17,8 @@ orientation_mapping = {
     'x_aligned and below': 5,
     'left and y_aligned': 6,
     'right and y_aligned': 7,
-    'x_aligned and y_aligned': 8
+    'x_aligned and y_aligned': 8,
+    'No object': 9
 }
 
 x_orientation_mapping = {
@@ -68,9 +69,13 @@ def get_orientation(player_position: np.ndarray, other_positions: np.ndarray):
     if other_positions.ndim > 1:
         delta_x = player_position[0] - other_positions[:, 0]
         delta_y = player_position[1] - other_positions[:, 1]
+        other_x = other_positions[:, 0]
+        other_y = other_positions[:, 1]
     else:
         delta_x = player_position[0] - other_positions[0]
         delta_y = player_position[1] - other_positions[1]
+        other_x = other_positions[0]
+        other_y = other_positions[1]
     delta = np.zeros_like(delta_x).astype(f'<U50')
     delta[(delta_x < 0) & (delta_y < 0)] = 'left and below'
     delta[(delta_x > 0) & (delta_y > 0)] = 'right and above'
@@ -81,6 +86,8 @@ def get_orientation(player_position: np.ndarray, other_positions: np.ndarray):
     delta[(delta_x < 0) & (delta_y == 0)] = 'left and y_aligned'
     delta[(delta_x > 0) & (delta_y == 0)] = 'right and y_aligned'
     delta[(delta_x == 0) & (delta_y == 0)] = 'x_aligned and y_aligned'
+    delta[(other_x  == 0) & (other_y == 0)] = 'No object'
+    delta[(np.isnan(other_x)) & (np.isnan(other_y))] = 'No object'
     return delta
 
 def get_x_orientation(player_x: float, object_x: float):
@@ -133,16 +140,17 @@ def gopher_extraction(positions: np.ndarray, prev_positions: np.ndarray, is_mixe
     delta_prev_count_below = block_count_below - prev_block_count_below
     
     if is_mixed:
-        return np.array([player_position[0], player_position[1], delta_player_position[0], delta_player_position[1],
+        info =  np.array([player_position[0], player_position[1], delta_player_position[0], delta_player_position[1],
                         gopher_position[0], gopher_position[1], delta_gopher_position[0], delta_gopher_position[1], gopher_distance, 
                         str(gopher_orientation),str(aligned_blocks_exist), nearest_aligned_pos[0], nearest_aligned_pos[1],
                         aligned_dist, aligned_orientation, str(almost_aligned_block_exist), nearest_almost_aligned_pos[0], 
                         nearest_almost_aligned_pos[1], almost_aligned_dist, almost_aligned_orientation, block_count_below, prev_block_count_below, delta_prev_count_below], dtype=object)
-    
-    return np.concatenate([player_position, delta_player_position, gopher_position, delta_gopher_position, np.array([gopher_distance]), 
+    else:
+        info = np.concatenate([player_position, delta_player_position, gopher_position, delta_gopher_position, np.array([gopher_distance]), 
                            orientation_to_one_hot(gopher_orientation), np.array([int(aligned_blocks_exist)]), nearest_aligned_pos,
                            np.array([aligned_dist]), x_orientation_to_one_hot(aligned_orientation), np.array([int(almost_aligned_block_exist)]),
                            nearest_almost_aligned_pos, np.array([almost_aligned_dist]), x_orientation_to_one_hot(almost_aligned_orientation), np.array([block_count_below, prev_block_count_below, delta_prev_count_below])], axis=0, dtype=np.single)
+    return info
 
 def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray, is_mixed: bool = True) -> np.ndarray:
     player_position = positions[0]
@@ -198,9 +206,10 @@ def pong_extraction(positions: np.ndarray, prev_positions: np.ndarray, is_mixed:
     distance_ball_enemy =  np.array([np.linalg.norm(positions[2] - positions[1])])
     enemy_ball_orientation = get_orientation(positions[2], ball_position)
     if is_mixed:
-        return np.concatenate([player_position, player_orientation[np.newaxis], distance_ball_enemy, enemy_ball_orientation[np.newaxis], ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1]], axis=0, dtype=object)
-    
-    return np.concatenate([player_position, orientation_to_one_hot(player_orientation), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1]], axis=0, dtype=np.single)
+        info = np.concatenate([player_position, player_orientation[np.newaxis], distance_ball_enemy, enemy_ball_orientation[np.newaxis], ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1]], axis=0, dtype=object)
+    else:
+        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1]], axis=0, dtype=np.single)
+    return info
 
 def alien_extraction(positions: np.ndarray, prev_positions: np.ndarray, is_mixed: bool = True) -> np.ndarray:
     player_position = positions[0]

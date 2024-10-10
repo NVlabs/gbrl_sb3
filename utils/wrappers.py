@@ -210,17 +210,17 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         if len(env.observation_space.shape) > 1:
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         if self.env.game_name == 'Gopher':
-            flattened_shape = 23 if is_mixed else 37
+            flattened_shape = 23 if is_mixed else 38
         elif self.env.game_name == 'Breakout':
-            flattened_shape = 161 if is_mixed else 169
+            flattened_shape = 161 if is_mixed else 170
         elif self.env.game_name == 'Alien':
-            flattened_shape = 32 if is_mixed else 112
+            flattened_shape = 32 if is_mixed else 121
         elif self.env.game_name == 'Kangaroo':
-            flattened_shape = 120 if is_mixed else 440
+            flattened_shape = 120 if is_mixed else 480
         elif self.env.game_name == 'SpaceInvaders':
-            flattened_shape = 132 if is_mixed else 484
+            flattened_shape = 132 if is_mixed else 528
         elif self.env.game_name == 'Pong':
-            flattened_shape = 19 if is_mixed else 67
+            flattened_shape = 19 if is_mixed else 73
         env.is_mixed = is_mixed
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
