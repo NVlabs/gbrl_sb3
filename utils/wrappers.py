@@ -17,6 +17,7 @@ from utils.ocatari_env_helpers import (gopher_extraction,
                                        breakout_extraction,
                                        alien_extraction,
                                        kangaroo_extraction,
+                                       space_invaders_extraction,
                                        pong_extraction,
                                        general_extraction)
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
@@ -210,36 +211,39 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         if len(env.observation_space.shape) > 1:
             flattened_shape = env.observation_space.shape[1]*env.observation_space.shape[2] + env.observation_space.shape[1] - 1
         if self.env.game_name == 'Gopher':
-            flattened_shape = 23 if is_mixed else 38
+            flattened_shape = 23 if is_mixed else 101
         elif self.env.game_name == 'Breakout':
-            flattened_shape = 161 if is_mixed else 170
+            flattened_shape = 161 if is_mixed else 184
         elif self.env.game_name == 'Alien':
-            flattened_shape = 32 if is_mixed else 121
+            flattened_shape = 32 if is_mixed else 274
         elif self.env.game_name == 'Kangaroo':
-            flattened_shape = 120 if is_mixed else 480
+            flattened_shape = 105 if is_mixed else 1015
         elif self.env.game_name == 'SpaceInvaders':
-            flattened_shape = 132 if is_mixed else 528
+            flattened_shape = 135 if is_mixed else 1279
         elif self.env.game_name == 'Pong':
-            flattened_shape = 19 if is_mixed else 73
+            flattened_shape = 19 if is_mixed else 175
         env.is_mixed = is_mixed
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
     def observation(self, observation: np.ndarray):
         frame_t = observation[-1][:, :2]
         frame_prev_t = observation[-2][:, :2]
+        object_sizes = observation[-1][:, 2:]
         
         if self.env.game_name == 'Gopher':
-            return gopher_extraction(frame_t, frame_prev_t, self.env.is_mixed)
+            return gopher_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         elif self.env.game_name == 'Breakout':
-            return breakout_extraction(frame_t, frame_prev_t, self.env.is_mixed)
+            return breakout_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         elif self.env.game_name == 'Pong':
-            return pong_extraction(frame_t, frame_prev_t, self.env.is_mixed)
+            return pong_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         elif self.env.game_name == 'Alien':
-            return alien_extraction(frame_t, frame_prev_t, self.env.is_mixed)
+            return alien_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         elif self.env.game_name == 'Kangaroo':
-            return kangaroo_extraction(frame_t, frame_prev_t, self.env.is_mixed)
+            return kangaroo_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
+        elif self.env.game_name == 'SpaceInvaders':
+            return space_invaders_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         else:
-            return general_extraction(frame_t, frame_prev_t, self.env.is_mixed)
+            return general_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)
