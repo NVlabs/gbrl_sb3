@@ -335,7 +335,6 @@ def alien_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_s
     delta_closest_egg = closest_egg_distance - prev_closest_egg_distance
     closest_egg_position = egg_positions[closest_egg]
     closest_egg_orientation = get_orientation(player_position, closest_egg_position, player_size, egg_size)
-    closest_egg_orientation = closest_egg_orientation[np.newaxis]
     n_eggs = np.array([np.sum(~np.isnan(egg_positions[:, 0]))])
     n_aliens = np.array([np.sum(~np.isnan(alien_positions[:, 0]))])
 
