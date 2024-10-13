@@ -217,9 +217,9 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'Alien':
             flattened_shape = 32 if is_mixed else 274
         elif self.env.game_name == 'Kangaroo':
-            flattened_shape = 105 if is_mixed else 1015
+            flattened_shape = 109 if is_mixed else 1019
         elif self.env.game_name == 'SpaceInvaders':
-            flattened_shape = 135 if is_mixed else 1279
+            flattened_shape = 143 if is_mixed else 1287
         elif self.env.game_name == 'Pong':
             flattened_shape = 19 if is_mixed else 175
         env.is_mixed = is_mixed

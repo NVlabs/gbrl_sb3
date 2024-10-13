@@ -401,14 +401,17 @@ def kangaroo_extraction(positions: np.ndarray, prev_positions: np.ndarray, objec
     coconut_distance = distances[coconut_idx:]
     coconut_delta = delta_distances[coconut_idx:]
     coconut_orientation = orientations[coconut_idx:]
-
-
+    below_coconut = True if 'x_aligned' in coconut_orientation[0] or 'fully aligned' in coconut_orientation[0] else False
+    below_coconut &= coconut_delta[0] > 0
+    coconut_thrown_at = np.isin('y_aligned', coconut_orientation[1:]) & (coconut_delta[1:] > 0)
+    
     player_y = player_position[1]
     closest_ladder = np.argmin(player_y - positions[ladder_idx:monkey_idx, 1])
 
     closest_ladder_distance = ladder_distance[closest_ladder]
     closest_ladder_delta = ladder_delta[closest_ladder]
     closest_ladder_orientation = ladder_orientation[closest_ladder]
+    
 
     if is_mixed:
         info = np.concatenate([player_position, prev_orientation, child_distance, child_delta, child_orientation,
@@ -416,7 +419,7 @@ def kangaroo_extraction(positions: np.ndarray, prev_positions: np.ndarray, objec
                                platform_distance, platform_delta, platform_orientation, 
                                np.array([closest_ladder_distance, closest_ladder_delta, closest_ladder_orientation], dtype=object),
                                monkey_distance, monkey_delta, monkey_orientation, coconut_distance, coconut_delta, coconut_orientation,
-                               ], axis=0, dtype=object)
+                               np.array([below_coconut], dtype=str), coconut_thrown_at.astype(str)], axis=0, dtype=object)
     else:
         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), child_distance, 
                         child_delta, orientation_to_one_hot(child_orientation), fruit_distance, fruit_delta, 
@@ -424,7 +427,7 @@ def kangaroo_extraction(positions: np.ndarray, prev_positions: np.ndarray, objec
                         platform_distance, platform_delta, orientation_to_one_hot(platform_orientation), 
                         np.array([closest_ladder_distance, closest_ladder_delta], dtype=np.single), orientation_to_one_hot(closest_ladder_orientation), 
                         monkey_distance, monkey_delta, orientation_to_one_hot(monkey_orientation), coconut_distance, coconut_delta, orientation_to_one_hot(coconut_orientation),
-                        ], axis=0, dtype=np.single)
+                        np.array([below_coconut], dtype=np.single), coconut_thrown_at.astype(np.single)], axis=0, dtype=np.single)
     return info
 
 def general_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
@@ -459,16 +462,35 @@ def space_invaders_extraction(positions: np.ndarray, prev_positions: np.ndarray,
     shield_idx = 1
     alien_idx = 4
     bullet_idx = 40
+    aliens_per_row = 6
+    alien_rows = 6
 
-    below_shield = np.isin('x_aligned_and_above', orientations[shield_idx:alien_idx]).any()
-    below_alien = np.isin('x_aligned_and_above', orientations[alien_idx:bullet_idx]).any()
-    below_bullet = np.isin('x_aligned_and_above', orientations[bullet_idx:]).any()
-    below_info = np.array([below_shield, below_alien, below_bullet]).astype(str if is_mixed else int)
+    below = orientations == 'x_aligned_and_above'
+
+    below_shield = below[shield_idx:alien_idx].any()
+    below_alien = below[alien_idx:bullet_idx].any()
+    below_bullet = below[bullet_idx:].any()
+    
+    alien_positions = positions[alien_idx:bullet_idx]
+    below_aliens = alien_positions[below[alien_idx:bullet_idx]]
+    below_first_row_alien = True if below_alien and below_aliens.size > 0 and np.max(below_aliens[:, 1] == np.max(alien_positions[:, 1])) else False
+    below_info = np.array([below_shield, below_alien, below_bullet, below_first_row_alien]).astype(str if is_mixed else int)
+
+    j = 0
+    counts = np.zeros(alien_rows)
+    empty_rows = alien_rows
+    for i in range(0, aliens_per_row*alien_rows, aliens_per_row):
+        y_s = alien_positions[i:i+aliens_per_row, 1]
+        counts[j] = aliens_per_row - np.sum(y_s == 0)
+        j += 1
+    empty_rows -= np.sum(counts == 0)
+
+    counts = np.append(counts, empty_rows)
 
     if is_mixed:
-        info = np.concatenate([player_position, prev_orientation, distances, delta_distances, orientations, below_info], axis=0, dtype=object)
+        info = np.concatenate([player_position, prev_orientation, distances, delta_distances, orientations, below_info, counts], axis=0, dtype=object)
     else:
-         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), distances, delta_distances, orientation_to_one_hot(orientations), below_info], axis=0, dtype=object)
+         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), distances, delta_distances, orientation_to_one_hot(orientations), below_info, counts], axis=0, dtype=object)
     return info
 
 
