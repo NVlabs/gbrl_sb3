@@ -352,8 +352,7 @@ def alien_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_s
     else:
         info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), pulsar_distance, delta_pulsar, orientation_to_one_hot(pulsar_orientation), closest_egg_position, orientation_to_one_hot(closest_egg_orientation),
                             closest_egg_distance, delta_closest_egg, n_eggs, alien_positions[:, 0], alien_positions[:, 1], alien_distances, orientation_to_one_hot(alien_orientation), delta_distances, orientation_to_one_hot(prev_alien_orientation), n_aliens, alien_orientation_to_one_hot(alien_cluster_orientation)], axis=0, dtype=np.single)
-    if np.isnan(info).any() or np.isinf(info).any():
-        print()
+
     return info
 
 def kangaroo_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
