@@ -252,9 +252,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.rollout_buffer_kwargs['is_mixed'] = is_mixed
         
         if _init_setup_model:
-            self._setup_model()
+            self.ppo_setup_model()
 
-    def _setup_model(self) -> None:
+    def ppo_setup_model(self) -> None:
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
