@@ -247,7 +247,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
 
         self.rollout_buffer_class = MaskableRolloutBuffer if use_masking else RolloutBuffer
         self.rollout_buffer_kwargs = {}
-        if is_categorical:
+        if is_categorical or is_mixed:
             self.rollout_buffer_class = MaskableCategoricalRolloutBuffer if use_masking else CategoricalRolloutBuffer 
             self.rollout_buffer_kwargs['is_mixed'] = is_mixed
         
