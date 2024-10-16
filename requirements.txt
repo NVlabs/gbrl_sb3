@@ -4,9 +4,9 @@ Cython>0.27,<3
 PyYAML==6.0.1
 rl_zoo3==2.1.0
 stable_baselines3==2.1.0
-# shimmy<2.0.0
+shimmy<2.0.0
 # pettingzoo[classic]>=1.24.0
-# shimmy[openspiel]
+shimmy[openspiel]
 sb3_contrib==2.1.0
 wandb==0.16.0
 torch>=2.0.0
