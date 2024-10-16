@@ -9,7 +9,10 @@
 import gymnasium as gym
 import numpy as np
 
-from shimmy import OpenSpielCompatibilityV0
+try:
+    from shimmy import OpenSpielCompatibilityV0
+except:
+    OpenSpielCompatibilityV0 = None
 
 MIXED_SIZES = {'chess': 134}
 
@@ -71,6 +74,7 @@ class OpenSpielGymEnv(gym.Env):
         self.action_space = self.env.action_space(self.env.possible_agents[0])
         self.num_envs = 1
         self.env_id = env_id
+        is_mixed = False
         self.is_mixed = is_mixed
         if is_mixed:
             self.observation_space = gym.spaces.Box(low=float('-inf'), high=float('inf'), shape=(MIXED_SIZES.get(env_id, 0), ), dtype=np.float32)
