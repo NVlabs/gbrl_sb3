@@ -13,13 +13,16 @@ import numpy as np
 from gym.core import ObsType
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
-from utils.ocatari_env_helpers import (gopher_extraction,
-                                       breakout_extraction,
-                                       alien_extraction,
-                                       kangaroo_extraction,
-                                       space_invaders_extraction,
-                                       pong_extraction,
-                                       general_extraction)
+from env.ocatari import (gopher_extraction,
+                        general_extraction,
+                        breakout_extraction,
+                        alien_extraction,
+                        tennis_extraction,
+                        kangaroo_extraction,
+                        space_invaders_extraction,
+                        pong_extraction,
+                        ATARI_GENERAL_EXTRACTION
+                                       )
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
                                                      EpisodicLifeEnv,
                                                      FireResetEnv,
@@ -31,13 +34,13 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import obs_space_info
 
+
 IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 MAX_TEXT_LENGTH = 128 - 1
 
 numerical_dtype = np.dtype('float32')
 categorical_dtype = np.dtype('S128')  
 
-MIXED_ENVS = ['Gopher', 'Breakout', 'Alien', 'Kangaroo', 'SpaceInvaders', 'Pong']
 
 class CategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
@@ -147,6 +150,7 @@ class CategoricalMaxAndSkipEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
         max_frame = self._obs_buffer.max(axis=0)
 
         return max_frame, total_reward, terminated, truncated, info
+    
 class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
     """
     Atari 2600 preprocessings
@@ -222,6 +226,16 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             flattened_shape = 143 if is_mixed else 1287
         elif self.env.game_name == 'Pong':
             flattened_shape = 19 if is_mixed else 175
+        elif self.env.game_name == 'Assault':
+            flattened_shape = 42 if is_mixed else 406
+        elif self.env.game_name == 'Asterix':
+            flattened_shape = 75 if is_mixed else 725
+        elif self.env.game_name == 'Bowling' or self.env.game_name == 'Freeway':
+            flattened_shape = 36 if is_mixed else 348
+        elif self.env.game_name == 'Tennis':
+            flattened_shape = 24 if is_mixed else 232
+        elif self.env.game_name == 'Boxing':
+            flattened_shape = 6 if is_mixed else 58
         else:
             flattened_shape = len(env.max_objects)*2
         env.is_mixed = is_mixed
@@ -244,6 +258,10 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             return kangaroo_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         elif self.env.game_name == 'SpaceInvaders':
             return space_invaders_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
+        elif self.env.game_name == 'Tennis':
+            return tennis_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
+        elif self.env.game_name in ATARI_GENERAL_EXTRACTION:
+            return general_extraction(frame_t, frame_prev_t, object_sizes, self.env.is_mixed)
         else:
             return frame_t.flatten()
         
@@ -251,16 +269,3 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         observation, info = self.env.reset(seed=seed)
         return self.observation(observation), info
 
-
-    # fixed_positions = np.zeros((len(positions), 3), dtype=numerical_dtype)
-    # x_positions = positions[:, 0]
-    # _, unique_idx = np.unique(x_positions, return_index=True)
-    # unique_idx = sorted(unique_idx)
-    # unique_y = positions[unique_idx, 1]
-    # counts = np.sum(positions[:, 0][:, None] == x_positions[unique_idx], axis=0)
-    # counts[positions[unique_idx][:, 0] == 0] = 0
-    
-    # final_positions = np.column_stack((x_positions[unique_idx], unique_y, counts))
-    # fixed_positions[unique_idx, :2] = positions[unique_idx, :2]
-    # fixed_positions[unique_idx, 2] = counts
-    # return fixed_positions

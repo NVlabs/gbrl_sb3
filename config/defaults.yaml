@@ -21,6 +21,7 @@ save:
   save_every: 0
   save_name: 'default_name'
   save_path: 'saved_models/'
+  specific_seed: null
 logging:
   project: ""
   run_name: 'default'  # Logging using weights and biases

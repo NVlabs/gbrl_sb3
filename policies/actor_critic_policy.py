@@ -11,7 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import gymnasium as gym
 import numpy as np
 import torch as th
+from gbrl import ActorCritic, ParametricActor
 from gymnasium import spaces
+from sb3_contrib.common.maskable.distributions import (
+    MaskableCategoricalDistribution, make_masked_proba_distribution)
 from stable_baselines3.common.distributions import (
     BernoulliDistribution, CategoricalDistribution, DiagGaussianDistribution,
     Distribution, MultiCategoricalDistribution,
@@ -20,13 +23,11 @@ from stable_baselines3.common.distributions import (
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.preprocessing import get_action_dim
 from stable_baselines3.common.torch_layers import (BaseFeaturesExtractor,
-                                                   FlattenExtractor)
+                                                   FlattenExtractor,
+                                                   create_mlp)
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import is_vectorized_observation
-from stable_baselines3.common.torch_layers import create_mlp
 from torch import nn
-
-from gbrl import ActorCritic, ParametricActor
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
@@ -84,6 +85,7 @@ class ActorCriticPolicy(BasePolicy):
         full_std: bool = True,
         sde_net_arch: Optional[List[int]] = None,
         use_expln: bool = False,
+        use_masking: bool = False,
         squash_output: bool = False,
         nn_critic: bool = False,
         features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
@@ -136,9 +138,13 @@ class ActorCriticPolicy(BasePolicy):
         self.normalize_images = normalize_images
         self.log_std_init = log_std_init
         self.log_std_optimizer = None
+        self.use_masking = use_masking
         
         # Action distribution
-        self.action_dist = SquashedDiagGaussianDistribution(get_action_dim(action_space)) if isinstance(action_space, spaces.Box) and squash else make_proba_distribution(action_space)  
+        if use_masking:
+             self.action_dist = make_masked_proba_distribution(action_space)
+        else:
+            self.action_dist = SquashedDiagGaussianDistribution(get_action_dim(action_space)) if isinstance(action_space, spaces.Box) and squash else make_proba_distribution(action_space)  
         self._build(tree_struct, tree_optimizer, lr_schedule, log_std_schedule)
     
     def _build(self, tree_struct: Dict, tree_optimizer: Dict, lr_schedule: Schedule, log_std_schedule: Schedule) -> None:
@@ -182,7 +188,8 @@ class ActorCriticPolicy(BasePolicy):
                             gbrl_params=tree_optimizer['gbrl_params'],
                             device=tree_optimizer.get('device', 'cpu'))
 
-    def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False, requires_grad: bool=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False, 
+                requires_grad: bool=False, action_masks: Optional[np.ndarray] = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
 
@@ -192,6 +199,8 @@ class ActorCriticPolicy(BasePolicy):
         """
         # Preprocess the observation if needed
         distribution, values = self._get_action_dist_from_obs(obs, requires_grad)
+        if action_masks is not None and self.use_masking:
+            distribution.apply_masking(action_masks)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
@@ -213,6 +222,8 @@ class ActorCriticPolicy(BasePolicy):
         elif isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, CategoricalDistribution):
+            return self.action_dist.proba_distribution(action_logits=mean_actions), values
+        elif isinstance(self.action_dist, MaskableCategoricalDistribution):
             return self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, MultiCategoricalDistribution):
             # Here mean_actions are the flattened logits
@@ -240,7 +251,7 @@ class ActorCriticPolicy(BasePolicy):
             policy_lr, value_lr = lrs
         return policy_lr, value_lr
     
-    def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False) -> th.Tensor:
+    def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False, action_masks: Optional[np.ndarray] = None) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
 
@@ -248,7 +259,7 @@ class ActorCriticPolicy(BasePolicy):
         :param deterministic: Whether to use stochastic or deterministic actions
         :return: Taken action according to the policy
         """
-        return self.get_distribution(observation).get_actions(deterministic=deterministic)
+        return self.get_distribution(observation, action_masks).get_actions(deterministic=deterministic)
 
     def predict(
         self,
@@ -298,7 +309,7 @@ class ActorCriticPolicy(BasePolicy):
 
         return actions, state
 
-    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor, requires_grad: bool=True) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor, requires_grad: bool=True, action_masks: Optional[np.ndarray] = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
         given the observations.
@@ -310,19 +321,23 @@ class ActorCriticPolicy(BasePolicy):
         """
         # Preprocess the observation if needed
         distribution, values = self._get_action_dist_from_obs(obs, requires_grad=requires_grad)
+        if action_masks is not None:
+             distribution.apply_masking(action_masks)
         log_prob = distribution.log_prob(actions)
         self.distribution = distribution
         return values, log_prob, distribution.entropy()
     
-    def get_distribution(self, obs: Union[th.Tensor, np.ndarray]) -> Distribution:
+    def get_distribution(self, obs: Union[th.Tensor, np.ndarray], action_masks: Optional[np.ndarray] = None) -> Distribution:
         """
         Get the current policy distribution given the observations.
 
         :param obs:
         :return: the action distribution.
         """
-        dist, _ = self._get_action_dist_from_obs(obs)
-        return dist
+        distribution, _ = self._get_action_dist_from_obs(obs)
+        if action_masks is not None:
+             distribution.apply_masking(action_masks)
+        return distribution
 
     def get_iteration(self):
         return self.model.get_iteration()

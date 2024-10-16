@@ -20,7 +20,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import obs_space_info
 
-from utils.wrappers import categorical_dtype
+from env.wrappers import categorical_dtype
 
 
 class AWRReplayBufferSamples(NamedTuple):

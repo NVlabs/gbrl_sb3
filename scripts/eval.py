@@ -26,7 +26,7 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack, VecNor
                                               VecVideoRecorder)
 from stable_baselines3.common.evaluation import evaluate_policy
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed
-from utils.wrappers import (CategoricalDummyVecEnv,
+from env.wrappers import (CategoricalDummyVecEnv,
                             CategoricalObservationWrapper,
                             MIXED_ENVS)
 

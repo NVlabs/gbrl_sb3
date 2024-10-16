@@ -108,7 +108,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football', 'openspiel']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -258,6 +258,7 @@ def parse_args():
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
     parser.add_argument('--save_every', type=int)
+    parser.add_argument('--specific_seed', type=int)
     # Distillation Params
     parser.add_argument('--distil', type=str2bool)
     parser.add_argument('--distil_kwargs', type=json_string_to_dict)
@@ -285,17 +286,19 @@ def parse_args():
 def get_defaults(args, defaults):
     # Set hardcoded defaults
     args.env_type = args.env_type if args.env_type else 'ocatari'
+    # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
-    args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
+    args.env_name = args.env_name if args.env_name else 'Boxing-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'Kangaroo-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
@@ -431,6 +434,7 @@ def get_defaults(args, defaults):
     args.save_every = args.save_every if args.save_every is not None else defaults['save']['save_every']
     args.save_name = args.save_name if args.save_name is not None else defaults['save']['save_name']
     args.save_path = args.save_path if args.save_path is not None else defaults['save']['save_path']
+    args.specific_seed = args.specific_seed if args.specific_seed is not None else defaults['save']['specific_seed']
     
     # Distillation Params
     args.distil = args.distil if args.distil is not None else defaults['distillation']['distil']
@@ -493,6 +497,7 @@ def process_policy_kwargs(args):
     if args.algo_type == 'ppo_gbrl':
         return { 
             "clip_range": args.clip_range,
+            "use_masking": args.env_type == 'openspiel',
             "clip_range_vf": args.clip_range_vf,
             "normalize_advantage": args.normalize_advantage,
             "target_kl": args.target_kl,
@@ -784,9 +789,10 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'ppo_nn':
+        from sb3_contrib.ppo_mask import MlpPolicy
         from stable_baselines3.common.policies import ActorCriticPolicy
         return {
-            "policy": ActorCriticPolicy,
+            "policy": ActorCriticPolicy if args.env_type != 'pettingzoo' else MlpPolicy,
             "learning_rate": args.learning_rate,
             "n_steps": args.n_steps,
             "batch_size": args.batch_size,
