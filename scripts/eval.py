@@ -27,8 +27,8 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack, VecNor
 from stable_baselines3.common.evaluation import evaluate_policy
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed
 from env.wrappers import (CategoricalDummyVecEnv,
-                            CategoricalObservationWrapper,
-                            MIXED_ENVS)
+                            CategoricalObservationWrapper)
+from env.ocatari import MIXED_ATARI_ENVS
 
 warnings.filterwarnings("ignore")
 
@@ -99,8 +99,8 @@ if __name__ == '__main__':
         if args.env_type == "ocatari":
             make_ram_atari_env = make_ram_ocatari_env
             print("Using Ocatari environment")
-            vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ENVS else vec_env_cls
-            vec_env_kwargs = {'is_mixed': True}
+            vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_cls
+            vec_env_kwargs = {'is_mixed': True} if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_kwargs
         eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
 
         if args.atari_wrapper_kwargs and 'frame_stack' in args.atari_wrapper_kwargs:

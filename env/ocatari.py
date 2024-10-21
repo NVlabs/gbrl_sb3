@@ -55,6 +55,26 @@ alien_orientation_mapping = {
     'encircled': 8
 }
 
+x_momentum_mapping = {
+    'no change': 0,
+    'left consistently': 1,
+    'left steady': 2,
+    'left frequent_moving': 3,
+    'right consistently': 4,
+    'right steady': 5,
+    'right frequent_moving': 6,
+}
+
+y_momentum_mapping = {
+    'no change': 0,
+    'up consistently': 1,
+    'up steady': 2,
+    'up frequent_moving': 3,
+    'down consistently': 4,
+    'down steady': 5,
+    'down frequent_moving': 6,
+}
+
 def orientation_to_one_hot(orientation: np.ndarray):
     orientation_mapped = np.vectorize(orientation_mapping.get)(orientation)
     # Create one-hot encoding
@@ -70,6 +90,70 @@ def alien_orientation_to_one_hot(orientation: np.ndarray):
     one_hot_encoded = np.eye(num_classes)[orientation_mapped]
     # Flatten the one-hot encoded matrix
     return one_hot_encoded.flatten()
+
+
+def x_momentum_to_one_hot(x_momentum: np.ndarray):
+    momentum_mapped = np.vectorize(x_momentum_mapping.get)(x_momentum)
+    # Create one-hot encoding
+    num_classes = len(x_momentum_mapping)
+    one_hot_encoded = np.eye(num_classes)[momentum_mapped]
+    # Flatten the one-hot encoded matrix
+    return one_hot_encoded.flatten()
+
+def y_momentum_to_one_hot(y_momentum: np.ndarray):
+    momentum_mapped = np.vectorize(y_momentum_mapping.get)(y_momentum)
+    # Create one-hot encoding
+    num_classes = len(y_momentum_mapping)
+    one_hot_encoded = np.eye(num_classes)[momentum_mapped]
+    # Flatten the one-hot encoded matrix
+    return one_hot_encoded.flatten()
+
+def get_x_momentum(positions: np.ndarray):
+    # assuming index -1 is current frame and -4 is final frame
+    momentum = np.diff(positions, axis=0)
+    sum_momentum = np.sum(momentum, axis =0)
+    x_change = 'no change'
+    if sum_momentum[0] < 0:
+        x_change = 'left'
+        if (momentum[:, 0] < 0).all():
+            x_change += ' consistently'
+        elif (momentum[:, 0] <= 0).sum() > 1:
+            x_change += ' steady'
+        else:
+            x_change += ' frequent_moving'
+    elif sum_momentum[0] > 0:
+        x_change = 'right'
+        if (momentum[:, 0] > 0).all():
+            x_change += ' consistently'
+        elif (momentum[:, 0] >= 0).sum() > 1:
+            x_change += ' steady'
+        else:
+            x_change += ' frequent_moving'
+    return x_change 
+
+def get_y_momentum(positions: np.ndarray):
+    # assuming index -1 is current frame and -4 is final frame
+    momentum = np.diff(positions, axis=0)
+    sum_momentum = np.sum(momentum, axis =0)
+    y_change = 'no change'
+    if sum_momentum[1] < 0:
+        y_change = 'up'
+        if (momentum[:, 1] < 0).all():
+            y_change += ' consistently'
+        elif (momentum[:, 1] <= 0).sum() > 1:
+            y_change += ' steady'
+        else:
+            y_change += ' frequent_moving'
+    elif sum_momentum[1] > 0:
+        y_change = 'down'
+        if (momentum[:, 1] > 0).all():
+            y_change += ' consistently'
+        elif (momentum[:, 1] >= 0).sum() > 1:
+            y_change += ' steady'
+        else:
+            y_change += ' frequent_moving'
+    return y_change
+
 
 
 def get_orientation(player_position: np.ndarray, other_positions: np.ndarray, player_size: np.ndarray, other_sizes: np.ndarray):
@@ -148,7 +232,14 @@ def get_orientation(player_position: np.ndarray, other_positions: np.ndarray, pl
     return delta
 
 
-def gopher_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool) -> np.ndarray:
+def gopher_extraction(observation: np.ndarray, is_mixed: bool) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+    
     player_position = positions[0]
     player_size = object_sizes[0]
     gopher_position = positions[1]
@@ -199,18 +290,26 @@ def gopher_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_
     delta_prev_count_below = block_count_below - prev_block_count_below
     
     if is_mixed:
-        info = np.concatenate([player_position, delta_player_position, gopher_position, delta_gopher_position, np.array([gopher_distance]), 
+        info = np.concatenate([player_position, delta_player_position, np.array([x_momentum, y_momentum]), gopher_position, delta_gopher_position, np.array([gopher_distance]), 
                             gopher_orientation, np.array([int(aligned_blocks_exist)]), nearest_aligned_pos,
                             np.array([aligned_dist]), aligned_orientation, np.array([int(almost_aligned_block_exist)]),
                             nearest_almost_aligned_pos, np.array([almost_aligned_dist]), almost_aligned_orientation, np.array([block_count_below, prev_block_count_below, delta_prev_count_below])], axis=0, dtype=object)
     else:
-        info = np.concatenate([player_position, delta_player_position, gopher_position, delta_gopher_position, np.array([gopher_distance]), 
+        info = np.concatenate([player_position, delta_player_position,x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), gopher_position, delta_gopher_position, np.array([gopher_distance]), 
                            orientation_to_one_hot(gopher_orientation), np.array([int(aligned_blocks_exist)]), nearest_aligned_pos,
                            np.array([aligned_dist]), orientation_to_one_hot(aligned_orientation), np.array([int(almost_aligned_block_exist)]),
                            nearest_almost_aligned_pos, np.array([almost_aligned_dist]), orientation_to_one_hot(almost_aligned_orientation), np.array([block_count_below, prev_block_count_below, delta_prev_count_below])], axis=0, dtype=np.single)
     return info
 
-def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def breakout_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+    
     player_position = positions[0]
     player_size = object_sizes[0]
     
@@ -247,16 +346,24 @@ def breakout_extraction(positions: np.ndarray, prev_positions: np.ndarray, objec
     delta_distance = ball_distance - prev_ball_distance
 
     if is_mixed:
-        info = np.concatenate([player_position, delta_player, ball_position, np.array([ball_distance, delta_distance]),
+        info = np.concatenate([player_position, delta_player, np.array([x_momentum, y_momentum]), ball_position, np.array([ball_distance, delta_distance]),
                                ball_orientation, ball_velocity
                                ], axis=0, dtype=object)
     else:
-        info = np.concatenate([player_position, delta_player, ball_position, np.array([ball_distance, delta_distance]),
+        info = np.concatenate([player_position, delta_player, x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), ball_position, np.array([ball_distance, delta_distance]),
                                 orientation_to_one_hot(ball_orientation), ball_velocity
                                ], axis=0, dtype=np.single)
     return np.append(info, columns)
 
-def pong_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def pong_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+
     player_position = positions[0]
     player_size = object_sizes[0]
     distances = np.linalg.norm(player_position - positions[1:], axis=1)
@@ -270,18 +377,26 @@ def pong_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_si
     distance_ball_enemy =  np.array([np.linalg.norm(positions[2] - positions[1])])
     enemy_ball_orientation = get_orientation(positions[2], ball_position, object_sizes[2], ball_size)
     if is_mixed:
-        info = np.concatenate([player_position, player_orientation, distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1]], axis=0, dtype=object)
+        info = np.concatenate([player_position, player_orientation, np.array([x_momentum, y_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1]], axis=0, dtype=object)
     else:
-        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1]], axis=0, dtype=np.single)
+        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1]], axis=0, dtype=np.single)
     return info
 
-def tennis_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+
     player_position = positions[0]
     player_size = object_sizes[0]
     distances = np.linalg.norm(player_position - positions[1:], axis=1)
     distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = np.max(distances)
     orientation = get_orientation(player_position, positions[1:, :], player_size, object_sizes[1:])
-    prev_orientation = get_orientation(prev_positions[1], prev_positions[1:, :], object_sizes[1], object_sizes[1:])
+    prev_orientation = get_orientation(prev_positions[0], prev_positions[1:, :], object_sizes[1], object_sizes[1:])
     velocity = positions - prev_positions
     ball_position = positions[2]
     ball_size = object_sizes[2]
@@ -291,12 +406,20 @@ def tennis_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_
     distance_ball_enemy =  np.array([np.linalg.norm(positions[2] - positions[1])])
     enemy_ball_orientation = get_orientation(enemy_position, ball_position, enemy_size, ball_size)
     if is_mixed:
-        info = np.concatenate([player_position, player_orientation, distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1]], axis=0, dtype=object)
+        info = np.concatenate([player_position, player_orientation, np.array([x_momentum, y_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1]], axis=0, dtype=object)
     else:
-        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1]], axis=0, dtype=np.single)
+        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1]], axis=0, dtype=np.single)
     return info
 
-def alien_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def alien_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+
     player_position = positions[0]
     player_size = object_sizes[0]
     prev_player_position = prev_positions[0]
@@ -373,17 +496,24 @@ def alien_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_s
     player_orientation = get_orientation(player_position, prev_positions[0], player_size, player_size)
 
     if is_mixed:
-        info = np.concatenate([player_position, player_orientation, pulsar_distance, delta_pulsar, pulsar_orientation, closest_egg_position, closest_egg_orientation,
+        info = np.concatenate([player_position, player_orientation, np.array([x_momentum, y_momentum]), pulsar_distance, delta_pulsar, pulsar_orientation, closest_egg_position, closest_egg_orientation,
                             closest_egg_distance, delta_closest_egg, n_eggs, alien_positions[:, 0], alien_positions[:, 1], alien_distances, alien_orientation, delta_distances, prev_alien_orientation, n_aliens, alien_cluster_orientation], axis=0, dtype=object)
     else:
-        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), pulsar_distance, delta_pulsar, orientation_to_one_hot(pulsar_orientation), closest_egg_position, orientation_to_one_hot(closest_egg_orientation),
+        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), pulsar_distance, delta_pulsar, orientation_to_one_hot(pulsar_orientation), closest_egg_position, orientation_to_one_hot(closest_egg_orientation),
                             closest_egg_distance, delta_closest_egg, n_eggs, alien_positions[:, 0], alien_positions[:, 1], alien_distances, orientation_to_one_hot(alien_orientation), delta_distances, orientation_to_one_hot(prev_alien_orientation), n_aliens, alien_orientation_to_one_hot(alien_cluster_orientation)], axis=0, dtype=np.single)
 
     return info
 
-def kangaroo_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def kangaroo_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
     player_position = positions[0]
     player_size = object_sizes[0]
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
     # valid_positions = positions.copy()
 
     child_idx = 1
@@ -429,6 +559,9 @@ def kangaroo_extraction(positions: np.ndarray, prev_positions: np.ndarray, objec
     below_coconut = True if 'x_aligned' in coconut_orientation[0] or 'fully aligned' in coconut_orientation[0] else False
     below_coconut &= coconut_delta[0] > 0
     coconut_thrown_at = np.isin('y_aligned', coconut_orientation[1:]) & (coconut_delta[1:] > 0)
+    coconut_speeds = positions[coconut_idx:life_idx] - prev_positions[coconut_idx:life_idx]
+    coconut_speeds[coconut_speeds == 0] = 1
+    coconut_time = np.array([np.min((coconut_distance[:, np.newaxis] / coconut_speeds).flatten())])
     
     player_y = player_position[1]
     closest_ladder = np.argmin(player_y - positions[ladder_idx:monkey_idx, 1])
@@ -439,23 +572,31 @@ def kangaroo_extraction(positions: np.ndarray, prev_positions: np.ndarray, objec
     
 
     if is_mixed:
-        info = np.concatenate([player_position, prev_orientation, child_distance, child_delta, child_orientation,
+        info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), child_distance, child_delta, child_orientation,
                                fruit_distance, fruit_delta, fruit_orientation, bell_distance, bell_delta, bell_orientation,
                                platform_distance, platform_delta, platform_orientation, 
                                np.array([closest_ladder_distance, closest_ladder_delta, closest_ladder_orientation], dtype=object),
                                monkey_distance, monkey_delta, monkey_orientation, coconut_distance, coconut_delta, coconut_orientation,
-                               np.array([below_coconut], dtype=str), coconut_thrown_at.astype(str)], axis=0, dtype=object)
+                               np.array([below_coconut], dtype=str), coconut_thrown_at.astype(str), coconut_time], axis=0, dtype=object)
     else:
-        info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), child_distance, 
+        info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), child_distance, 
                         child_delta, orientation_to_one_hot(child_orientation), fruit_distance, fruit_delta, 
                         orientation_to_one_hot(fruit_orientation), bell_distance, bell_delta, orientation_to_one_hot(bell_orientation),
                         platform_distance, platform_delta, orientation_to_one_hot(platform_orientation), 
                         np.array([closest_ladder_distance, closest_ladder_delta], dtype=np.single), orientation_to_one_hot(closest_ladder_orientation), 
                         monkey_distance, monkey_delta, orientation_to_one_hot(monkey_orientation), coconut_distance, coconut_delta, orientation_to_one_hot(coconut_orientation),
-                        np.array([below_coconut], dtype=np.single), coconut_thrown_at.astype(np.single)], axis=0, dtype=np.single)
+                        np.array([below_coconut], dtype=np.single), coconut_thrown_at.astype(np.single), coconut_time], axis=0, dtype=np.single)
     return info
 
-def general_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def general_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+    
     player_position = positions[0]
     player_size = object_sizes[0]
 
@@ -468,13 +609,59 @@ def general_extraction(positions: np.ndarray, prev_positions: np.ndarray, object
     delta_distances = distances - prev_distances
 
     if is_mixed:
-        info = np.concatenate([player_position, prev_orientation, distances, delta_distances, orientations], axis=0, dtype=object)
+        info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), distances, delta_distances, orientations], axis=0, dtype=object)
     else:
-         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), distances, delta_distances, orientation_to_one_hot(orientations)], axis=0, dtype=object)
+         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), distances, delta_distances, orientation_to_one_hot(orientations)], axis=0, dtype=object)
+    return info
+
+def bowling_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+
+    pin_idx = 1
+
+    pin_positions = positions[pin_idx:]
+    valid_pins = pin_positions[(pin_positions[:, 0] > 0) & (pin_positions[:, 1] > 0)]
+    n_pins = len(valid_pins)
+    center_pin_pos = np.mean(valid_pins, axis=0)
+    
+    player_position = positions[0]
+    player_size = object_sizes[0]
+
+    orientations = get_orientation(player_position, positions[1:], player_size, object_sizes[1:])
+
+    prev_orientation = get_orientation(player_position, prev_positions[0], player_size, player_size)
+
+    distances = np.linalg.norm(player_position - positions[1:], axis=1)
+    prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
+    delta_distances = distances - prev_distances
+
+    orientation_center_pin = get_orientation(player_position, center_pin_pos, player_size, object_sizes[1])
+    closest_distance_to_center = np.min(np.linalg.norm(center_pin_pos - positions[1:], axis=1))
+
+    if is_mixed:
+        info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), 
+                               distances, delta_distances, orientations, orientation_center_pin, np.array([n_pins, closest_distance_to_center])], axis=0, dtype=object)
+    else:
+         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), distances, delta_distances, orientation_to_one_hot(orientations)
+                               , orientation_to_one_hot(orientation_center_pin), np.array([n_pins, closest_distance_to_center])], axis=0, dtype=object)
     return info
 
 
-def space_invaders_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def space_invaders_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+    positions = observation[-1, :, :2]
+    prev_positions = observation[-2, :, :2]
+    object_sizes = observation[-1, :, 2:]
+
+    x_momentum = get_x_momentum(observation[:, 0, :2])
+    y_momentum = get_y_momentum(observation[:, 0, :2])
+
     player_position = positions[0]
     player_size = object_sizes[0]
     orientations = get_orientation(player_position, positions[1:], player_size, object_sizes[1:])
@@ -514,25 +701,10 @@ def space_invaders_extraction(positions: np.ndarray, prev_positions: np.ndarray,
     counts = np.append(counts, empty_rows)
 
     if is_mixed:
-        info = np.concatenate([player_position, prev_orientation, distances, delta_distances, orientations, below_info, counts], axis=0, dtype=object)
+        info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), distances, delta_distances, orientations, below_info, counts], axis=0, dtype=object)
     else:
-         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), distances, delta_distances, orientation_to_one_hot(orientations), below_info, counts], axis=0, dtype=object)
-    return info
-
-def general_extraction(positions: np.ndarray, prev_positions: np.ndarray, object_sizes: np.ndarray, is_mixed: bool = True) -> np.ndarray:
-    player_position = positions[0]
-    player_size = object_sizes[0]
-    orientations = get_orientation(player_position, positions[1:], player_size, object_sizes[1:])
-    prev_orientation = get_orientation(player_position, prev_positions[0], player_size, player_size)
-
-    distances = np.linalg.norm(player_position - positions[1:], axis=1)
-    prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
-    delta_distances = distances - prev_distances
-
-    if is_mixed:
-        info = np.concatenate([player_position, prev_orientation, distances, delta_distances, orientations], axis=0, dtype=object)
-    else:
-         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), distances, delta_distances, orientation_to_one_hot(orientations)], axis=0, dtype=object)
+         info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), x_momentum_to_one_hot(x_momentum), 
+                               y_momentum_to_one_hot(y_momentum), distances, delta_distances, orientation_to_one_hot(orientations), below_info, counts], axis=0, dtype=object)
     return info
 
 
