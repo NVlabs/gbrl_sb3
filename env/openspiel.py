@@ -14,7 +14,7 @@ try:
 except:
     OpenSpielCompatibilityV0 = None
 
-MIXED_SIZES = {'chess': 134}
+MIXED_SIZES = {'chess': 134, 'liars_dice': 4}
 
 def process_openspiel_kwargs(algo_kwargs):
     if 'use_sde' in algo_kwargs:
@@ -62,8 +62,34 @@ def chess_wrapper(obs: np.ndarray, player: str):
                                                                           black_cast_queenside, black_cast_kingside])], axis=0, dtype=object)
     return chess_obs
 
+LIARS_DICE_BIDS = {0: 'No bid',
+                   1: '1 die shows 1',
+                   2: '1 die shows 2',
+                   3: '1 die shows 3',
+                   4: '1 die shows 4',
+                   5: '1 die shows 5',
+                   6: '1 die shows 6',
+                   7: '2 die shows 1',
+                   8: '2 die shows 2',
+                   9: '2 die shows 3',
+                   10: '2 die shows 4',
+                   11: '2 die shows 5',
+                   12: '2 die shows 6'
+                   }
 
-OBS_WRAPPERS = {'chess': chess_wrapper}
+def liars_dice_wrapper(obs: np.ndarray, player: str):
+    player_identity = player
+    dice_obs = obs[2:8]
+    bid_obs = obs[8:20]
+    dice = np.argmax(dice_obs) + 1
+    bid_history =  np.argmax(bid_obs) + 1 if bid_obs.sum() > 0 else 0
+    bid_history = LIARS_DICE_BIDS[bid_history]
+    liar = 'Liar Called' if bool(obs[-1]) else 'Liar not Called'
+    return np.array([player_identity, dice, bid_history, liar], dtype=object)
+
+
+
+OBS_WRAPPERS = {'chess': chess_wrapper, 'liars_dice': liars_dice_wrapper}
 
 
 class OpenSpielGymEnv(gym.Env):
@@ -74,7 +100,7 @@ class OpenSpielGymEnv(gym.Env):
         self.action_space = self.env.action_space(self.env.possible_agents[0])
         self.num_envs = 1
         self.env_id = env_id
-        is_mixed = False
+        # is_mixed = False
         self.is_mixed = is_mixed
         if is_mixed:
             self.observation_space = gym.spaces.Box(low=float('-inf'), high=float('inf'), shape=(MIXED_SIZES.get(env_id, 0), ), dtype=np.float32)

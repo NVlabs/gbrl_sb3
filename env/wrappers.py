@@ -14,15 +14,16 @@ from gym.core import ObsType
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
 from env.ocatari import (gopher_extraction,
-                        general_extraction,
-                        breakout_extraction,
-                        bowling_extraction,
-                        alien_extraction,
-                        tennis_extraction,
-                        kangaroo_extraction,
-                        space_invaders_extraction,
-                        pong_extraction,
-                        ATARI_GENERAL_EXTRACTION
+                         asterix_extraction,
+                         general_extraction,
+                         breakout_extraction,
+                         bowling_extraction,
+                         alien_extraction,
+                         tennis_extraction,
+                         kangaroo_extraction,
+                         space_invaders_extraction,
+                         pong_extraction,
+                         ATARI_GENERAL_EXTRACTION
                                        )
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
                                                      EpisodicLifeEnv,
@@ -230,13 +231,13 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'Assault':
             flattened_shape = 44 if is_mixed else 420
         elif self.env.game_name == 'Asterix':
-            flattened_shape = 77 if is_mixed else 739
+            flattened_shape = 79 if is_mixed else 767
         elif self.env.game_name == 'Bowling':
             flattened_shape = 41 if is_mixed else 391
         elif self.env.game_name == 'Freeway':
             flattened_shape = 38 if is_mixed else 362
         elif self.env.game_name == 'Tennis':
-            flattened_shape = 26 if is_mixed else 246
+            flattened_shape = 31 if is_mixed else 275
         elif self.env.game_name == 'Boxing':
             flattened_shape = 8 if is_mixed else 72
         else:
@@ -261,6 +262,8 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             return tennis_extraction(observation, self.env.is_mixed)
         elif self.env.game_name == 'Bowling':
             return bowling_extraction(observation, self.env.is_mixed)
+        elif self.env.game_name == 'Asterix':
+            return asterix_extraction(observation, self.env.is_mixed)
         elif self.env.game_name in ATARI_GENERAL_EXTRACTION:
             return general_extraction(observation, self.env.is_mixed)
         else:
