@@ -63,6 +63,7 @@ x_momentum_mapping = {
     'right consistently': 4,
     'right steady': 5,
     'right frequent_moving': 6,
+    'no object': 7,
 }
 
 y_momentum_mapping = {
@@ -73,6 +74,7 @@ y_momentum_mapping = {
     'down consistently': 4,
     'down steady': 5,
     'down frequent_moving': 6,
+    'no object': 7,
 }
 
 def orientation_to_one_hot(orientation: np.ndarray):
@@ -111,7 +113,7 @@ def y_momentum_to_one_hot(y_momentum: np.ndarray):
 def get_x_momentum(positions: np.ndarray):
     # assuming index -1 is current frame and -4 is final frame
     momentum = np.diff(positions, axis=0)
-    sum_momentum = np.sum(momentum, axis =0)
+    sum_momentum = np.sum(momentum, axis=0)
     x_change = 'no change'
     if sum_momentum[0] < 0:
         x_change = 'left'
@@ -129,6 +131,8 @@ def get_x_momentum(positions: np.ndarray):
             x_change += ' steady'
         else:
             x_change += ' frequent_moving'
+    if np.array_equal(positions, np.zeros_like(positions)):
+        x_change = 'no object'
     return x_change 
 
 def get_y_momentum(positions: np.ndarray):
@@ -152,6 +156,8 @@ def get_y_momentum(positions: np.ndarray):
             y_change += ' steady'
         else:
             y_change += ' frequent_moving'
+    if np.array_equal(positions, np.zeros_like(positions)):
+        y_change = 'no object'
     return y_change
 
 
@@ -269,8 +275,8 @@ def gopher_extraction(observation: np.ndarray, is_mixed: bool) -> np.ndarray:
         aligned_dist = aligned_dist[min_arg]
         aligned_orientation = get_orientation(player_position, nearest_aligned_pos, player_size, block_size)
     
-    if aligned_orientation.ndim > 1:
-        print()
+    # if aligned_orientation.ndim > 1:
+    #     print()
     nearest_almost_aligned_pos = np.array([0, 0])
     almost_aligned_orientation = np.array(['No object']).astype('<U50')
     almost_aligned_dist = 0
@@ -384,9 +390,10 @@ def pong_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarra
     return info
 
 def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
-    positions = observation[-1, :, :2]
-    prev_positions = observation[-2, :, :2]
-    object_sizes = observation[-1, :, 2:]
+    positions = observation[-1, :-1, :2]
+    prev_positions = observation[-2, :-1, :2]
+    object_sizes = observation[-1, :-1, 2:]
+
 
     x_momentum = get_x_momentum(observation[:, 0, :2])
     y_momentum = get_y_momentum(observation[:, 0, :2])
@@ -395,9 +402,12 @@ def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndar
     player_size = object_sizes[0]
     distances = np.linalg.norm(player_position - positions[1:], axis=1)
     distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = np.max(distances)
+    prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
+    delta_distances = distances - prev_distances
+    delta_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = 0
+
     orientation = get_orientation(player_position, positions[1:, :], player_size, object_sizes[1:])
     prev_orientation = get_orientation(prev_positions[0], prev_positions[1:, :], player_size, object_sizes[1:])
-    velocity = positions - prev_positions
     ball_position = positions[2]
     ball_size = object_sizes[2]
     enemy_position = positions[1]
@@ -408,19 +418,19 @@ def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndar
     y_ball_momentum = get_y_momentum(observation[:, 2, :2])
     x_enemy_momentum = get_x_momentum(observation[:, 1, :2])
     y_enemy_momentum = get_y_momentum(observation[:, 1, :2])
-    player_orientation = get_orientation(player_position, prev_positions[0], player_size, player_size)
+
     distance_ball_enemy =  np.array([np.linalg.norm(positions[2] - positions[1])])
     enemy_ball_orientation = get_orientation(enemy_position, ball_position, enemy_size, ball_size)
     if is_mixed:
-        info = np.concatenate([player_position, player_orientation, np.array([x_momentum, y_momentum])
-                               , np.array([x_ball_momentum, y_ball_momentum]), np.array([x_enemy_momentum, y_enemy_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1],
-                               is_upper_player.astype(str)], axis=0, dtype=object)
+        info = np.concatenate([player_position, np.array([x_momentum, y_momentum]), np.array([x_ball_momentum, y_ball_momentum]), 
+                               np.array([x_enemy_momentum, y_enemy_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation,
+                               is_upper_player.astype(str), delta_distances], axis=0, dtype=object)
     else:
-        info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), x_momentum_to_one_hot(x_momentum), 
+        info = np.concatenate([player_position, x_momentum_to_one_hot(x_momentum), 
                                y_momentum_to_one_hot(y_momentum), x_momentum_to_one_hot(x_ball_momentum), 
                                y_momentum_to_one_hot(y_ball_momentum), x_momentum_to_one_hot(x_enemy_momentum), 
-                               y_momentum_to_one_hot(y_enemy_momentum), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1],
-                               is_upper_player], axis=0, dtype=np.single)
+                               y_momentum_to_one_hot(y_enemy_momentum), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), 
+                               is_upper_player, delta_distances], axis=0, dtype=np.single)
     return info
 
 def alien_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
@@ -542,6 +552,7 @@ def kangaroo_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nd
     distances = np.linalg.norm(player_position - positions[:life_idx], axis=1)
     prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[:life_idx], axis=1)
     delta_distances = distances - prev_distances
+    delta_distances[(positions[:life_idx, 0] == 0) & (positions[:life_idx, 1] == 0)] = 0
 
     child_distance = distances[child_idx:fruit_idx]
     child_delta = delta_distances[child_idx:fruit_idx]
@@ -567,9 +578,9 @@ def kangaroo_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nd
     coconut_distance = distances[coconut_idx:]
     coconut_delta = delta_distances[coconut_idx:]
     coconut_orientation = orientations[coconut_idx:]
-    below_coconut = True if 'x_aligned' in coconut_orientation[0] or 'fully aligned' in coconut_orientation[0] else False
+    below_coconut = True if 'x_aligned' in coconut_orientation[0] or 'fully aligned' in coconut_orientation[0] or 'semi left' in coconut_orientation[0] or 'semi right' in coconut_orientation[1] else False
     below_coconut &= coconut_delta[0] > 0
-    coconut_thrown_at = np.isin('y_aligned', coconut_orientation[1:]) & (coconut_delta[1:] > 0)
+    coconut_thrown_at = ((positions[coconut_idx+1:life_idx, 0] > 0) & (positions[coconut_idx+1:life_idx, 1] > 0)) & (coconut_delta[1:] > 0)
     coconut_speeds = positions[coconut_idx:life_idx] - prev_positions[coconut_idx:life_idx]
     coconut_speeds[coconut_speeds == 0] = 1
     coconut_time = np.array([np.min((coconut_distance[:, np.newaxis] / coconut_speeds).flatten())])
@@ -580,7 +591,6 @@ def kangaroo_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nd
     closest_ladder_distance = ladder_distance[closest_ladder]
     closest_ladder_delta = ladder_delta[closest_ladder]
     closest_ladder_orientation = ladder_orientation[closest_ladder]
-    
 
     if is_mixed:
         info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), child_distance, child_delta, child_orientation,
@@ -618,6 +628,7 @@ def general_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nda
     distances = np.linalg.norm(player_position - positions[1:], axis=1)
     prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
     delta_distances = distances - prev_distances
+    delta_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = 0
 
     if is_mixed:
         info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), distances, delta_distances, orientations], axis=0, dtype=object)
@@ -647,18 +658,22 @@ def asterix_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nda
     distances = np.linalg.norm(player_position - positions[1:], axis=1)
     prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
     delta_distances = distances - prev_distances
-    closest_enemy = np.argmin(distances[enemy_idx:reward_idx]) + enemy_idx
+    delta_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = 0
+
+    closest_enemy = np.argmin(distances[enemy_idx - 1:reward_idx - 1]) + enemy_idx - 1
     closest_enemy_distance = np.array([distances[closest_enemy]])
     closest_enemy_orientation = np.array([orientations[closest_enemy]])
+    closest_enemy_x_momentum = np.array([get_x_momentum(observation[:, closest_enemy + 1, :2])])
 
 
     if is_mixed:
         info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), distances, delta_distances, orientations,
-                               closest_enemy_distance, closest_enemy_orientation], axis=0, dtype=object)
+                               closest_enemy_distance, closest_enemy_orientation, closest_enemy_x_momentum], axis=0, dtype=object)
     else:
          info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), x_momentum_to_one_hot(x_momentum), 
                                y_momentum_to_one_hot(y_momentum), distances, delta_distances, orientation_to_one_hot(orientations),
-                               closest_enemy_distance, orientation_to_one_hot(closest_enemy_orientation)], axis=0, dtype=object)
+                               closest_enemy_distance, orientation_to_one_hot(closest_enemy_orientation),
+                               x_momentum_to_one_hot(closest_enemy_x_momentum)], axis=0, dtype=object)
     return info
 
 def bowling_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
@@ -686,6 +701,7 @@ def bowling_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nda
     distances = np.linalg.norm(player_position - positions[1:], axis=1)
     prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
     delta_distances = distances - prev_distances
+    delta_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = 0
 
     orientation_center_pin = get_orientation(player_position, center_pin_pos, player_size, object_sizes[1])
     closest_distance_to_center = np.min(np.linalg.norm(center_pin_pos - positions[1:], axis=1))
@@ -717,6 +733,7 @@ def space_invaders_extraction(observation: np.ndarray, is_mixed: bool = True) ->
     distances = np.linalg.norm(player_position - positions[1:], axis=1)
     prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
     delta_distances = distances - prev_distances
+    delta_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = 0
 
     shield_idx = 1
     alien_idx = 4

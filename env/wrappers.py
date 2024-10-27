@@ -35,6 +35,20 @@ from stable_baselines3.common.type_aliases import (
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import obs_space_info
+import matplotlib.pyplot as plt
+
+def save_rendered_frame(env, frame_number=None):
+    # Render the environment's current state
+    frame = env.render()  # 'rgb_array' gives a numpy array of the image
+    plt.imshow(frame)
+    plt.axis('off')  # Turn off the axis
+    # Save image as 'frame_number.png'
+    name = 'frame'
+    if frame_number:
+        name += f'_{frame_number}'
+    name += '.png'
+    plt.savefig(name, bbox_inches='tight', pad_inches=0)
+    plt.close()
 
 
 IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
@@ -231,13 +245,13 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'Assault':
             flattened_shape = 44 if is_mixed else 420
         elif self.env.game_name == 'Asterix':
-            flattened_shape = 79 if is_mixed else 767
+            flattened_shape = 80 if is_mixed else 777
         elif self.env.game_name == 'Bowling':
             flattened_shape = 41 if is_mixed else 391
         elif self.env.game_name == 'Freeway':
             flattened_shape = 38 if is_mixed else 362
         elif self.env.game_name == 'Tennis':
-            flattened_shape = 31 if is_mixed else 275
+            flattened_shape = 21 if is_mixed else 193
         elif self.env.game_name == 'Boxing':
             flattened_shape = 8 if is_mixed else 72
         else:
