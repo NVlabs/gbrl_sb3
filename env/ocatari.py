@@ -77,6 +77,7 @@ y_momentum_mapping = {
     'no object': 7,
 }
 
+
 def orientation_to_one_hot(orientation: np.ndarray):
     orientation_mapped = np.vectorize(orientation_mapping.get)(orientation)
     # Create one-hot encoding
@@ -159,6 +160,7 @@ def get_y_momentum(positions: np.ndarray):
     if np.array_equal(positions, np.zeros_like(positions)):
         y_change = 'no object'
     return y_change
+
 
 
 
@@ -741,17 +743,44 @@ def space_invaders_extraction(observation: np.ndarray, is_mixed: bool = True) ->
     aliens_per_row = 6
     alien_rows = 6
 
-    below = orientations == 'x_aligned and above'
-    below_bullet = (orientations == 'x_aligned and above') |  (orientations == 'semi left and above') | (orientations == 'semi right and above') 
+    below = (orientations == 'x_aligned and above') |  (orientations == 'semi left and above') | (orientations == 'semi right and above') 
 
-    below_shield = below[shield_idx:alien_idx].any()
-    below_alien = below[alien_idx:bullet_idx].any()
-    below_bullet = below_bullet[bullet_idx:].any()
+    below_shield = below[shield_idx-1:alien_idx-1].any()
+    below_alien = below[alien_idx-1:bullet_idx-1].any()
+    below_bullet = below[bullet_idx-1:].any()
     
     alien_positions = positions[alien_idx:bullet_idx]
-    below_aliens = alien_positions[below[alien_idx:bullet_idx]]
+    below_aliens = alien_positions[below[alien_idx-1:bullet_idx-1]]
     below_first_row_alien = True if below_alien and below_aliens.size > 0 and np.max(below_aliens[:, 1] == np.max(alien_positions[:, 1])) else False
-    below_info = np.array([below_shield, below_alien, below_bullet, below_first_row_alien]).astype(str if is_mixed else int)
+
+    def below_mapping(below_shield: bool, below_alien: bool, below_first_row_alien: bool, below_bullet: bool):
+        below_info = 'no object'
+        if below_shield:
+            below_info = 'shield'
+        elif below_alien: 
+            if below_first_row_alien:
+                below_info = 'alien first row'
+            below_info = 'alien'
+        elif below_bullet:
+            below_info = 'bullet'
+        return np.array([below_info])
+    
+    below_info = below_mapping(below_shield, below_alien, below_first_row_alien, below_bullet)
+
+    def below_mapping_to_onehot(below_info: str):
+        space_invaders_mapping = {
+        'no object': 0,
+        'alien' : 1,
+        'alien first row': 2,
+        'bullet': 3,
+        'shield': 4
+        }
+        below_info_mapped = np.vectorize(space_invaders_mapping.get)(below_info)
+        # Create one-hot encoding
+        num_classes = len(space_invaders_mapping)
+        one_hot_encoded = np.eye(num_classes)[below_info_mapped]
+        # Flatten the one-hot encoded matrix
+        return one_hot_encoded.flatten()
 
     j = 0
     counts = np.zeros(alien_rows)
@@ -768,7 +797,7 @@ def space_invaders_extraction(observation: np.ndarray, is_mixed: bool = True) ->
         info = np.concatenate([player_position, prev_orientation, np.array([x_momentum, y_momentum]), distances, delta_distances, orientations, below_info, counts], axis=0, dtype=object)
     else:
          info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), x_momentum_to_one_hot(x_momentum), 
-                               y_momentum_to_one_hot(y_momentum), distances, delta_distances, orientation_to_one_hot(orientations), below_info, counts], axis=0, dtype=object)
+                               y_momentum_to_one_hot(y_momentum), distances, delta_distances, orientation_to_one_hot(orientations), below_mapping_to_onehot(below_info), counts], axis=0, dtype=object)
     return info
 
 
