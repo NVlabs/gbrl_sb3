@@ -276,7 +276,8 @@ def parse_args():
     parser.add_argument('--compress_capacity', type=int)
     parser.add_argument('--compress_optimizer_lr', type=float)
     parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
-    
+    # self play
+    parser.add_argument('--rollouts_player', type=int)
     args = parser.parse_args()
 
     defaults = load_yaml_defaults()
@@ -285,8 +286,8 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    args.env_type = args.env_type if args.env_type else 'ocatari'
-    # args.env_type = args.env_type if args.env_type else 'openspiel'
+    # args.env_type = args.env_type if args.env_type else 'ocatari'
+    args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
@@ -298,8 +299,9 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
-    args.env_name = args.env_name if args.env_name else 'Boxing-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Kangaroo-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'Boxing-ramNoFrameskip-v4'
+    args.env_name = args.env_name if args.env_name else 'liars_dice'
+    # args.env_name = args.env_name if args.env_name else 'Assault-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -464,6 +466,8 @@ def get_defaults(args, defaults):
         args.compress_kwargs['optimizer_kwargs'] = args.compress_optimizer_kwargs
         if args.compress_optimizer_lr:
             args.compress_kwargs['optimizer_kwargs']['lr'] = args.compress_optimizer_lr
+    # self play parameters
+    args.rollouts_player = args.rollouts_player if args.rollouts_player is not None else defaults['self_play']['rollouts_player']
     return args
 
 def process_logging(args, callback_list):
@@ -494,10 +498,10 @@ def process_logging(args, callback_list):
     return tensorboard_log
 
 def process_policy_kwargs(args):
+    algo_kwargs = {}
     if args.algo_type == 'ppo_gbrl':
-        return { 
+        algo_kwargs = { 
             "clip_range": args.clip_range,
-            "use_masking": args.env_type == 'openspiel',
             "clip_range_vf": args.clip_range_vf,
             "normalize_advantage": args.normalize_advantage,
             "target_kl": args.target_kl,
@@ -558,7 +562,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'a2c_gbrl':
-        return { 
+        algo_kwargs = { 
             "normalize_advantage": args.normalize_advantage,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
@@ -614,7 +618,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'sac_gbrl':
-        return {
+        algo_kwargs = {
             "train_freq": args.train_freq,
             "seed": args.seed,
             "buffer_size": args.buffer_size,
@@ -686,7 +690,7 @@ def process_policy_kwargs(args):
             "device": args.device
         }
     elif args.algo_type == 'awr_gbrl':
-        return {
+        algo_kwargs = {
             "normalize_advantage": args.normalize_advantage,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
@@ -747,7 +751,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'dqn_gbrl':
-        return {
+        algo_kwargs = {
             "max_q_grad_norm": args.max_q_grad_norm,
             "normalize_q_grads": args.normalize_q_grads,
             "batch_size": args.batch_size,
@@ -791,8 +795,8 @@ def process_policy_kwargs(args):
     elif args.algo_type == 'ppo_nn':
         from sb3_contrib.ppo_mask import MlpPolicy
         from stable_baselines3.common.policies import ActorCriticPolicy
-        return {
-            "policy": ActorCriticPolicy if args.env_type != 'pettingzoo' else MlpPolicy,
+        algo_kwargs = {
+            "policy": ActorCriticPolicy if args.env_type != 'openspiel' else MlpPolicy,
             "learning_rate": args.learning_rate,
             "n_steps": args.n_steps,
             "batch_size": args.batch_size,
@@ -815,7 +819,7 @@ def process_policy_kwargs(args):
         }
     elif args.algo_type == 'a2c_nn':
         from stable_baselines3.common.policies import ActorCriticPolicy
-        return {
+        algo_kwargs = {
             "policy": ActorCriticPolicy,
             "learning_rate": args.learning_rate,
             "n_steps": args.n_steps,
@@ -837,7 +841,7 @@ def process_policy_kwargs(args):
         }
     elif args.algo_type == 'awr_nn':
         from policies.awr_nn_policy import AWRPolicy
-        return {
+        algo_kwargs = {
             "policy": AWRPolicy,
             "learning_rate": args.learning_rate,
             "train_freq": args.train_freq,
@@ -870,7 +874,7 @@ def process_policy_kwargs(args):
         }
     elif args.algo_type == 'dqn_nn':
         from stable_baselines3.dqn.policies import DQNPolicy
-        return {
+        algo_kwargs = {
             'policy': DQNPolicy,
             "max_grad_norm": args.max_grad_norm,
             "batch_size": args.batch_size,
@@ -890,6 +894,15 @@ def process_policy_kwargs(args):
             "seed": args.seed,
             "verbose": args.verbose,
         }
+    if args.env_type == 'openspiel':
+        algo_kwargs['rollouts_player'] = args.rollouts_player
+        if 'use_sde' in algo_kwargs:
+            del algo_kwargs['use_sde']
+        if 'sde_sample_freq' in algo_kwargs:
+            del algo_kwargs['sde_sample_freq']
+        if 'gbrl' in args.algo_type:
+            algo_kwargs['use_masking'] = True
+    return algo_kwargs
 
 
 

@@ -16,13 +16,6 @@ except:
 
 MIXED_SIZES = {'chess': 134, 'liars_dice': 4}
 
-def process_openspiel_kwargs(algo_kwargs):
-    if 'use_sde' in algo_kwargs:
-        del algo_kwargs['use_sde']
-    if 'sde_sample_freq' in algo_kwargs:
-        del algo_kwargs['sde_sample_freq']
-    
-
 
 def chess_wrapper(obs: np.ndarray, player: str):
     obs_positions = obs[:13].astype(bool)
@@ -100,6 +93,7 @@ class OpenSpielGymEnv(gym.Env):
         self.action_space = self.env.action_space(self.env.possible_agents[0])
         self.num_envs = 1
         self.env_id = env_id
+        self.agent_selection = None
         # is_mixed = False
         self.is_mixed = is_mixed
         if is_mixed:
@@ -110,6 +104,7 @@ class OpenSpielGymEnv(gym.Env):
         obs = self.observe(self.env.agent_selection)
         if self.is_mixed:
             obs = OBS_WRAPPERS[self.env_id](obs, self.env.agent_selection)
+        self.agent_selection = self.env.agent_selection
         return obs, {'player': self.env.agent_selection}
     
     def seed(self, seed):
@@ -128,9 +123,7 @@ class OpenSpielGymEnv(gym.Env):
         new_obs, reward, terminated, truncated, info = self.env.last()
         if self.is_mixed:
             new_obs = OBS_WRAPPERS[self.env_id](new_obs, self.env.agent_selection)
-        # done = terminated or truncated
-        # info['TimeLimit.truncated'] = truncated
-        # info['terminal_observation'] = new_obs if done else None
+        self.agent_selection = self.env.agent_selection
         return new_obs, reward, terminated, truncated, info
     
     def action_mask(self):

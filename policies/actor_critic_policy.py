@@ -189,7 +189,8 @@ class ActorCriticPolicy(BasePolicy):
                             device=tree_optimizer.get('device', 'cpu'))
 
     def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False, 
-                requires_grad: bool=False, action_masks: Optional[np.ndarray] = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+                requires_grad: bool=False, action_masks: Optional[np.ndarray] = None,
+                stop_idx: int = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
 
@@ -198,14 +199,14 @@ class ActorCriticPolicy(BasePolicy):
         :return: action, value and log probability of the action
         """
         # Preprocess the observation if needed
-        distribution, values = self._get_action_dist_from_obs(obs, requires_grad)
+        distribution, values = self._get_action_dist_from_obs(obs, requires_grad, stop_idx)
         if action_masks is not None and self.use_masking:
             distribution.apply_masking(action_masks)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
 
-    def _get_action_dist_from_obs(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True) -> Distribution:
+    def _get_action_dist_from_obs(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True, stop_idx: int = None) -> Distribution:
         """
         Retrieve action distribution given the latent codes.
 
@@ -213,7 +214,7 @@ class ActorCriticPolicy(BasePolicy):
         :return: Action distribution
         """
         if self.nn_critic:
-            mean_actions = self.model(obs, requires_grad, tensor=True)
+            mean_actions = self.model(obs, requires_grad, tensor=True, stop_idx=stop_idx)
             values = self.value_net(obs)
         else:
             mean_actions, values = self.model(obs, requires_grad, tensor=True)
@@ -348,7 +349,7 @@ class ActorCriticPolicy(BasePolicy):
     def get_num_trees(self):
         return self.model.get_num_trees()
     
-    def predict_values(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True) -> th.Tensor:
+    def predict_values(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True, stop_idx: int = None) -> th.Tensor:
         """
         Get the estimated values according to the current policy given the observations.
 
@@ -359,7 +360,7 @@ class ActorCriticPolicy(BasePolicy):
             if not isinstance(obs, th.Tensor):
                 obs = th.tensor(obs, device=self.device)
             return self.value_net(obs)
-        return self.model.predict_values(obs, requires_grad, tensor=True)
+        return self.model.predict_values(obs, requires_grad, tensor=True, stop_idx=stop_idx)
 
     def critic(self, obs: Union[th.Tensor, np.ndarray]) -> th.Tensor:
         return self.predict_values(obs)

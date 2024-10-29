@@ -16,7 +16,6 @@ sys.path.insert(0, str(ROOT_PATH))
 import sys
 import warnings
 
-from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import (
     CallbackList, CheckpointCallback, EvalCallback,
     StopTrainingOnNoModelImprovement)
@@ -29,7 +28,6 @@ from callback.callbacks import (ActorCriticCompressionCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed, make_openspiel_env
-from env.openspiel import process_openspiel_kwargs
 from env.wrappers import (CategoricalDummyVecEnv,
                             CategoricalObservationWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
@@ -45,6 +43,7 @@ from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
+from algos.ppo_selfplay import PPO_GBRL_SelfPlay, PPO_SelfPlay
 from algos.sac import SAC_GBRL
 from config.args import parse_args, process_logging, process_policy_kwargs
 
@@ -115,7 +114,9 @@ if __name__ == '__main__':
         env = make_openspiel_env(args.env_name, n_envs=args.num_envs, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs)
         if args.evaluate:
             eval_env = make_openspiel_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs)
-        NAME_TO_ALGO['ppo_nn'] = MaskablePPO
+        NAME_TO_ALGO['ppo_nn'] = PPO_SelfPlay
+        NAME_TO_ALGO['ppo_gbrl'] = PPO_GBRL_SelfPlay
+        
     else:
         print("Invalid env_type!")
 
@@ -159,8 +160,6 @@ if __name__ == '__main__':
     set_seed(args.seed)
     
     algo_kwargs = process_policy_kwargs(args)
-    if args.env_type == 'openspiel':
-        process_openspiel_kwargs(algo_kwargs)
     print(f"Training with algo_kwargs: {algo_kwargs}")
     
     algo = NAME_TO_ALGO[args.algo_type](env=env, tensorboard_log=tensorboard_log, _init_setup_model=True, **algo_kwargs)
