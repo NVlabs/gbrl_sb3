@@ -14,7 +14,7 @@ try:
 except:
     OpenSpielCompatibilityV0 = None
 
-MIXED_SIZES = {'chess': 134, 'liars_dice': 4, 'kuhn_poker': 3}
+MIXED_SIZES = {'chess': 134, 'liars_dice': 4, 'kuhn_poker': 3, 'blackjack': 5}
 
 
 def chess_wrapper(obs: np.ndarray, player: str):
@@ -93,8 +93,39 @@ def kuhn_poker_wrapper(obs: np.ndarray, player: str):
     return np.array([info], dtype=object).flatten()
 
 
+def blackjack_wrapper(obs: np.ndarray, player: str):
+    terminal = bool(obs[2])
+    dealer_aces = obs[3:8]
+    player_aces = obs[8:13]
+    n_aces_player = np.argmax(player_aces)
+    n_aces_dealer = np.argmax(dealer_aces)
+    player_enc = np.zeros(4)
+    dealer_cards = obs[13:65]
+    dealer_enc = np.zeros(4)
+    player_cards = obs[65:]
 
-OBS_WRAPPERS = {'chess': chess_wrapper, 'liars_dice': liars_dice_wrapper, 'kuhn_poker': kuhn_poker_wrapper}
+    for i in range(4):
+        if i < 3:
+            player_set_cards = player_cards[i*13:(i + 1)*13]
+            dealer_set_cards = dealer_cards[i*13:(i + 1)*13]
+        else:
+            player_set_cards = player_cards[i*13:]
+            dealer_set_cards = dealer_cards[i*13:]
+        player_set_cards[player_set_cards > 10] = 10
+        dealer_set_cards[dealer_set_cards > 10] = 10
+        player_enc[i] = np.sum(player_set_cards[:-1])
+        dealer_enc[i] = np.sum(dealer_set_cards[:-1])
+    # dealer
+    if player == 'player_0':
+        info = np.array([str(terminal), n_aces_dealer, n_aces_player, np.sum(dealer_enc), np.sum(player_enc)], dtype=object)
+    # player
+    else:
+        info = np.array([str(terminal), n_aces_player, n_aces_dealer, np.sum(player_enc), np.sum(dealer_enc)], dtype=object)
+    return info
+
+
+OBS_WRAPPERS = {'chess': chess_wrapper, 'liars_dice': liars_dice_wrapper, 'kuhn_poker': kuhn_poker_wrapper,
+                'blackjack': blackjack_wrapper}
 # tiny_bridge_2p
 # hanabi
 # matrix_pd
