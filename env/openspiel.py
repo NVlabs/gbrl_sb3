@@ -14,7 +14,7 @@ try:
 except:
     OpenSpielCompatibilityV0 = None
 
-MIXED_SIZES = {'chess': 134, 'liars_dice': 4}
+MIXED_SIZES = {'chess': 134, 'liars_dice': 4, 'kuhn_poker': 3}
 
 
 def chess_wrapper(obs: np.ndarray, player: str):
@@ -80,9 +80,26 @@ def liars_dice_wrapper(obs: np.ndarray, player: str):
     liar = 'Liar Called' if bool(obs[-1]) else 'Liar not Called'
     return np.array([player_identity, dice, bid_history, liar], dtype=object)
 
+def kuhn_poker_wrapper(obs: np.ndarray, player: str):
+    card_obs = obs[2:5]
+    cards = {0: 'Jack', 1: 'Queen', 2: 'King'}
+    card = cards[np.argmax(card_obs)]
+    if player == 'player_0':
+        assert obs[0] == 1
+        info = [card, obs[5], obs[6]]
+    else:
+        info = [card, obs[6], obs[5]]
+    
+    return np.array([info], dtype=object).flatten()
 
 
-OBS_WRAPPERS = {'chess': chess_wrapper, 'liars_dice': liars_dice_wrapper}
+
+OBS_WRAPPERS = {'chess': chess_wrapper, 'liars_dice': liars_dice_wrapper, 'kuhn_poker': kuhn_poker_wrapper}
+# tiny_bridge_2p
+# hanabi
+# matrix_pd
+# blackjack
+# connect_four
 
 
 class OpenSpielGymEnv(gym.Env):
