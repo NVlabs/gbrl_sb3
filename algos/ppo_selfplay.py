@@ -491,7 +491,7 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
                 ):
                     terminal_obs = infos[idx]["terminal_observation"] if self.is_categorical else self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs, stop_idx)[0]  # type: ignore[arg-type]
+                        terminal_value = self.policy.predict_values(terminal_obs, stop_idx=stop_idx)[0]  # type: ignore[arg-type]
                     rewards[idx] += self.gamma * terminal_value
 
             kwargs = {'player': active_player}
