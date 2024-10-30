@@ -473,8 +473,8 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
             callback.update_locals(locals())
             if callback.on_step() is False:
                 return False
-
-            self._update_info_buffer(infos)
+            if active_player == self.play_info['active_player']:
+                self._update_info_buffer(infos)
             n_steps += 1
 
             if isinstance(self.action_space, spaces.Discrete):
