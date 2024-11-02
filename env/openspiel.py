@@ -8,52 +8,14 @@
 ##############################################################################
 import gymnasium as gym
 import numpy as np
+import torch as th
+import torch.nn as nn
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 try:
     from shimmy import OpenSpielCompatibilityV0
 except:
     OpenSpielCompatibilityV0 = None
-
-MIXED_SIZES = {'chess': 134, 'liars_dice': 4, 'kuhn_poker': 3, 'blackjack': 5}
-
-
-def chess_wrapper(obs: np.ndarray, player: str):
-    obs_positions = obs[:13].astype(bool)
-    categorical_board = np.empty(8*8, dtype=object)
-    i = 0
-    if player == 'player_0':
-        player_is_black = True 
-    else:
-        player_is_black = False 
-    for pawn_type in ['king', 'queen', 'rook', 'bishop', 'knight', 'pawn']:
-        black_str = f'black {pawn_type}'
-        white_str = f'white {pawn_type}'
-        black_str += ' (me)' if player_is_black else ' (opponent)'
-        white_str += ' (me)' if not player_is_black else ' (opponent)'
-        categorical_board[obs_positions[i].flatten()] = white_str
-        categorical_board[obs_positions[i+1].flatten()] = black_str
-        i += 2
-
-    categorical_board[obs_positions[i].flatten()] = 'empty'
-    repetitions = obs[13].copy().flatten()
-    color_to_play = 'white' if (obs[14, 0, 0] == 1) else 'black'
-    color_to_play += ' (me)' if player_is_black and (obs[14, 0, 0] == 0) else ' (opponent)'
-    n_irreversible_moves = obs[15, 0, 0]
-    white_cast_queenside = 'True' if (obs[16, 0, 0] == 1) else 'False' 
-    white_cast_kingside = 'True' if (obs[17, 0, 0] == 1) else 'False' 
-    
-    black_cast_queenside = 'True' if (obs[18, 0, 0] == 1) else 'False' 
-    black_cast_kingside = 'True' if (obs[19, 0, 0] == 1) else 'False'
-
-    black_cast_kingside +=  ' (me)' if player_is_black else ' (opponent)'
-    black_cast_queenside +=  ' (me)' if player_is_black else ' (opponent)'
-    black_cast_kingside +=  ' (me)' if not player_is_black else ' (opponent)'
-    white_cast_queenside +=  ' (me)' if not player_is_black else ' (opponent)'
-    
-    chess_obs = np.concatenate([categorical_board, repetitions, np.array([color_to_play, n_irreversible_moves, 
-                                                                          white_cast_queenside, white_cast_kingside,
-                                                                          black_cast_queenside, black_cast_kingside])], axis=0, dtype=object)
-    return chess_obs
 
 LIARS_DICE_BIDS = {0: 'No bid',
                    1: '1 die shows 1',
@@ -123,9 +85,150 @@ def blackjack_wrapper(obs: np.ndarray, player: str):
         info = np.array([str(terminal), n_aces_player, n_aces_dealer, np.sum(player_enc), np.sum(dealer_enc)], dtype=object)
     return info
 
+def connect_four_wrapper(obs: np.ndarray, player: str):
+    new_obs = np.empty(6*7, dtype=object)
+    new_obs[(obs[2] == 1).flatten()] = 'empty'
+    new_obs[(obs[0] == 1).flatten()] = 'player' if player == 'player_0' else 'opponent'
+    new_obs[(obs[1] == 1).flatten()] = 'opponent' if player == 'player_0' else 'player'
+    return new_obs
 
-OBS_WRAPPERS = {'chess': chess_wrapper, 'liars_dice': liars_dice_wrapper, 'kuhn_poker': kuhn_poker_wrapper,
-                'blackjack': blackjack_wrapper}
+def hanabi_wrapper(obs: np.ndarray, player: str):
+    colors = {0: 'Red' , 1: 'Yellow', 2: 'Green', 3: 'White', 4: 'Blue'}
+    offset = 0
+    n_cards = 0
+    player_hints = np.empty(6, dtype=object)
+    player_hints[:] = 'Unknown'
+    for card in range(5):
+        card_one_hot = obs[offset:offset+25]
+        card_idx = np.where(card_one_hot > 0)[0]
+        if len(card_idx) > 0:
+            color = card_idx[0] // 5
+            rank = card_idx[0] % 5
+            player_hints[card] = f'{colors[color]} {rank + 1}'
+            n_cards += 1
+        offset += 25
+    player_hints[-1] = n_cards
+    offset += 2
+    observer_missing_card = obs[125]
+    deck_size = np.sum(obs[offset:offset+40])
+    offset += 40
+    fireworks = np.empty(5, dtype=object)
+    fireworks[:] = 'Unknown'
+    for color_idx in range(5):
+        firework_obs = obs[offset:offset+5]
+        firework_idx = np.where(firework_obs > 0)[0]
+        if len(firework_idx) > 0:
+            fireworks[color_idx] = f'{colors[color]} {firework_idx + 1}'
+
+        offset += 5
+    n_information_tokens = np.sum(obs[offset:offset+8])
+    offset += 8 
+    n_life_tokens = np.sum(obs[offset:offset+3])
+    offset += 3
+    discarded = np.zeros(25, dtype=object)
+    cards_per_rank = {0: 3, 1: 2, 2: 2, 3: 2, 4: 1}
+    for color_idx in range(5):
+        for rank in range(5):
+            discarded_cards = obs[offset:offset+cards_per_rank[rank]]
+            discarded[color_idx*5 + rank] = np.sum(discarded_cards)
+            offset += cards_per_rank[rank]
+    acting_player = np.where(obs[offset:offset+2] > 0)[0]
+    if len(acting_player) > 0:
+        acting_player = 'me' if acting_player[0] == player else 'other player'
+    else:
+        acting_player = 'None'
+    offset += 2
+    plays = {0: 'play', 1: 'discard', 2: 'reveal color', 3: 'reveal rank'}
+    last_action = np.where(obs[offset:offset+4] > 0)[0]
+    if len(last_action) > 0:
+        last_action = plays[last_action[0]]
+    else:
+        last_action = 'None'
+    offset += 4
+    target_player = np.where(obs[offset:offset+2] > 0)[0]
+    if len(target_player) > 0:
+        target_player = 'me' if target_player[0] == 0 else 'other player'
+    else:
+        target_player = 'None'
+    offset += 2
+    color_reveal = np.where(obs[offset:offset+5] > 0)[0]
+    if len(color_reveal) > 0:
+        color_reveal = colors[color_reveal[0]]
+    else:
+        color_reveal = 'None'
+    offset += 5
+    rank_reveal = np.where(obs[offset:offset+5] > 0)[0]
+    if len(rank_reveal) > 0:
+        rank_reveal = rank_reveal[0] + 1
+    else:
+        rank_reveal = 'None'
+    offset += 5
+    outcome_reveal = np.empty(5, dtype=object)
+    outcome_reveal[:] = 'None'
+    outcome_reveals = np.where(obs[offset:offset+5] > 0)[0]
+    if len(outcome_reveals) > 0:
+        for i, revealed_idx in enumerate(outcome_reveals):
+            outcome_reveal[i] = 'Card  ' + str(revealed_idx + 1)
+    offset += 5
+    position_reveal = np.where(obs[offset:offset+5] > 0)[0]
+    if len(position_reveal) > 0:
+        position_reveal = 'Card  ' + str(position_reveal[0] + 1)
+    else:
+        position_reveal = 'None'
+    offset += 5
+    card_reveal = np.where(obs[offset:offset+25] > 0)[0]
+    if len(card_reveal) > 0:
+        color = card_reveal[0] // 5
+        rank = card_reveal[0] % 5
+        card_reveal = f'{colors[color]} {rank + 1}'
+    else:
+        card_reveal = 'None'
+    offset += 25
+    action_success = np.where(obs[offset:offset+2] > 0)[0]
+    action_information = {0: 'Score', 1: 'Information token'}
+    if len(action_success) > 0:
+        action_success = action_information[action_success[0]]
+    else:
+        action_success = 'Fail'
+    offset += 2
+
+    info = np.concatenate([player_hints, np.array([str(bool(observer_missing_card)), deck_size]), fireworks, 
+                           np.array([n_information_tokens, n_life_tokens]), discarded, 
+                           np.array([acting_player, last_action, target_player, color_reveal, rank_reveal, position_reveal, card_reveal, action_success]),
+                           outcome_reveal])
+    # encoding common knowledge
+    for player_id in range(2):
+     for cards in range(5):
+        plausible_cards = obs[offset:offset+25]
+        info = np.append(info, plausible_cards)
+        offset += 25
+        card_color = np.where(obs[offset:offset+5] > 0)[0]
+        if len(card_color) > 0:
+            card_color = colors[card_color[0]]
+        else:
+            card_color = 'None'
+        offset += 5
+        card_rank = np.where(obs[offset:offset+5] > 0)[0]
+        if len(card_rank) > 0:
+            card_rank = f'Rank {card_rank[0] + 1}'
+        else:
+            card_rank = 'None'
+        offset += 5
+        if f'player_{player_id}' == player:
+            card_color += ' (me)'
+            card_rank += ' (me)'
+        else:
+            card_color += ' (other player)'
+            card_rank += ' (other player)'
+        info = np.append(info, np.array([card_color, card_rank], dtype=object))
+    return info
+
+
+MIXED_SIZES = {'liars_dice': 4, 'kuhn_poker': 3, 'blackjack': 5, 'connect_four': 42, 'hanabi': 323}
+OBS_WRAPPERS = {'liars_dice': liars_dice_wrapper, 'kuhn_poker': kuhn_poker_wrapper,
+                'blackjack': blackjack_wrapper, 'connect_four': connect_four_wrapper, 
+                'hanabi': hanabi_wrapper}
+
 # tiny_bridge_2p
 # hanabi
 # matrix_pd
@@ -182,3 +285,28 @@ class OpenSpielGymEnv(gym.Env):
         return self.env.close()
     
 
+class ConnectFourCNN(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.Space, features_dim: int = 512, normalized_image: bool = False):
+        super(ConnectFourCNN, self).__init__(observation_space, features_dim)
+        n_input_channels = observation_space.shape[0]
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=2, stride=1, padding=0),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+
+        # Compute shape by doing one forward pass
+        with th.no_grad():
+            n_flatten = self.cnn(th.as_tensor(observation_space.sample()[None]).float()).shape[1]
+
+        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
+        # Additional layers can follow as needed
+    
+    def forward(self, observations: th.Tensor) -> th.Tensor:
+        return self.linear(self.cnn(observations))
+
+   
