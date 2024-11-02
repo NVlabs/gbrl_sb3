@@ -300,7 +300,8 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'Boxing-ramNoFrameskip-v4'
-    args.env_name = args.env_name if args.env_name else 'liars_dice'
+    args.env_name = args.env_name if args.env_name else 'hanabi'
+    # args.env_name = args.env_name if args.env_name else 'liars_dice'
     # args.env_name = args.env_name if args.env_name else 'Assault-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
@@ -793,10 +794,21 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'ppo_nn':
-        from sb3_contrib.ppo_mask import MlpPolicy
+        from sb3_contrib.ppo_mask import MlpPolicy, CnnPolicy
         from stable_baselines3.common.policies import ActorCriticPolicy
+        policy = ActorCriticPolicy
+        if args.env_type == 'openspiel':
+            if args.env_name in ['connect_four']: # CNN envs
+                policy = CnnPolicy
+                if args.policy_kwargs is None:
+                    args.policy_kwargs = {} 
+                from env.openspiel import ConnectFourCNN
+                args.policy_kwargs["normalize_images"] = False
+                args.policy_kwargs["features_extractor_class"] = ConnectFourCNN
+            else:
+                policy = MlpPolicy
         algo_kwargs = {
-            "policy": ActorCriticPolicy if args.env_type != 'openspiel' else MlpPolicy,
+            "policy": policy,
             "learning_rate": args.learning_rate,
             "n_steps": args.n_steps,
             "batch_size": args.batch_size,
