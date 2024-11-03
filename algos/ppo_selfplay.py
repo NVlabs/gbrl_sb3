@@ -194,12 +194,14 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
                           'rollouts_player': rollouts_player,
                           'num_trees': 1}
         
+        self.num_players = len(self.env.envs[0].env.env.env.possible_agents)
+        
         if _init_setup_model:
             self.ppo_setup_model()
 
 
     def update_play_info(self):
-        if self.play_info['rollout'] >= self.play_info['rollouts_player']:
+        if self.play_info['rollout'] >= self.play_info['rollouts_player'] and self.num_players > 1:
             if self.play_info['active_player'] == 'player_0':
                 self.play_info['active_player'] = 'player_1'
             else:
@@ -677,6 +679,7 @@ class PPO_SelfPlay(MaskablePPO):
 
         if _init_setup_model:
             self._setup_model()
+        self.num_players = len(self.env.envs[0].env.env.env.possible_agents)
 
         self.play_info = {'active_player': 'player_0',
                             'rollout': 0,
@@ -684,7 +687,7 @@ class PPO_SelfPlay(MaskablePPO):
                            }
 
     def update_play_info(self):
-        if self.play_info['rollout'] >= self.play_info['rollouts_player']:
+        if self.play_info['rollout'] >= self.play_info['rollouts_player'] and self.num_players > 1:
             if self.play_info['active_player'] == 'player_0':
                 self.play_info['active_player'] = 'player_1'
             else:
