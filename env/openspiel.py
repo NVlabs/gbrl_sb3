@@ -275,6 +275,8 @@ class OpenSpielGymEnv(gym.Env):
         if self.is_mixed:
             new_obs = OBS_WRAPPERS[self.env_id](new_obs, self.env.agent_selection)
         self.agent_selection = self.env.agent_selection
+        if self.env.game_name == 'hanabi':
+            reward = np.sum([v for k, v in self.env._cumulative_rewards.items()])
         return new_obs, reward, terminated, truncated, info
     
     def action_mask(self):

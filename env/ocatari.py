@@ -402,11 +402,22 @@ def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndar
 
     player_position = positions[0]
     player_size = object_sizes[0]
-    distances = np.linalg.norm(player_position - positions[1:], axis=1)
-    distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = np.max(distances)
-    prev_distances = np.linalg.norm(prev_positions[0] - prev_positions[1:], axis=1)
-    delta_distances = distances - prev_distances
-    delta_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = 0
+    pos_diff = np.abs(player_position - positions[1:])
+    prev_pos_diff = np.abs(prev_positions[0] - prev_positions[1:])
+
+    x_distances = pos_diff[:, 0]
+    x_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = np.max(pos_diff[:, 0])
+    prev_x_distances = prev_pos_diff[:, 0]
+    prev_x_distances[(prev_positions[1:, 0] == 0) & (prev_positions[1:, 1] == 0)] = np.max(pos_diff[:, 0])
+    
+    y_distances = pos_diff[:, 1]
+    y_distances[(positions[1:, 0] == 0) & (positions[1:, 1] == 0)] = np.max(pos_diff[:, 1])
+    prev_y_distances = prev_pos_diff[:, 1]
+    prev_y_distances[(prev_positions[1:, 0] == 0) & (prev_positions[1:, 1] == 0)] = np.max(pos_diff[:, 1])
+    
+    delta_x_distances = x_distances - prev_x_distances
+    delta_y_distances = y_distances - prev_y_distances
+
 
     orientation = get_orientation(player_position, positions[1:, :], player_size, object_sizes[1:])
     prev_orientation = get_orientation(prev_positions[0], prev_positions[1:, :], player_size, object_sizes[1:])
@@ -415,6 +426,7 @@ def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndar
     enemy_position = positions[1]
     enemy_size = object_sizes[1]
     is_upper_player = np.array([positions[0, 1] < positions[1, 1]])
+    
 
     x_ball_momentum = get_x_momentum(observation[:, 2, :2])
     y_ball_momentum = get_y_momentum(observation[:, 2, :2])
@@ -423,16 +435,21 @@ def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndar
 
     distance_ball_enemy =  np.array([np.linalg.norm(positions[2] - positions[1])])
     enemy_ball_orientation = get_orientation(enemy_position, ball_position, enemy_size, ball_size)
+    # ball_in_my_court = distances[1] < distance_ball_enemy
+
     if is_mixed:
         info = np.concatenate([player_position, np.array([x_momentum, y_momentum]), np.array([x_ball_momentum, y_ball_momentum]), 
-                               np.array([x_enemy_momentum, y_enemy_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation,
-                               is_upper_player.astype(str), delta_distances], axis=0, dtype=object)
+                               np.array([x_enemy_momentum, y_enemy_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, 
+                               x_distances, y_distances, orientation, prev_orientation,
+                               is_upper_player.astype(str), delta_x_distances, delta_y_distances], axis=0, dtype=object)
     else:
         info = np.concatenate([player_position, x_momentum_to_one_hot(x_momentum), 
                                y_momentum_to_one_hot(y_momentum), x_momentum_to_one_hot(x_ball_momentum), 
                                y_momentum_to_one_hot(y_ball_momentum), x_momentum_to_one_hot(x_enemy_momentum), 
-                               y_momentum_to_one_hot(y_enemy_momentum), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), 
-                               is_upper_player, delta_distances], axis=0, dtype=np.single)
+                               y_momentum_to_one_hot(y_enemy_momentum), distance_ball_enemy, 
+                               orientation_to_one_hot(enemy_ball_orientation), ball_position, x_distances, y_distances, 
+                               orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), 
+                               is_upper_player, delta_x_distances, delta_y_distances], axis=0, dtype=np.single)
     return info
 
 def alien_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:

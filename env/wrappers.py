@@ -251,7 +251,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'Freeway':
             flattened_shape = 38 if is_mixed else 362
         elif self.env.game_name == 'Tennis':
-            flattened_shape = 21 if is_mixed else 193
+            flattened_shape = 25 if is_mixed else 197
         elif self.env.game_name == 'Boxing':
             flattened_shape = 8 if is_mixed else 72
         else:

@@ -299,9 +299,9 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Boxing-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'blackjack'
     args.env_name = args.env_name if args.env_name else 'hanabi'
-    # args.env_name = args.env_name if args.env_name else 'liars_dice'
     # args.env_name = args.env_name if args.env_name else 'Assault-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
