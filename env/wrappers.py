@@ -6,7 +6,9 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from typing import Any, Callable, Dict, List, OrderedDict
+from typing import Any, Callable, Dict, List, OrderedDict, Optional, Tuple, SupportsFloat
+from gymnasium.core import ActType
+import time
 
 import gymnasium as gym
 import numpy as np
@@ -35,7 +37,11 @@ from stable_baselines3.common.type_aliases import (
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import obs_space_info
+from stable_baselines3.common.monitor import Monitor, ResultsWriter
+
 import matplotlib.pyplot as plt
+
+COOPERATIVE_GAMES = 'hanabi'
 
 def save_rendered_frame(env, frame_number=None):
     # Render the environment's current state
@@ -288,3 +294,107 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         observation, info = self.env.reset(seed=seed)
         return self.observation(observation), info
 
+
+
+class MultiPlayerMonitor(Monitor):
+    """
+    A monitor wrapper for Gym environments, it is used to know the episode reward, length, time and other data.
+
+    :param env: The environment
+    :param filename: the location to save a log file, can be None for no log
+    :param allow_early_resets: allows the reset of the environment before it is done
+    :param reset_keywords: extra keywords for the reset call,
+        if extra parameters are needed at reset
+    :param info_keywords: extra information to log, from the information return of env.step()
+    :param override_existing: appends to file if ``filename`` exists, otherwise
+        override existing files (default)
+    """
+
+    EXT = "monitor.csv"
+
+    def __init__(
+        self,
+        env: gym.Env,
+        filename: Optional[str] = None,
+        allow_early_resets: bool = True,
+        reset_keywords: Tuple[str, ...] = (),
+        info_keywords: Tuple[str, ...] = (),
+        override_existing: bool = True,
+    ):
+        super().__init__(env=env, filename=filename, allow_early_resets=allow_early_resets,
+                         reset_keywords=reset_keywords, info_keywords=info_keywords, 
+                         override_existing=override_existing
+                         )
+        self.active_player = 'player_0'
+
+    def step(self, action: ActType) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
+        """
+        Step the environment with the given action
+
+        :param action: the action
+        :return: observation, reward, terminated, truncated, information
+        """
+        if self.needs_reset:
+            raise RuntimeError("Tried to step environment that needs reset")
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        if info['player'] == self.active_player or info['game_name'] in COOPERATIVE_GAMES:
+            self.rewards.append(float(reward))
+        if terminated or truncated:
+            self.needs_reset = True
+            ep_rew = sum(self.rewards)
+            ep_len = len(self.rewards)
+            ep_info = {"r": round(ep_rew, 6), "l": ep_len, "t": round(time.time() - self.t_start, 6)}
+            # if info['game_name'] == 'hanabi':
+            #     ep_info['r'] = info['return']
+            for key in self.info_keywords:
+                ep_info[key] = info[key]
+            self.episode_returns.append(ep_rew)
+            self.episode_lengths.append(ep_len)
+            self.episode_times.append(time.time() - self.t_start)
+            ep_info.update(self.current_reset_info)
+            if self.results_writer:
+                self.results_writer.write_row(ep_info)
+            # print("new episode")
+            info["episode"] = ep_info
+        self.total_steps += 1
+        return observation, reward, terminated, truncated, info
+
+    def close(self) -> None:
+        """
+        Closes the environment
+        """
+        super().close()
+        if self.results_writer is not None:
+            self.results_writer.close()
+
+    def get_total_steps(self) -> int:
+        """
+        Returns the total number of timesteps
+
+        :return:
+        """
+        return self.total_steps
+
+    def get_episode_rewards(self) -> List[float]:
+        """
+        Returns the rewards of all the episodes
+
+        :return:
+        """
+        return self.episode_returns
+
+    def get_episode_lengths(self) -> List[int]:
+        """
+        Returns the number of timesteps of all the episodes
+
+        :return:
+        """
+        return self.episode_lengths
+
+    def get_episode_times(self) -> List[float]:
+        """
+        Returns the runtime in seconds of all the episodes
+
+        :return:
+        """
+        return self.episode_times

@@ -11,6 +11,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.monitor import Monitor
 
 try:
     from shimmy import OpenSpielCompatibilityV0
@@ -245,6 +246,7 @@ class OpenSpielGymEnv(gym.Env):
         self.num_envs = 1
         self.env_id = env_id
         self.agent_selection = None
+        self.returns = 0
         # is_mixed = False
         self.is_mixed = is_mixed
         if is_mixed:
@@ -256,6 +258,7 @@ class OpenSpielGymEnv(gym.Env):
         if self.is_mixed:
             obs = OBS_WRAPPERS[self.env_id](obs, self.env.agent_selection)
         self.agent_selection = self.env.agent_selection
+        self.returns = 0
         return obs, {'player': self.env.agent_selection}
     
     def seed(self, seed):
@@ -275,8 +278,14 @@ class OpenSpielGymEnv(gym.Env):
         if self.is_mixed:
             new_obs = OBS_WRAPPERS[self.env_id](new_obs, self.env.agent_selection)
         self.agent_selection = self.env.agent_selection
-        if self.env.game_name == 'hanabi':
-            reward = np.sum([v for k, v in self.env._cumulative_rewards.items()])
+        # if self.env.game_name == 'hanabi':
+        #     # reward = self.env.game_state.rewards()[0] if self.env.agent_selection == 'player_0' else self.env.game_state.rewards()[1]
+        #     print(f'rewards: {self.env.game_state.rewards()} returns: {self.env.game_state.returns()}')
+        #     assert self.env.game_state.returns()[0] == self.env.game_state.returns()[1]
+        #     info['return'] = self.returns
+        #     self.returns = self.env.game_state.returns()[0]
+        info['game_name'] = self.env.game_name
+        info['player'] = self.env.agent_selection
         return new_obs, reward, terminated, truncated, info
     
     def action_mask(self):

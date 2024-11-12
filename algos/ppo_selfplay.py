@@ -211,6 +211,7 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
             if isinstance(num_trees, tuple):
                 num_trees, _ = num_trees
             self.play_info['num_trees'] = num_trees
+            self.env.envs[0].active_player = self.play_info['active_player']
 
 
     def train(self) -> None:
@@ -476,8 +477,8 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
             if callback.on_step() is False:
                 return False
 
-            if active_player == self.play_info['active_player']:
-                self._update_info_buffer(infos)
+            self._update_info_buffer(infos)
+
             n_steps += 1
 
             if isinstance(self.action_space, spaces.Discrete):
@@ -696,6 +697,7 @@ class PPO_SelfPlay(MaskablePPO):
             self.play_info['rollout'] = 0
             
             self.passive_policy = copy.deepcopy(self.active_policy)
+            self.env.envs[0].active_player = self.play_info['active_player']
 
 
     def _setup_model(self) -> None:
@@ -803,8 +805,7 @@ class PPO_SelfPlay(MaskablePPO):
             if callback.on_step() is False:
                 return False
 
-            if active_player == self.play_info['active_player']:
-                self._update_info_buffer(infos)
+            self._update_info_buffer(infos)
             n_steps += 1
 
             if isinstance(self.action_space, spaces.Discrete):
