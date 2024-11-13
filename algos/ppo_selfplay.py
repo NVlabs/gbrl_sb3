@@ -237,8 +237,6 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
         self.logger.record("train/value_learning_rate", value_lr)
         self.update_play_info()
 
-        active_player = self.play_info['active_player']
-
         entropy_losses = []
         policy_losses, value_losses = [], []
         clip_fractions = []
@@ -253,7 +251,7 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
             # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size, active_player):
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
                 action_masks = None if not self.use_masking else rollout_data.action_masks
 
@@ -448,7 +446,7 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
         
         callback.on_rollout_start()
 
-        while n_steps < n_rollout_steps:
+        while not rollout_buffer.full:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
@@ -498,29 +496,31 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
                         terminal_value = self.policy.predict_values(terminal_obs, stop_idx=stop_idx)[0]  # type: ignore[arg-type]
                     rewards[idx] += self.gamma * terminal_value
 
-            kwargs = {'player': active_player}
+            kwargs = {}
             if use_masking:
                 kwargs['action_masks'] = action_masks
             # print(f'step: {n_steps}, active_player: {active_player}')
-            rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
-                actions,
-                rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
-                values,
-                log_probs,
-                **kwargs
-            )
+            if active_player == self.play_info['active_player']:
+                rollout_buffer.add(
+                    self._last_obs,  # type: ignore[arg-type]
+                    actions,
+                    rewards,
+                    self._last_episode_starts,  # type: ignore[arg-type]
+                    values,
+                    log_probs,
+                    **kwargs
+                )
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
 
         active_player = env.envs[0].agent_selection
         with th.no_grad():
             # Compute value for the last timestep
-            stop_idx = self.play_info['num_trees'] if self.play_info['active_player'] !=  active_player else None
-            values = self.policy.predict_values(new_obs, requires_grad=False, stop_idx=stop_idx)  # type: ignore[arg-type] 
+            values = self.policy.predict_values(new_obs, requires_grad=False)  # type: ignore[arg-type] 
+            if self.play_info['active_player'] !=  active_player:
+                values = th.zeros_like(values).to(values.device)
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones, final_player=active_player)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 
@@ -784,7 +784,7 @@ class PPO_SelfPlay(MaskablePPO):
 
         callback.on_rollout_start()
 
-        while n_steps < n_rollout_steps:
+        while not rollout_buffer.full:
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
@@ -825,16 +825,16 @@ class PPO_SelfPlay(MaskablePPO):
                         terminal_value = self.active_policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
 
-            rollout_buffer.add(
-                self._last_obs,
-                actions,
-                rewards,
-                self._last_episode_starts,
-                values,
-                log_probs,
-                player=active_player,
-                action_masks=action_masks,
-            )
+            if self.play_info['active_player'] ==  active_player:
+                rollout_buffer.add(
+                    self._last_obs,
+                    actions,
+                    rewards,
+                    self._last_episode_starts,
+                    values,
+                    log_probs,
+                    action_masks=action_masks,
+                )
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
@@ -846,8 +846,10 @@ class PPO_SelfPlay(MaskablePPO):
             # Masking is not needed here, the choice of action doesn't matter.
             # We only want the value of the current observation.
             values = policy.predict_values(obs_as_tensor(new_obs, self.device))
+        if self.play_info['active_player'] !=  active_player:
+            values = th.zeros_like(values).to(values.device)
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones, final_player=active_player)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 
@@ -901,7 +903,7 @@ class PPO_SelfPlay(MaskablePPO):
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
             # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size, player=self.play_info['active_player']):
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long

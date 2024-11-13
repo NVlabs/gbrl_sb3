@@ -293,102 +293,18 @@ class MaskableCategoricalRolloutBuffer(CategoricalRolloutBuffer):
 
         self.mask_dims = mask_dims
         self.action_masks = np.ones((self.buffer_size, self.n_envs, self.mask_dims), dtype=np.float32)
-        self.player = np.zeros(self.buffer_size, dtype=object)
+        # self.player = np.zeros(self.buffer_size, dtype=object)
 
         super().reset()
 
-    def add(self, *args,  player: str, action_masks: Optional[np.ndarray] = None, **kwargs) -> None:
+    def add(self, *args, action_masks: Optional[np.ndarray] = None, **kwargs) -> None:
         """
         :param action_masks: Masks applied to constrain the choice of possible actions.
         """
         if action_masks is not None:
             self.action_masks[self.pos] = action_masks.reshape((self.n_envs, self.mask_dims))
-        self.player[self.pos] = player
+        # self.player[self.pos] = player
         super().add(*args, **kwargs)
-
-
-    def compute_returns_and_advantage(self, last_values: th.Tensor, dones: np.ndarray, final_player: str) -> None:
-        """
-        Post-processing step: compute the lambda-return (TD(lambda) estimate)
-        and GAE(lambda) advantage.
-
-        Uses Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
-        to compute the advantage. To obtain Monte-Carlo advantage estimate (A(s) = R - V(S))
-        where R is the sum of discounted reward with value bootstrap
-        (because we don't always have full episode), set ``gae_lambda=1.0`` during initialization.
-
-        The TD(lambda) estimator has also two special cases:
-        - TD(1) is Monte-Carlo estimate (sum of discounted rewards)
-        - TD(0) is one-step estimate with bootstrapping (r_t + gamma * v(s_{t+1}))
-
-        For more information, see discussion in https://github.com/DLR-RM/stable-baselines3/pull/375.
-
-        :param last_values: state value estimation for the last step (one for each env)
-        :param dones: if the last step was a terminal step (one bool for each env).
-        """
-        # Convert to numpy
-        last_values = last_values.clone().cpu().numpy().flatten()
-        
-        last_gae_lam = 0
-        for player in ['player_0', 'player_1']:
-            last_step = self.buffer_size - 1
-            for step in reversed(range(self.buffer_size)):
-                if self.player[step] != player:
-                    continue
-                if step == self.buffer_size - 1:
-                    next_non_terminal = 1.0 - dones
-                    next_values = last_values
-                elif step == self.buffer_size - 2:
-                    if self.player[step + 1] == final_player:
-                        next_non_terminal = (1.0 - self.episode_starts[step + 1]) 
-                        next_values = self.values[last_step]
-                    else:
-                        next_non_terminal = 1.0 - dones
-                        next_values = last_values
-                else:
-                    next_non_terminal = (1.0 - self.episode_starts[step + 1]) * (1.0 - self.episode_starts[step + 2])
-                    next_values = self.values[last_step]
-
-                delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
-                last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
-                self.advantages[step] = last_gae_lam
-                last_step = step
-        # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
-        # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
-        self.returns = self.advantages + self.values
-
-    def get(self, batch_size: Optional[int] = None, player: str = None) -> Generator[MaskableCategoricalRolloutBufferSamples, None, None]:  # type: ignore[override]
-        assert self.full, ""
-        # indices = self.player 
-        if player is None:
-            indices = np.random.permutation(self.buffer_size * self.n_envs)
-        else:
-            player_mask = self.player == player
-            # Find indices where the player matches
-            valid_indices = np.where(player_mask)[0]
-            indices = np.random.permutation(valid_indices)
-        # Prepare the data
-        if not self.generator_ready:
-            for tensor in [
-                "observations",
-                "actions",
-                "values",
-                "log_probs",
-                "advantages",
-                "returns",
-                "action_masks",
-            ]:
-                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
-            self.generator_ready = True
-
-        # Return everything, don't create minibatches
-        if batch_size is None:
-            batch_size = len(indices)
-
-        start_idx = 0
-        while start_idx < len(indices):
-            yield self._get_samples(indices[start_idx : start_idx + batch_size])
-            start_idx += batch_size
 
     def _get_samples(
         self,
@@ -445,101 +361,19 @@ class MaskableRolloutBuffer(RolloutBuffer):
 
         self.mask_dims = mask_dims
         self.action_masks = np.ones((self.buffer_size, self.n_envs, self.mask_dims), dtype=np.float32)
-        self.player = np.zeros(self.buffer_size, dtype=object)
+        # self.player = np.zeros(self.buffer_size, dtype=object)
 
         super().reset()
 
-    def add(self, *args, player: str, action_masks: Optional[np.ndarray] = None, **kwargs) -> None:
+    def add(self, *args, action_masks: Optional[np.ndarray] = None, **kwargs) -> None:
         """
         :param action_masks: Masks applied to constrain the choice of possible actions.
         """
         if action_masks is not None:
             self.action_masks[self.pos] = action_masks.reshape((self.n_envs, self.mask_dims))
-        self.player[self.pos] = player
+        # self.player[self.pos] = player
         super().add(*args, **kwargs)
 
-    def compute_returns_and_advantage(self, last_values: th.Tensor, dones: np.ndarray, final_player: str) -> None:
-        """
-        Post-processing step: compute the lambda-return (TD(lambda) estimate)
-        and GAE(lambda) advantage.
-
-        Uses Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
-        to compute the advantage. To obtain Monte-Carlo advantage estimate (A(s) = R - V(S))
-        where R is the sum of discounted reward with value bootstrap
-        (because we don't always have full episode), set ``gae_lambda=1.0`` during initialization.
-
-        The TD(lambda) estimator has also two special cases:
-        - TD(1) is Monte-Carlo estimate (sum of discounted rewards)
-        - TD(0) is one-step estimate with bootstrapping (r_t + gamma * v(s_{t+1}))
-
-        For more information, see discussion in https://github.com/DLR-RM/stable-baselines3/pull/375.
-
-        :param last_values: state value estimation for the last step (one for each env)
-        :param dones: if the last step was a terminal step (one bool for each env).
-        """
-        # Convert to numpy
-        last_values = last_values.clone().cpu().numpy().flatten()
-        
-        last_gae_lam = 0
-        for player in ['player_0', 'player_1']:
-            last_step = self.buffer_size - 1
-            for step in reversed(range(self.buffer_size)):
-                if self.player[step] != player:
-                    continue
-                if step == self.buffer_size - 1:
-                    next_non_terminal = 1.0 - dones
-                    next_values = last_values
-                elif step == self.buffer_size - 2:
-                    if self.player[step + 1] == final_player:
-                        next_non_terminal = (1.0 - self.episode_starts[step + 1]) 
-                        next_values = self.values[last_step]
-                    else:
-                        next_non_terminal = 1.0 - dones
-                        next_values = last_values
-                else:
-                    next_non_terminal = (1.0 - self.episode_starts[step + 1]) * (1.0 - self.episode_starts[step + 2])
-                    next_values = self.values[last_step]
-
-                delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
-                last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
-                self.advantages[step] = last_gae_lam
-                last_step = step
-        # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
-        # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
-        self.returns = self.advantages + self.values
-
-    def get(self, batch_size: Optional[int] = None, player: str = None) -> Generator[MaskableCategoricalRolloutBufferSamples, None, None]:  # type: ignore[override]
-        assert self.full, ""
-        # indices = self.player 
-        if player is None:
-            indices = np.random.permutation(self.buffer_size * self.n_envs)
-        else:
-            player_mask = self.player == player
-            # Find indices where the player matches
-            valid_indices = np.where(player_mask)[0]
-            indices = np.random.permutation(valid_indices)
-        # Prepare the data
-        if not self.generator_ready:
-            for tensor in [
-                "observations",
-                "actions",
-                "values",
-                "log_probs",
-                "advantages",
-                "returns",
-                "action_masks",
-            ]:
-                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
-            self.generator_ready = True
-
-        # Return everything, don't create minibatches
-        if batch_size is None:
-            batch_size = len(indices)
-
-        start_idx = 0
-        while start_idx < len(indices):
-            yield self._get_samples(indices[start_idx : start_idx + batch_size])
-            start_idx += batch_size
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> MaskableRolloutBufferSamples:
         data = (
