@@ -247,7 +247,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'SpaceInvaders':
             flattened_shape = 142 if is_mixed else 1304
         elif self.env.game_name == 'Pong':
-            flattened_shape = 121 if is_mixed else 189
+            flattened_shape = 21 if is_mixed else 191
         elif self.env.game_name == 'Assault':
             flattened_shape = 44 if is_mixed else 420
         elif self.env.game_name == 'Asterix':
@@ -344,8 +344,6 @@ class MultiPlayerMonitor(Monitor):
             ep_rew = sum(self.rewards)
             ep_len = len(self.rewards)
             ep_info = {"r": round(ep_rew, 6), "l": ep_len, "t": round(time.time() - self.t_start, 6)}
-            # if info['game_name'] == 'hanabi':
-            #     ep_info['r'] = info['return']
             for key in self.info_keywords:
                 ep_info[key] = info[key]
             self.episode_returns.append(ep_rew)
@@ -354,7 +352,6 @@ class MultiPlayerMonitor(Monitor):
             ep_info.update(self.current_reset_info)
             if self.results_writer:
                 self.results_writer.write_row(ep_info)
-            # print("new episode")
             info["episode"] = ep_info
         self.total_steps += 1
         return observation, reward, terminated, truncated, info
