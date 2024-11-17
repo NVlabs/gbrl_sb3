@@ -259,7 +259,7 @@ class OpenSpielGymEnv(gym.Env):
             obs = OBS_WRAPPERS[self.env_id](obs, self.env.agent_selection)
         self.agent_selection = self.env.agent_selection
         self.returns = 0
-        return obs, {'player': self.env.agent_selection}
+        return obs, {'player': self.env.agent_selection, 'game_name': self.env.game_name}
     
     def seed(self, seed):
         pass
@@ -278,12 +278,6 @@ class OpenSpielGymEnv(gym.Env):
         if self.is_mixed:
             new_obs = OBS_WRAPPERS[self.env_id](new_obs, self.env.agent_selection)
         self.agent_selection = self.env.agent_selection
-        # if self.env.game_name == 'hanabi':
-        #     # reward = self.env.game_state.rewards()[0] if self.env.agent_selection == 'player_0' else self.env.game_state.rewards()[1]
-        #     print(f'rewards: {self.env.game_state.rewards()} returns: {self.env.game_state.returns()}')
-        #     assert self.env.game_state.returns()[0] == self.env.game_state.returns()[1]
-        #     info['return'] = self.returns
-        #     self.returns = self.env.game_state.returns()[0]
         info['game_name'] = self.env.game_name
         info['player'] = self.env.agent_selection
         return new_obs, reward, terminated, truncated, info

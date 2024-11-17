@@ -517,8 +517,8 @@ class PPO_GBRL_SelfPlay(PPO_GBRL):
         with th.no_grad():
             # Compute value for the last timestep
             values = self.policy.predict_values(new_obs, requires_grad=False)  # type: ignore[arg-type] 
-            if self.play_info['active_player'] !=  active_player:
-                values = th.zeros_like(values).to(values.device)
+            # if self.play_info['active_player'] !=  active_player:
+                # values = None
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
