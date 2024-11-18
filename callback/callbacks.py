@@ -181,7 +181,8 @@ class ActorCriticCompressionCallback(BaseCallback):
     def update_locals(self, locals_: Dict[str, Any]) -> None:
         obs = locals_.get('obs_tensor')
         if obs is not None:
-            obs = obs.detach().cpu().numpy()
+            if not isinstance(obs, np.ndarray):
+                obs = obs.detach().cpu().numpy()
             self.compression_data.append(obs)
         super().update_locals(locals_)
 

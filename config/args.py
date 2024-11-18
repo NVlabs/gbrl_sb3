@@ -271,6 +271,7 @@ def parse_args():
     parser.add_argument('--compress_gradient_steps', type=int)
     parser.add_argument('--compress_policy_only', type=str2bool)
     parser.add_argument('--compress_least_squares_W', type=str2bool)
+    parser.add_argument('--compress_use_W', type=str2bool)
     parser.add_argument('--compress_temperature', type=float)
     parser.add_argument('--compress_lambda_reg', type=float)
     parser.add_argument('--compress_capacity', type=int)
@@ -287,22 +288,24 @@ def parse_args():
 def get_defaults(args, defaults):
     # Set hardcoded defaults
     # args.env_type = args.env_type if args.env_type else 'ocatari'
-    args.env_type = args.env_type if args.env_type else 'openspiel'
+    # args.env_type = args.env_type if args.env_type else 'openspiel'
+    # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'mujoco'
-    # args.env_type = args.env_type if args.env_type else 'gym'
+    args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
-    # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
+    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'blackjack'
-    args.env_name = args.env_name if args.env_name else 'hanabi'
-    # args.env_name = args.env_name if args.env_name else 'Assault-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'hanabi'
+    # args.env_name = args.env_name if args.env_name else 'connect_four'
+    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -457,6 +460,8 @@ def get_defaults(args, defaults):
         args.compress_kwargs['policy_only'] = args.compress_policy_only
     if args.compress_least_squares_W:
         args.compress_kwargs['least_squares_W'] = args.compress_least_squares_W
+    if args.compress_use_W:
+        args.compress_kwargs['use_W'] = args.compress_use_W
     if args.compress_temperature:
         args.compress_kwargs['temperature'] = args.compress_temperature
     if args.compress_lambda_reg:

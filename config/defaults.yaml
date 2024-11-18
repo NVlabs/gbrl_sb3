@@ -14,7 +14,7 @@ env:
     n_eval_episodes: 5
   wrapper: null
   log_interval: 10
-  total_n_steps: 150000
+  total_n_steps: 1500000
   device: 'cuda'
   no_improvement_kwargs: null
 save:
@@ -291,6 +291,7 @@ compression:
     method: 'first_k'
     policy_only: False
     least_squares_W: True
+    use_W: False
     temperature: 0.1
     lambda_reg: 0.001
     optimizer_kwargs:

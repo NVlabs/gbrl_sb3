@@ -1,0 +1,13 @@
+*ngc_run*
+*.ipynb
+*.pyc
+launch.json
+runs/
+*.sh
+*.db
+*.png
+sweeps/
+wandb/
+saved_models/
+videos/
+temp/
