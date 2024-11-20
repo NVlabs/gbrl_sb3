@@ -11,3 +11,4 @@ wandb/
 saved_models/
 videos/
 temp/
+results/
