@@ -27,7 +27,7 @@ from callback.callbacks import (ActorCriticCompressionCallback,
                                 OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
-from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed, make_openspiel_env
+from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed, make_openspiel_env, make_bsuite_env
 from env.wrappers import (CategoricalDummyVecEnv,
                             CategoricalObservationWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
@@ -106,6 +106,10 @@ if __name__ == '__main__':
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+    elif args.env_type == 'bsuite':
+        env = make_bsuite_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        if args.evaluate:
+            eval_env = make_bsuite_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'openspiel':
         learn_kwargs['use_masking'] = True
         args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS else False
