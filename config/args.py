@@ -279,6 +279,8 @@ def parse_args():
     parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
     # self play
     parser.add_argument('--rollouts_player', type=int)
+    # openspiel
+    parser.add_argument('--openspiel_config', type=json_string_to_dict)
     args = parser.parse_args()
 
     defaults = load_yaml_defaults()
@@ -289,21 +291,21 @@ def get_defaults(args, defaults):
     # Set hardcoded defaults
     # args.env_type = args.env_type if args.env_type else 'ocatari'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
-    # args.env_type = args.env_type if args.env_type else 'openspiel'
+    args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'mujoco'
-    args.env_type = args.env_type if args.env_type else 'gym'
+    # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
-    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
+    # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'blackjack'
-    # args.env_name = args.env_name if args.env_name else 'hanabi'
+    args.env_name = args.env_name if args.env_name else 'deep_sea'
     # args.env_name = args.env_name if args.env_name else 'connect_four'
     # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
     # Set defaults from YAML

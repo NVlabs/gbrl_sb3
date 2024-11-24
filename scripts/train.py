@@ -109,6 +109,8 @@ if __name__ == '__main__':
     elif args.env_type == 'openspiel':
         learn_kwargs['use_masking'] = True
         args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS else False
+        args.env_kwargs['config'] = args.openspiel_config if args.openspiel_config else {} 
+        args.env_kwargs['config']['seed'] = args.seed
         vec_env_cls  = CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else None
         vec_env_kwargs = {'is_mixed': True} if args.algo_type in CATEGORICAL_ALGOS else None
         env = make_openspiel_env(args.env_name, n_envs=args.num_envs, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs)

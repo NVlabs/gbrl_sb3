@@ -43,6 +43,9 @@ def liars_dice_wrapper(obs: np.ndarray, player: str):
     liar = 'Liar Called' if bool(obs[-1]) else 'Liar not Called'
     return np.array([player_identity, dice, bid_history, liar], dtype=object)
 
+def deep_sea_wrapper(obs: np.ndarray, player: str):
+    return obs.flatten()
+
 def kuhn_poker_wrapper(obs: np.ndarray, player: str):
     card_obs = obs[2:5]
     cards = {0: 'Jack', 1: 'Queen', 2: 'King'}
@@ -92,6 +95,8 @@ def connect_four_wrapper(obs: np.ndarray, player: str):
     new_obs[(obs[0] == 1).flatten()] = 'player' if player == 'player_0' else 'opponent'
     new_obs[(obs[1] == 1).flatten()] = 'opponent' if player == 'player_0' else 'player'
     return new_obs
+def wrapper_2048(obs: np.ndarray, player: str):
+    return obs.flatten()
 
 def hanabi_wrapper(obs: np.ndarray, player: str):
     colors = {0: 'Red' , 1: 'Yellow', 2: 'Green', 3: 'White', 4: 'Blue'}
@@ -225,10 +230,12 @@ def hanabi_wrapper(obs: np.ndarray, player: str):
     return info
 
 
-MIXED_SIZES = {'liars_dice': 4, 'kuhn_poker': 3, 'blackjack': 5, 'connect_four': 42, 'hanabi': 323}
+MIXED_SIZES = {'liars_dice': 4, 'kuhn_poker': 3, 'blackjack': 5, 'connect_four': 42, 'hanabi': 323, '2048': 16, 'deep_sea': 25}
 OBS_WRAPPERS = {'liars_dice': liars_dice_wrapper, 'kuhn_poker': kuhn_poker_wrapper,
                 'blackjack': blackjack_wrapper, 'connect_four': connect_four_wrapper, 
-                'hanabi': hanabi_wrapper}
+                'hanabi': hanabi_wrapper,
+                '2048': wrapper_2048,
+                'deep_sea': deep_sea_wrapper}
 
 # tiny_bridge_2p
 # hanabi
@@ -239,10 +246,11 @@ OBS_WRAPPERS = {'liars_dice': liars_dice_wrapper, 'kuhn_poker': kuhn_poker_wrapp
 
 class OpenSpielGymEnv(gym.Env):
     def __init__(self, env_id: str, is_mixed:bool = True, **env_kwargs):
-
         self.env = OpenSpielCompatibilityV0(game_name=env_id, **env_kwargs)  # type: ignore[arg-type]
         self.observation_space = self.env.observation_space(self.env.possible_agents[0])
         self.action_space = self.env.action_space(self.env.possible_agents[0])
+        if env_id == 'deep_sea':
+            MIXED_SIZES[env_id] = np.prod(self.observation_space.shape)
         self.num_envs = 1
         self.env_id = env_id
         self.agent_selection = None
