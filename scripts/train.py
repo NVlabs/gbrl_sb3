@@ -27,9 +27,15 @@ from callback.callbacks import (ActorCriticCompressionCallback,
                                 OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
-from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed, make_openspiel_env, make_bsuite_env
+from utils.helpers import (make_ram_atari_env, 
+                           make_ram_ocatari_env, 
+                           set_seed,
+                           make_openspiel_env, 
+                           make_bsuite_env,
+                           make_highway_env)
 from env.wrappers import (CategoricalDummyVecEnv,
-                            CategoricalObservationWrapper)
+                          CategoricalObservationWrapper,
+                          HighWayWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
 
 warnings.filterwarnings("ignore")
@@ -93,6 +99,10 @@ if __name__ == '__main__':
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+    elif args.env_type == 'highway':
+        env = make_highway_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=HighWayWrapper)
+        if args.evaluate:
+            eval_env = make_highway_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=HighWayWrapper)
     elif args.env_type == 'football':
         try:
             from env.football import FootballGymSB3

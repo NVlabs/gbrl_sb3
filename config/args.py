@@ -108,7 +108,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football', 'openspiel', 'bsuite']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football', 'openspiel', 'bsuite', 'highway']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -292,7 +292,8 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'ocatari'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
-    args.env_type = args.env_type if args.env_type else 'bsuite'
+    args.env_type = args.env_type if args.env_type else 'highway'
+    # args.env_type = args.env_type if args.env_type else 'bsuite'
     # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
@@ -305,8 +306,8 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'blackjack'
-    args.env_name = args.env_name if args.env_name else 'umbrella_distract'
+    args.env_name = args.env_name if args.env_name else 'highway-v0'
+    # args.env_name = args.env_name if args.env_name else 'umbrella_distract'
     # args.env_name = args.env_name if args.env_name else 'connect_four'
     # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
     # Set defaults from YAML

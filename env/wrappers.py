@@ -229,6 +229,18 @@ class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
 
         super().__init__(env)
 
+class HighWayWrapper(ObservationWrapper):
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        flattened_shape = env.observation_space.shape[0] * env.observation_space.shape[1]
+        env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
+
+    def observation(self, observation: np.ndarray):
+        return observation.flatten()
+
+    def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
+        observation, info = self.env.reset(seed=seed)
+        return self.observation(observation), info
 
 class NeuroSymbolicAtariWrapper(ObservationWrapper):
     def __init__(self, env: gym.Env, is_mixed: bool = True):
