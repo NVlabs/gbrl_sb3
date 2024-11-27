@@ -157,6 +157,8 @@ class SequentialPutNearEnv(MiniGridEnv):
                         reward += self.accumulated_reward
                     else:
                         self.accumulated_reward = reward
+                        self.move_type = self.target_type
+                        self.moveColor = self.target_color
                         self.target_color = "green"
                         self.target_type = "goal"
                         self.target_pos = self.goal_pos
