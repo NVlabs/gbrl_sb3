@@ -154,7 +154,9 @@ class SequentialPutNearEnv(MiniGridEnv):
                     reward = self._reward()
                     if self.completed_first_task:
                         terminated = True
+                        reward += self.accumulated_reward
                     else:
+                        self.accumulated_reward = reward
                         self.target_color = "green"
                         self.target_type = "goal"
                         self.target_pos = self.goal_pos
@@ -166,6 +168,7 @@ class SequentialPutNearEnv(MiniGridEnv):
                                                                             self.target_type,
                                                                             )
                         self.completed_first_task = True
+        reward = min(reward, self.reward_range[1])
         return obs, reward, terminated, truncated, info
 
 
