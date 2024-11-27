@@ -32,11 +32,13 @@ from utils.helpers import (make_ram_atari_env,
                            set_seed,
                            make_openspiel_env, 
                            make_bsuite_env,
+                           make_carl_env,
                            make_highway_env)
 from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
                           HighWayWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
+from env.minigrid import register_sequential_put_near
 
 warnings.filterwarnings("ignore")
 
@@ -94,6 +96,7 @@ if __name__ == '__main__':
                 eval_env = VecFrameStack(eval_env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
     elif args.env_type == 'minigrid':
         from minigrid.wrappers import FlatObsWrapper
+        register_sequential_put_near()
         wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
         vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
@@ -120,6 +123,10 @@ if __name__ == '__main__':
         env = make_bsuite_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
             eval_env = make_bsuite_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+    elif args.env_type == 'carl':
+        env = make_carl_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        if args.evaluate:
+            eval_env = make_carl_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'openspiel':
         learn_kwargs['use_masking'] = True
         args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS else False
@@ -132,7 +139,6 @@ if __name__ == '__main__':
             eval_env = make_openspiel_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs)
         NAME_TO_ALGO['ppo_nn'] = PPO_SelfPlay
         NAME_TO_ALGO['ppo_gbrl'] = PPO_GBRL_SelfPlay
-        
     else:
         print("Invalid env_type!")
 

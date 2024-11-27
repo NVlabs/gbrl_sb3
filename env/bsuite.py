@@ -6,24 +6,26 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-
+import gymnasium as gym
 from gymnasium import spaces
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 import numpy as np
 
-from bsuite.utils import gym_wrapper
 import dm_env
 from dm_env import specs
 
 _GymTimestep = Tuple[np.ndarray, float, bool, Dict[str, Any]]
 
-class GymnasiumFromDMEnv(gym_wrapper.GymFromDMEnv):
+class GymnasiumFromDMEnv(gym.Env):
     """A wrapper that converts a dm_env.Environment to an OpenAI gym.Env."""
 
     metadata = {'render.modes': ['human', 'rgb_array']}
 
     def __init__(self, env: dm_env.Environment):
-        super().__init__(env)
+        self._env = env  # type: dm_env.Environment
+        self._last_observation = None  # type: Optional[np.ndarray]
+        self.viewer = None
+        self.game_over = False  # Needed for Dopamine agents.
 
     @property
     def action_space(self) -> spaces.Discrete:

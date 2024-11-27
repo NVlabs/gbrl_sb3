@@ -7,9 +7,9 @@
 #
 ##############################################################################
 import argparse
+import glob
 import os
 import sys
-import glob
 from pathlib import Path
 
 import numpy as np
@@ -20,15 +20,15 @@ sys.path.insert(0, str(ROOT_PATH))
 import warnings
 
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.save_util import load_from_pkl
-from stable_baselines3.common.logger import configure
-from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack, VecNormalize,
-                                              VecVideoRecorder)
 from stable_baselines3.common.evaluation import evaluate_policy
-from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, set_seed
-from env.wrappers import (CategoricalDummyVecEnv,
-                            CategoricalObservationWrapper)
+from stable_baselines3.common.logger import configure
+from stable_baselines3.common.save_util import load_from_pkl
+from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
+                                              VecNormalize, VecVideoRecorder)
+
 from env.ocatari import MIXED_ATARI_ENVS
+from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper
+from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, make_carl_env
 
 warnings.filterwarnings("ignore")
 
@@ -51,13 +51,13 @@ OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football', 'carl']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     parser.add_argument('--folder_path', type=str, default=str(ROOT_PATH / 'saved_models'))
     # env args
     # parser.add_argument('--total_n_steps', type=int)
-    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cpu')
+    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cuda')
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--checkpoint', type=str)
     parser.add_argument('--n_eval_episodes', type=int, default=10)
@@ -121,9 +121,11 @@ if __name__ == '__main__':
         eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'mujoco' or args.env_type == 'gym':
         eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+    elif args.env_type == 'carl':
+        eval_env = make_carl_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     else:
         print("Invalid env_type!")
-    # load_from_pkl(path: Union[str, pathlib.Path, io.BufferedIOBase], verbose: int = 0)
+
     if os.path.exists(vecnormalize_path):
         eval_env = VecNormalize.load(vecnormalize_path, eval_env)
         eval_env.training = False
@@ -154,4 +156,3 @@ if __name__ == '__main__':
     mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)
     mean_length, std_length = np.mean(episode_lengths), np.std(episode_lengths)
     print(f'Evaluation results over {args.n_eval_episodes} - EP reward: {mean_reward:.2f} ' + u"\u00B1" + f' {std_reward:.2f} EP length: {mean_length:.2f} ' + u"\u00B1" + f' {std_length:.2f}')
-  

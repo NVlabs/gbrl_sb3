@@ -165,7 +165,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
-        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'is_categorical') and env.is_categorical) 
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         if is_categorical:
             policy_kwargs['is_categorical'] = True
@@ -541,6 +541,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
 
             self._update_info_buffer(infos)
             n_steps += 1
+            #self.env.envs[0].env.env.env.env.env.env.timesteps
 
             if isinstance(self.action_space, spaces.Discrete):
                 # Reshape in case of discrete action

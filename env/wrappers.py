@@ -6,40 +6,40 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from typing import Any, Callable, Dict, List, OrderedDict, Optional, Tuple, SupportsFloat
-from gymnasium.core import ActType
 import time
+from copy import deepcopy
+from typing import (Any, Callable, Dict, List, Optional, OrderedDict,
+                    SupportsFloat, Tuple, Type)
 
 import gymnasium as gym
+import matplotlib.pyplot as plt
 import numpy as np
 from gym.core import ObsType
+from gymnasium.core import ActType
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
-from env.ocatari import (gopher_extraction,
-                         asterix_extraction,
-                         general_extraction,
-                         breakout_extraction,
-                         bowling_extraction,
-                         alien_extraction,
-                         tennis_extraction,
-                         kangaroo_extraction,
-                         space_invaders_extraction,
-                         pong_extraction,
-                         ATARI_GENERAL_EXTRACTION
-                                       )
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
                                                      EpisodicLifeEnv,
                                                      FireResetEnv,
                                                      NoopResetEnv,
                                                      StickyActionEnv)
-from stable_baselines3.common.type_aliases import (
-                                                   AtariStepReturn)
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.vec_env.patch_gym import _patch_env
-from stable_baselines3.common.vec_env.util import obs_space_info
 from stable_baselines3.common.monitor import Monitor, ResultsWriter
+from stable_baselines3.common.type_aliases import AtariStepReturn
+from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env.base_vec_env import (VecEnv,
+                                                           VecEnvIndices,
+                                                           VecEnvObs,
+                                                           VecEnvStepReturn)
+from stable_baselines3.common.vec_env.patch_gym import _patch_env
+from stable_baselines3.common.vec_env.util import (copy_obs_dict, dict_to_obs,
+                                                   obs_space_info)
 
-import matplotlib.pyplot as plt
+from env.ocatari import (ATARI_GENERAL_EXTRACTION, alien_extraction,
+                         asterix_extraction, bowling_extraction,
+                         breakout_extraction, general_extraction,
+                         gopher_extraction, kangaroo_extraction,
+                         pong_extraction, space_invaders_extraction,
+                         tennis_extraction)
 
 COOPERATIVE_GAMES = 'hanabi'
 
@@ -259,7 +259,8 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'SpaceInvaders':
             flattened_shape = 142 if is_mixed else 1304
         elif self.env.game_name == 'Pong':
-            flattened_shape = 21 if is_mixed else 191
+            # flattened_shape = 21 if is_mixed else 191
+            flattened_shape = 22 if is_mixed else 194
         elif self.env.game_name == 'Assault':
             flattened_shape = 44 if is_mixed else 420
         elif self.env.game_name == 'Asterix':
@@ -407,3 +408,107 @@ class MultiPlayerMonitor(Monitor):
         :return:
         """
         return self.episode_times
+    
+
+    
+
+class CARLDummyVecEnv(DummyVecEnv):
+    """
+    Creates a simple vectorized wrapper for multiple environments, calling each environment in sequence on the current
+    Python process. This is useful for computationally simple environment such as ``Cartpole-v1``,
+    as the overhead of multiprocess or multithread outweighs the environment computation time.
+    This can also be used for RL methods that
+    require a vectorized environment, but that you want a single environments to train with.
+
+    :param env_fns: a list of functions
+        that return environments to vectorize
+    :raises ValueError: If the same environment instance is passed as the output of two or more different env_fn.
+    """
+
+    actions: np.ndarray
+
+    def __init__(self, env_fns: List[Callable[[], gym.Env]]):
+        self.envs = [_patch_env(fn()) for fn in env_fns]
+        if len(set([id(env.unwrapped) for env in self.envs])) != len(self.envs):
+            raise ValueError(
+                "You tried to create multiple environments, but the function to create them returned the same instance "
+                "instead of creating different objects. "
+                "You are probably using `make_vec_env(lambda: env)` or `DummyVecEnv([lambda: env] * n_envs)`. "
+                "You should replace `lambda: env` by a `make_env` function that "
+                "creates a new instance of the environment at every call "
+                "(using `gym.make()` for instance). You can take a look at the documentation for an example. "
+                "Please read https://github.com/DLR-RM/stable-baselines3/issues/1151 for more information."
+            )
+        env = self.envs[0]
+        self.num_envs = len(env_fns)
+        self.observation_space = env.observation_space['obs']
+        self.action_space = env.action_space
+        # store info returned by the reset method
+        self.reset_infos: List[Dict[str, Any]] = [{} for _ in range(len(env_fns))]
+        # seeds to be used in the next call to env.reset()
+        self._seeds: List[Optional[int]] = [None for _ in range(len(env_fns))]
+
+        try:
+            render_modes = self.get_attr("render_mode")
+        except AttributeError:
+            import warnings
+            warnings.warn("The `render_mode` attribute is not defined in your environment. It will be set to None.")
+            render_modes = [None for _ in range(self.num_envs)]
+
+        assert all(
+            render_mode == render_modes[0] for render_mode in render_modes
+        ), "render_mode mode should be the same for all environments"
+        self.render_mode = render_modes[0]
+
+        render_modes = []
+        if self.render_mode is not None:
+            if self.render_mode == "rgb_array":
+                # SB3 uses OpenCV for the "human" mode
+                render_modes = ["human", "rgb_array"]
+            else:
+                render_modes = [self.render_mode]
+
+        self.metadata = {"render_modes": render_modes}
+
+        obs_space = env.observation_space['obs']
+        self.keys, shapes, dtypes = obs_space_info(obs_space)
+
+        self.buf_obs = OrderedDict([(k, np.zeros((self.num_envs, *tuple(shapes[k])), dtype=dtypes[k])) for k in self.keys])
+        self.buf_dones = np.zeros((self.num_envs,), dtype=bool)
+        self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
+        self.buf_infos: List[Dict[str, Any]] = [{} for _ in range(self.num_envs)]
+        self.metadata = env.metadata
+
+
+    def step_wait(self) -> VecEnvStepReturn:
+        # Avoid circular imports
+        for env_idx in range(self.num_envs):
+            obs_and_context, self.buf_rews[env_idx], terminated, truncated, self.buf_infos[env_idx] = self.envs[env_idx].step(
+                self.actions[env_idx]
+            )
+            self.buf_infos[env_idx]['context'] = obs_and_context['context']
+            obs = obs_and_context['obs']
+            # convert to SB3 VecEnv api
+            self.buf_dones[env_idx] = terminated or truncated
+            # See https://github.com/openai/gym/issues/3102
+            # Gym 0.26 introduces a breaking change
+            self.buf_infos[env_idx]["TimeLimit.truncated"] = truncated and not terminated
+
+            if self.buf_dones[env_idx]:
+                # save final observation where user can get it, then reset
+                self.buf_infos[env_idx]["terminal_observation"] = obs
+                obs_and_context, self.reset_infos[env_idx] = self.envs[env_idx].reset()
+                obs = obs_and_context['obs']
+            self._save_obs(env_idx, obs)
+        return (self._obs_from_buf(), np.copy(self.buf_rews), np.copy(self.buf_dones), deepcopy(self.buf_infos))
+
+    def reset(self) -> VecEnvObs:
+        for env_idx in range(self.num_envs):
+            obs_and_context, self.reset_infos[env_idx] = self.envs[env_idx].reset(seed=self._seeds[env_idx])
+            self.reset_infos[env_idx]['context'] = obs_and_context['context']
+            obs = obs_and_context['obs']
+            self._save_obs(env_idx, obs)
+        # Seeds are only used once
+        self._reset_seeds()
+        return self._obs_from_buf()
+
