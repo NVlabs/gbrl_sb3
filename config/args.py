@@ -85,6 +85,27 @@ def json_string_to_dict(json_string):
 
 from wandb.integration.sb3 import WandbCallback
 
+def str2tuple(input_str: str) -> tuple:
+    """
+    Safely converts a string representing a tuple into an actual tuple 
+    using manual parsing (no eval).
+
+    Parameters:
+        input_str (str): A string representing a tuple, e.g., "(1.0, 2.5, 3.0)"
+
+    Returns:
+        tuple: The parsed tuple of floats.
+    """
+    try:
+        # Remove surrounding parentheses and split the string by commas
+        clean_str = input_str.strip().replace('(', '').replace(')', '')
+        elements = clean_str.split(',')
+
+        # Convert each element to float
+        result = tuple(float(element.strip()) for element in elements if element.strip())
+        return result
+    except ValueError as e:
+        raise ValueError(f"Invalid tuple string: {input_str}. Ensure all elements are valid floats.") from e
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -279,6 +300,8 @@ def parse_args():
     parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
     # self play
     parser.add_argument('--rollouts_player', type=int)
+
+    parser.add_argument('--range', type=str2tuple, default='(0,255)')
     # openspiel
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
     args = parser.parse_args()

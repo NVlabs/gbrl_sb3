@@ -364,7 +364,7 @@ def breakout_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nd
                                ], axis=0, dtype=np.single)
     return np.append(info, columns)
 
-def pong_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:
+def pong_extraction(observation: np.ndarray, is_mixed: bool = True, min_value: float = 0, max_value: float = 255) -> np.ndarray:
     positions = observation[-1, :, :2]
     prev_positions = observation[-2, :, :2]
     object_sizes = observation[-1, :, 2:]
@@ -384,24 +384,25 @@ def pong_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarra
     player_orientation = get_orientation(player_position, prev_positions[0], player_size, player_size)
     distance_ball_enemy =  np.array([np.linalg.norm(positions[2] - positions[1])])
     enemy_ball_orientation = get_orientation(positions[2], ball_position, object_sizes[2], ball_size)
-    distraction_mapping = {0: 'blue', 1: 'red', 2: 'green'}
-    # distraction_idx = 0 if num_timesteps < 1250000 else 1
-    distraction_idx = 2
-    # distraction_idx = np.random.choice(len(distraction_mapping))
-    def one_hot_distraction(idx, distraction_mapping):
-        # Create one-hot encoding
-        num_classes = len(distraction_mapping)
-        one_hot_encoded = np.eye(num_classes)[idx]
-        # Flatten the one-hot encoded matrix
-        return one_hot_encoded.flatten()
-
+    # distraction_mapping = {0: 'blue', 1: 'red', 2: 'green'}
+    # # distraction_idx = 0 if num_timesteps < 1250000 else 1
+    # distraction_idx = 2
+    # # distraction_idx = np.random.choice(len(distraction_mapping))
+    # def one_hot_distraction(idx, distraction_mapping):
+    #     # Create one-hot encoding
+    #     num_classes = len(distraction_mapping)
+    #     one_hot_encoded = np.eye(num_classes)[idx]
+    #     # Flatten the one-hot encoded matrix
+    #     return one_hot_encoded.flatten()
+    useless_feature = np.array([float(np.random.randint(min_value, max_value))])
+    # print(useless_feature)
     if is_mixed:
         info = np.concatenate([player_position, player_orientation, np.array([x_momentum, y_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1],
-                               np.array([distraction_mapping[distraction_idx]])], axis=0, dtype=object)
+                               useless_feature], axis=0, dtype=object)
     else:
         info = np.concatenate([player_position, orientation_to_one_hot(player_orientation), x_momentum_to_one_hot(x_momentum), 
                                y_momentum_to_one_hot(y_momentum), distance_ball_enemy, orientation_to_one_hot(enemy_ball_orientation), ball_position, distances, orientation_to_one_hot(orientation), orientation_to_one_hot(prev_orientation), velocity[:, 0], velocity[:, 1],
-                               one_hot_distraction(distraction_idx, distraction_mapping)], axis=0, dtype=np.single)
+                               useless_feature], axis=0, dtype=np.single)
     return info
 
 def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndarray:

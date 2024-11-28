@@ -85,7 +85,7 @@ if __name__ == '__main__':
             make_ram_atari_env = make_ram_ocatari_env
             print("Using Ocatari environment")
             vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_cls
-            vec_env_kwargs = {'is_mixed': True} if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_kwargs
+            vec_env_kwargs = {'is_mixed': True, 'min_value': args.range[0], 'max_value': args.range[1]} if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else {'min_value': args.range[0], 'max_value': args.range[1]}
         env = make_ram_atari_env(args.env_name, n_envs=args.num_envs, seed=args.seed, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
         if args.evaluate:
             eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
@@ -149,9 +149,8 @@ if __name__ == '__main__':
             args.wrapper_kwargs['training'] = False 
             args.wrapper_kwargs['norm_reward'] = False 
             eval_env = VecNormalize(eval_env, **args.wrapper_kwargs)
-    undersampling_rate = args.env_kwargs.get('undersampling_rate', 1)
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
-        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_ur_{undersampling_rate}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
+        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_{int(args.range[0])}_{int(args.range[1])}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
     if args.no_improvement_kwargs:
         callback_list.append(StopTrainingOnNoImprovementInTraining(**args.no_improvement_kwargs, verbose=args.verbose))
     if eval_env is not None:

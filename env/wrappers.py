@@ -104,7 +104,7 @@ class CategoricalDummyVecEnv(DummyVecEnv):
 
     actions: np.ndarray
 
-    def __init__(self, env_fns: List[Callable[[], gym.Env]], is_mixed: bool = False):
+    def __init__(self, env_fns: List[Callable[[], gym.Env]], is_mixed: bool = False, **kwargs):
         self.envs = [_patch_env(fn()) for fn in env_fns]
         if len(set([id(env.unwrapped) for env in self.envs])) != len(self.envs):
             raise ValueError(
@@ -243,7 +243,7 @@ class HighWayWrapper(ObservationWrapper):
         return self.observation(observation), info
 
 class NeuroSymbolicAtariWrapper(ObservationWrapper):
-    def __init__(self, env: gym.Env, is_mixed: bool = True):
+    def __init__(self, env: gym.Env, is_mixed: bool = False, **kwargs):
         super().__init__(env)
         flattened_shape = env.observation_space.shape[0]
         if len(env.observation_space.shape) > 1:
@@ -260,7 +260,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
             flattened_shape = 142 if is_mixed else 1304
         elif self.env.game_name == 'Pong':
             # flattened_shape = 21 if is_mixed else 191
-            flattened_shape = 22 if is_mixed else 194
+            flattened_shape = 22 if is_mixed else 192
         elif self.env.game_name == 'Assault':
             flattened_shape = 44 if is_mixed else 420
         elif self.env.game_name == 'Asterix':
@@ -276,6 +276,8 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         else:
             flattened_shape = len(env.max_objects)*2
         env.is_mixed = is_mixed
+        self.min_value = kwargs.get('min_value', 0)
+        self.max_value = kwargs.get('max_value', 255)
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
     def observation(self, observation: np.ndarray):
@@ -284,7 +286,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'Breakout':
             return breakout_extraction(observation, self.env.is_mixed)
         elif self.env.game_name == 'Pong':
-            return pong_extraction(observation, self.env.is_mixed)
+            return pong_extraction(observation, self.env.is_mixed, self.min_value, self.max_value)
         elif self.env.game_name == 'Alien':
             return alien_extraction(observation, self.env.is_mixed)
         elif self.env.game_name == 'Kangaroo':
