@@ -29,7 +29,7 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
 from env.ocatari import MIXED_ATARI_ENVS
 from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, make_carl_env
-from env.minigrid import register_sequential_put_near
+from env.minigrid import register_minigrid_tests
 warnings.filterwarnings("ignore")
 
 from stable_baselines3.a2c.a2c import A2C
@@ -108,7 +108,7 @@ if __name__ == '__main__':
             eval_env = VecFrameStack(eval_env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
     elif args.env_type == 'minigrid':
         from minigrid.wrappers import FlatObsWrapper
-        register_sequential_put_near()
+        register_minigrid_tests()
         wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
         vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
         eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)

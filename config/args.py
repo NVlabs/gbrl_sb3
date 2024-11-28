@@ -299,8 +299,8 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
@@ -313,7 +313,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'connect_four'
     # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'CARLCartPole-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-SequentialPutNear-6x6-N2-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-6x6-N2-v0'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
