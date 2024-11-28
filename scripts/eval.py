@@ -61,7 +61,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--checkpoint', type=str)
     # parser.add_argument('--n_eval_episodes', type=int, default=10)
-    parser.add_argument('--n_eval_episodes', type=int, default=1000)
+    parser.add_argument('--n_eval_episodes', type=int, default=10000)
     parser.add_argument('--video_length', type=int, default=2000)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
     parser.add_argument('--env_kwargs', type=json_string_to_dict)

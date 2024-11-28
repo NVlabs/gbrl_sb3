@@ -72,6 +72,11 @@ class OODFetchEnv(MiniGridEnv):
         """Sample a color with custom probabilities."""
         probabilities = self._calculate_probabilities()
         return np.random.choice(self.color_names, p=probabilities)
+    
+    def _rand_obj(self):
+        """Sample a color with custom probabilities."""
+        probabilities = self._calculate_probabilities()
+        return np.random.choice([0, 1, 2], p=probabilities)
     @staticmethod
     def _gen_mission(syntax: str, color: str, obj_type: str):
         return f"{syntax} {color} {obj_type}"
@@ -88,17 +93,27 @@ class OODFetchEnv(MiniGridEnv):
         objs = []
 
         # For each object to be generated
-        while len(objs) < self.numObjs:
-            objColor = self._rand_color()
-            obj = Ball(objColor)
-
-            self.place_obj(obj)
-            objs.append(obj)
+        # while len(objs) < self.numObjs:
+        #     objColor = self._rand_color()
+        #     # objColor = "red"
+        #     # objColor = "green"
+        #     # objColor = "blue"
+        #     obj = Ball(objColor)
+        obs_red = Ball('red')
+        obs_green = Ball('green')
+        obs_blue = Ball('blue')
+        objs = [obs_red, obs_green, obs_blue]
+        self.place_obj(obs_red)
+        self.place_obj(obs_green)
+        self.place_obj(obs_blue)
+        #     objs.append(obj)
 
         # Randomize the player start position and orientation
         self.place_agent()
         # Choose a random object to be picked up
-        target = objs[self._rand_int(0, len(objs))]
+        # target = objs[self._rand_int(0, len(objs))]
+        target = objs[self._rand_obj()]
+        # target = objs[2]
         self.targetType = target.type
         self.targetColor = target.color
 
@@ -107,6 +122,7 @@ class OODFetchEnv(MiniGridEnv):
         # Generate the mission string
         self.mission = "get a %s" % descStr
         assert hasattr(self, "mission")
+        # print(self.mission)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
