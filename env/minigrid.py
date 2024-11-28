@@ -134,6 +134,7 @@ class SequentialPutNearEnv(MiniGridEnv):
         preCarrying = self.carrying
 
         obs, reward, terminated, truncated, info = super().step(action)
+        reward = 0
 
         u, v = self.dir_vec
         ox, oy = (self.agent_pos[0] + u, self.agent_pos[1] + v)
