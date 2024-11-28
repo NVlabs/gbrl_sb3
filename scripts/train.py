@@ -152,7 +152,7 @@ if __name__ == '__main__':
     undersampling_rate = args.env_kwargs.get('undersampling_rate', 1)
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
         # callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_{int(args.range[0])}_{int(args.range[1])}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
-        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_{int(args.range[0])}_{int(args.range[1])}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
+        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_ur_{undersampling_rate}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
     if args.no_improvement_kwargs:
         callback_list.append(StopTrainingOnNoImprovementInTraining(**args.no_improvement_kwargs, verbose=args.verbose))
     if eval_env is not None:
