@@ -88,10 +88,10 @@ if __name__ == '__main__':
                             callback_after_eval=None,
                             best_model_save_path=None,
                             log_path=None,
-                            eval_freq=args.eval_kwargs.get('eval_freq', 10000),
+                            eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
                             n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 50),
                             verbose=args.eval_kwargs.get('verbose', 1),
-                            ))   
+                            ))
 
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
