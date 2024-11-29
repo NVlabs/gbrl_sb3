@@ -118,6 +118,7 @@ class OODFetchEnv(MiniGridEnv):
 
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
+        print(self.undersampling_rate)
 
         if self.carrying:
             if (

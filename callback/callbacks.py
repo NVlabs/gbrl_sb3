@@ -351,3 +351,39 @@ class MultiEvalCallback(EvalCallback):
 
         return continue_training
 
+class ChangeEnvCallback(BaseCallback):
+    """
+    A callback that changes a value in the environment
+    at a specific frequency during training.
+
+    :param change_freq: The frequency (in number of calls) at which to change the environment value.
+    :param change_function: A function to modify the environment.
+        It should take the environment as input and perform the desired changes.
+    :param verbose: Verbosity level: 0 for no output, 1 for info messages.
+    """
+    def __init__(self, change_freq: int, change_function: callable, change_function_args: tuple = (), 
+                 change_function_kwargs: dict = None, verbose: int = 0):
+        super().__init__(verbose=verbose)
+        self.change_freq = change_freq
+        self.change_function = change_function
+        self.change_function_args = change_function_args
+        self.change_function_kwargs = change_function_kwargs or {}
+
+    def _on_step(self) -> bool:
+        # Check if the current step matches the change frequency
+        if self.n_calls % self.change_freq == 0:
+            if self.verbose >= 1:
+                print(f"Step {self.n_calls}: Changing environment configuration.")
+            # Apply the change function to the environment
+            if self.training_env is not None:
+                if isinstance(self.training_env, VecEnv):
+                    for env_idx in range(self.training_env.num_envs):
+                        self.change_function(self.training_env.envs[env_idx],
+                                             *self.change_function_args,
+                                             **self.change_function_kwargs)
+                else:
+                    self.change_function(self.training_env,
+                                         *self.change_function_args,
+                                         **self.change_function_kwargs)
+        return True  # Continue training
+    

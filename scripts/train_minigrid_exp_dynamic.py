@@ -26,11 +26,12 @@ from callback.callbacks import (ActorCriticCompressionCallback,
                                 OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining,
-                                MultiEvalCallback)
+                                MultiEvalCallback,
+                                ChangeEnvCallback)
 from utils.helpers import set_seed
 from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
-                          HighWayWrapper)
+                          )
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
 
@@ -53,6 +54,14 @@ NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
+
+def change_undersampling_rate(env, init_rate = 1, new_rate = 10):
+    if env.env.env.env.env.undersampling_rate is None or env.env.env.env.env.undersampling_rate  == 1:
+        env.env.env.env.env.undersampling_rate = new_rate 
+        print(f"Changed undersampling_rate from {init_rate} to {new_rate}")
+    else: 
+        env.env.env.env.env.undersampling_rate = init_rate
+        print(f"Changed undersampling_rate from {new_rate} to {init_rate}")
 
 if __name__ == '__main__':
     args = parse_args()
@@ -77,6 +86,9 @@ if __name__ == '__main__':
     wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+
+    callback_list.append(ChangeEnvCallback(int(2500000 / args.num_envs), change_undersampling_rate))
+
     for i, ball_color in enumerate(['red', 'green', 'blue']):
         eval_env_kwargs = args.env_kwargs.copy()
         eval_env_kwargs['test_box_idx'] = i
