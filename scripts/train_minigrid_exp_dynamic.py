@@ -97,7 +97,7 @@ if __name__ == '__main__':
     for i, ball_color in enumerate(['red', 'green', 'blue']):
         eval_env_kwargs = args.env_kwargs.copy()
         eval_env_kwargs['test_box_idx'] = i
-        eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class)
+        eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.wrapper == 'normalize':
 
             eval_env = VecNormalize(eval_env, **args.wrapper_kwargs)
