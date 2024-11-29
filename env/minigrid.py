@@ -22,7 +22,7 @@ from gymnasium.envs.registration import register
 import numpy as np
 
 class OODFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, undersampling_rate: float = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, undersampling_rate: float = None, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -31,7 +31,9 @@ class OODFetchEnv(MiniGridEnv):
             "green": np.array([0, 255, 0]),
             "blue": np.array([0, 0, 255]),
         }
-
+        if test_box_idx is not None:
+            assert test_box_idx >= 0 and test_box_idx < 3
+        self.test_box_idx = test_box_idx
         self.undersampling_rate = undersampling_rate
         self.color_names = sorted(list(self.colors.keys()))
 
@@ -91,14 +93,6 @@ class OODFetchEnv(MiniGridEnv):
         self.grid.vert_wall(width - 1, 0)
 
         objs = []
-
-        # For each object to be generated
-        # while len(objs) < self.numObjs:
-        #     objColor = self._rand_color()
-        #     # objColor = "red"
-        #     # objColor = "green"
-        #     # objColor = "blue"
-        #     obj = Ball(objColor)
         obs_red = Ball('red')
         obs_green = Ball('green')
         obs_blue = Ball('blue')
@@ -111,18 +105,16 @@ class OODFetchEnv(MiniGridEnv):
         # Randomize the player start position and orientation
         self.place_agent()
         # Choose a random object to be picked up
-        # target = objs[self._rand_int(0, len(objs))]
-        target = objs[self._rand_obj()]
-        # target = objs[2]
+        if self.test_box_idx is None:
+            target = objs[self._rand_obj()]
+        else:
+            target = objs[self.test_box_idx]
         self.targetType = target.type
         self.targetColor = target.color
-
         descStr = f"{self.targetColor} {self.targetType}"
-
         # Generate the mission string
         self.mission = "get a %s" % descStr
         assert hasattr(self, "mission")
-        # print(self.mission)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
