@@ -81,14 +81,14 @@ if __name__ == '__main__':
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
         env = VecNormalize(env, **args.wrapper_kwargs)
-    eval_wrapper_kwargs = args.wrapper_kwargs.copy()
+        eval_wrapper_kwargs = args.wrapper_kwargs.copy()
+        eval_wrapper_kwargs['training'] = False 
+        eval_wrapper_kwargs['norm_reward'] = False 
     for i, ball_color in enumerate(['red', 'green', 'blue']):
         eval_env_kwargs = args.env_kwargs.copy()
         eval_env_kwargs['test_box_idx'] = i
         eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class)
         if args.wrapper == 'normalize':
-            eval_wrapper_kwargs['training'] = False 
-            eval_wrapper_kwargs['norm_reward'] = False 
             eval_env = VecNormalize(eval_env, **args.wrapper_kwargs)
         callback_list.append(MultiEvalCallback(
                             ball_color,
