@@ -85,7 +85,7 @@ if __name__ == '__main__':
     for range_type, ns_kwargs in [('full', {'min_value': 0, 'max_value': 255}), ('lower', {'min_value': 0, 'max_value': 128}), ('upper', {'min_value': 128, 'max_value': 255})]:
         eval_env = make_ram_atari_env(args.env_name, n_envs=1, env_kwargs=env_kwargs, wrapper_kwargs=args.atari_wrapper_kwargs, vec_env_cls=vec_env_cls, neurosymbolic_kwargs=ns_kwargs)
         if args.wrapper == 'normalize':
-            eval_env = VecNormalize(eval_env, **args.eval_wrapper_kwargs)
+            eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
         callback_list.append(MultiEvalCallback(
                             range_type,
                             eval_env,

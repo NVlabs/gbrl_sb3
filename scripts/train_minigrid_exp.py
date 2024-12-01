@@ -89,7 +89,7 @@ if __name__ == '__main__':
         eval_env_kwargs['test_box_idx'] = i
         eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.wrapper == 'normalize':
-            eval_env = VecNormalize(eval_env, **args.eval_wrapper_kwargs)
+            eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
         callback_list.append(MultiEvalCallback(
                             ball_color,
                             eval_env,
