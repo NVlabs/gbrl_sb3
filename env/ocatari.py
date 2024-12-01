@@ -394,6 +394,11 @@ def pong_extraction(observation: np.ndarray, is_mixed: bool = True, min_value: f
     #     one_hot_encoded = np.eye(num_classes)[idx]
     #     # Flatten the one-hot encoded matrix
     #     return one_hot_encoded.flatten()
+    # min_value = 0
+    # max_value = 128
+    # min_value = 128
+    # max_value = 255
+
     useless_feature = np.array([float(np.random.randint(min_value, max_value))])
     # print(useless_feature)
     if is_mixed:

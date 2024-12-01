@@ -27,12 +27,9 @@ from callback.callbacks import (ActorCriticCompressionCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining,
                                 MultiEvalCallback)
-from utils.helpers import set_seed
-from env.wrappers import (CategoricalDummyVecEnv,
-                          CategoricalObservationWrapper,
-                          HighWayWrapper)
+from utils.helpers import set_seed, make_ram_ocatari_env
+from env.wrappers import (CategoricalDummyVecEnv)
 from env.ocatari import MIXED_ATARI_ENVS
-from env.minigrid import register_minigrid_tests
 
 warnings.filterwarnings("ignore")
 
@@ -72,11 +69,12 @@ if __name__ == '__main__':
         args.env_kwargs = {}
     learn_kwargs = {}
 
-    from minigrid.wrappers import FlatObsWrapper
-    register_minigrid_tests()
-    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
-    vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-    env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+    make_ram_atari_env = make_ram_ocatari_env
+    env_kwargs = {'full_action_space': False}
+    print("Using Ocatari environment")
+    vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else None
+    vec_env_kwargs = {'is_mixed': True} if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else {}
+    env = make_ram_atari_env(args.env_name, n_envs=args.num_envs, seed=args.seed, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs, neurosymbolic_kwargs=args.neurosymbolic_kwargs) 
     
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
@@ -84,14 +82,12 @@ if __name__ == '__main__':
         eval_wrapper_kwargs = args.wrapper_kwargs.copy()
         eval_wrapper_kwargs['training'] = False 
         eval_wrapper_kwargs['norm_reward'] = False 
-    for i, ball_color in enumerate(['red', 'green', 'blue']):
-        eval_env_kwargs = args.env_kwargs.copy()
-        eval_env_kwargs['test_box_idx'] = i
-        eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+    for range_type, ns_kwargs in [('full', {'min_value': 0, 'max_value': 255}), ('lower', {'min_value': 0, 'max_value': 128}), ('upper', {'min_value': 128, 'max_value': 255})]:
+        eval_env = make_ram_atari_env(args.env_name, n_envs=1, env_kwargs=env_kwargs, wrapper_kwargs=args.atari_wrapper_kwargs, vec_env_cls=vec_env_cls, neurosymbolic_kwargs=ns_kwargs)
         if args.wrapper == 'normalize':
             eval_env = VecNormalize(eval_env, **args.eval_wrapper_kwargs)
         callback_list.append(MultiEvalCallback(
-                            ball_color,
+                            range_type,
                             eval_env,
                             callback_on_new_best=None,
                             callback_after_eval=None,
@@ -102,10 +98,12 @@ if __name__ == '__main__':
                             verbose=args.eval_kwargs.get('verbose', 1), 
                             ))
 
-    undersampling_rate = args.env_kwargs.get('undersampling_rate', 1)
+
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
-        # callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_{int(args.range[0])}_{int(args.range[1])}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
-        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_ur_{undersampling_rate}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
+        min_value = int(args.neurosymbolic_kwargs.get('min_value', 0))
+        max_value = int(args.neurosymbolic_kwargs.get('max_value', 0))
+        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_{min_value}_{max_value}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
+     
     if args.no_improvement_kwargs:
         callback_list.append(StopTrainingOnNoImprovementInTraining(**args.no_improvement_kwargs, verbose=args.verbose))
 

@@ -3,9 +3,9 @@ env:
   env_kwargs: null
   verbose: 1
   seed: 0
-  num_envs: 1
+  num_envs: 2
   eval_kwargs:
-    eval_freq: 25000
+    eval_freq: 5000
     stop_train: False
     min_evals: 5
     record: False

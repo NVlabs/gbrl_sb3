@@ -146,6 +146,7 @@ def parse_args():
     parser.add_argument('--no_improvement_kwargs', type=json_string_to_dict) # training no improvement callback
     parser.add_argument('--wrapper', type=str)
     parser.add_argument('--wrapper_kwargs', type=json_string_to_dict)
+    parser.add_argument('--neurosymbolic_kwargs', type=json_string_to_dict)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
     
     # logging args   
@@ -300,8 +301,6 @@ def parse_args():
     parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
     # self play
     parser.add_argument('--rollouts_player', type=int)
-
-    parser.add_argument('--range', type=str2tuple, default='(0,255)')
     # openspiel
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
     args = parser.parse_args()
@@ -312,9 +311,9 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    # args.env_type = args.env_type if args.env_type else 'ocatari'
+    args.env_type = args.env_type if args.env_type else 'ocatari'
     # args.env_type = args.env_type if args.env_type else 'carl'
-    args.env_type = args.env_type if args.env_type else 'minigrid'
+    # args.env_type = args.env_type if args.env_type else 'minigrid'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'highway'
@@ -334,9 +333,9 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'highway-v0'
     # args.env_name = args.env_name if args.env_name else 'discounting_chain'
     # args.env_name = args.env_name if args.env_name else 'connect_four'
-    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
+    args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'CARLCartPole-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-6x6-N2-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-6x6-N2-v0'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']

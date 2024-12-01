@@ -93,6 +93,7 @@ def make_ocvec_env(
     vec_env_kwargs: Optional[Dict[str, Any]] = None,
     monitor_kwargs: Optional[Dict[str, Any]] = None,
     wrapper_kwargs: Optional[Dict[str, Any]] = None,
+    neurosymbolic_kwargs: Optional[Dict[str, Any]] = None,
 ) -> VecEnv:
     """
     Create a wrapped, monitored ``VecEnv``.
@@ -122,8 +123,9 @@ def make_ocvec_env(
     vec_env_kwargs = vec_env_kwargs or {}
     monitor_kwargs = monitor_kwargs or {}
     wrapper_kwargs = wrapper_kwargs or {}
-    special_kwargs = {}
+    neurosymbolic_kwargs = neurosymbolic_kwargs or {}
     assert vec_env_kwargs is not None  # for mypy
+    neurosymbolic_kwargs['is_mixed'] = vec_env_kwargs.get('is_mixed', False)
 
     def make_env(rank: int) -> Callable[[], gym.Env]:
         def _init() -> gym.Env:
@@ -155,7 +157,7 @@ def make_ocvec_env(
                 os.makedirs(monitor_dir, exist_ok=True)
             env = Monitor(env, filename=monitor_path, **monitor_kwargs)
             # Optionally, wrap the environment with the provided wrapper
-            env = NeuroSymbolicAtariWrapper(env, **special_kwargs)
+            env = NeuroSymbolicAtariWrapper(env, **neurosymbolic_kwargs)
             if wrapper_class is not None:
                 env = wrapper_class(env, **wrapper_kwargs)
             return env
@@ -166,9 +168,7 @@ def make_ocvec_env(
     if vec_env_cls is None:
         # Default: use a DummyVecEnv
         vec_env_cls = DummyVecEnv
-    special_kwargs = vec_env_kwargs.copy()
-    del vec_env_kwargs['min_value']
-    del vec_env_kwargs['max_value']
+
     vec_env = vec_env_cls([make_env(i + start_index) for i in range(n_envs)], **vec_env_kwargs)
     # Prepare the seeds for the first reset
     vec_env.seed(seed)
@@ -279,6 +279,7 @@ def make_ram_ocatari_env(
     vec_env_cls: Optional[Union[Type[DummyVecEnv], Type[SubprocVecEnv]]] = None,
     vec_env_kwargs: Optional[Dict[str, Any]] = None,
     monitor_kwargs: Optional[Dict[str, Any]] = None,
+    neurosymbolic_kwargs: Optional[Dict[str, Any]] = None,
 ) -> VecEnv:
 
 
@@ -294,6 +295,7 @@ def make_ram_ocatari_env(
         vec_env_kwargs=vec_env_kwargs,
         monitor_kwargs=monitor_kwargs,
         wrapper_kwargs=wrapper_kwargs,
+        neurosymbolic_kwargs=neurosymbolic_kwargs
     )
 
 
