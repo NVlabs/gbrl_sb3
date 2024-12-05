@@ -276,6 +276,7 @@ def parse_args():
     parser.add_argument('--split_score_func', type=str, choices=['cosine', 'L2', 'l2', 'COSINE', 'Cosine'])
     parser.add_argument('--generator_type', type=str, choices=['Quantile', 'quantile', 'l2', 'Uniform', 'uniform'])
     parser.add_argument('--grow_policy', type=str, choices=['Oblivious', 'Greedy', 'greedy', 'oblivious'])
+    parser.add_argument('--feature_weights', type=float, nargs='+')
     # Saving params
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
@@ -321,8 +322,8 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
@@ -333,7 +334,8 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'highway-v0'
     # args.env_name = args.env_name if args.env_name else 'discounting_chain'
     # args.env_name = args.env_name if args.env_name else 'connect_four'
-    args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
+    args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'CARLCartPole-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-6x6-N2-v0'
     # Set defaults from YAML
@@ -452,6 +454,7 @@ def get_defaults(args, defaults):
     args.split_score_func = args.split_score_func if args.split_score_func is not None else gbrl_param_defaults['split_score_func']                     
     args.generator_type = args.generator_type if args.generator_type is not None else gbrl_param_defaults['generator_type']                     
     args.shared_tree_struct = args.shared_tree_struct if args.shared_tree_struct is not None else gbrl_param_defaults['shared_tree_struct']                          
+    args.feature_weights = args.feature_weights if args.feature_weights is not None else gbrl_param_defaults['feature_weights']                          
     # SAC GBRL Params
     sac_gbrl_defaults = defaults.get('sac_gbrl', {})
     args.ent_lr = args.ent_lr if args.ent_lr is not None else sac_gbrl_defaults.get('ent_lr', 1.0e-3)

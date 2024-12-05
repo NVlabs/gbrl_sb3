@@ -33,6 +33,7 @@ gbrl_params:
   split_score_func: "cosine"
   generator_type: "Quantile"
   shared_tree_struct: True
+  feature_weights: null
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
