@@ -363,7 +363,7 @@ def breakout_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.nd
                                ], axis=0, dtype=np.single)
     return np.append(info, columns)
 
-def pong_extraction(observation: np.ndarray, is_mixed: bool = True, min_value: float = 0, max_value: float = 255) -> np.ndarray:
+def pong_extraction(observation: np.ndarray, is_mixed: bool = True, useless_value: float = 0) -> np.ndarray:
     positions = observation[-1, :, :2]
     prev_positions = observation[-2, :, :2]
     object_sizes = observation[-1, :, 2:]
@@ -398,7 +398,7 @@ def pong_extraction(observation: np.ndarray, is_mixed: bool = True, min_value: f
     # min_value = 128
     # max_value = 255
 
-    useless_feature = np.array([float(np.random.randint(min_value, max_value))])
+    useless_feature = np.array([useless_value])
     # useless_feature = np.array([float(np.random.uniform(low=min_value, high=max_value))])
     # print(useless_feature)
     if is_mixed:

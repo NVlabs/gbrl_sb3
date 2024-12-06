@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from gym.core import ObsType
 from gymnasium import spaces
-from gymnasium.core import ActType
+from gymnasium.core import ActType, WrapperObsType
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
@@ -366,6 +366,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         env.is_mixed = is_mixed
         self.min_value = kwargs.get('min_value', 0)
         self.max_value = kwargs.get('max_value', 255)
+        self.useless_value = float(np.random.randint(self.min_value, self.max_value))
         env.observation_space = gym.spaces.Box(low=0, high=255, shape=(flattened_shape, ), dtype=np.float32)
         
     def observation(self, observation: np.ndarray):
@@ -374,7 +375,7 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         elif self.env.game_name == 'Breakout':
             return breakout_extraction(observation, self.env.is_mixed)
         elif self.env.game_name == 'Pong':
-            return pong_extraction(observation, self.env.is_mixed, self.min_value, self.max_value)
+            return pong_extraction(observation, self.env.is_mixed, self.useless_value)
         elif self.env.game_name == 'Alien':
             return alien_extraction(observation, self.env.is_mixed)
         elif self.env.game_name == 'Kangaroo':
@@ -392,6 +393,15 @@ class NeuroSymbolicAtariWrapper(ObservationWrapper):
         else:
             frame_t = observation[-1][:, :2]
             return frame_t.flatten()
+
+    def step(
+        self, action: ActType
+    ) -> tuple[WrapperObsType, SupportsFloat, bool, bool, dict[str, Any]]:
+        """Modifies the :attr:`env` after calling :meth:`step` using :meth:`self.observation` on the returned observations."""
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        if terminated or truncated:
+            self.useless_value = float(np.random.randint(self.min_value, self.max_value))
+        return self.observation(observation), reward, terminated, truncated, info
         
     def reset(self,  *, seed: int = None, options: dict[str, Any] | None = None) -> tuple[ObsType, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed)
