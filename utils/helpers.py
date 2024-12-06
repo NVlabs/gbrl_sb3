@@ -233,7 +233,12 @@ def make_carl_env(
                 
                 kwargs = {"render_mode": "rgb_array"}
                 context = CONTEXT[env_id].get_default_context()
-                context['gravity'] =  context['gravity'] * 2
+                # context['GRAVITY_Y'] = -3.73 # mars   1.62 # moon
+                # context['GRAVITY_Y'] = -274 # sun
+                # context['GRAVITY_Y'] =  -1.62 # moon
+                # context['GRAVITY_Y'] =  -8.87 # venus
+                # context['GRAVITY_Y'] =  context['GRAVITY_Y'] * 2 # venus
+                context['GRAVITY_Y'] =  context['GRAVITY_Y'] / 2 # venus
                 # context['length'] =  context['length'] * 2
                 env = CONTEXT[env_id](contexts={0: context})  # type: ignore[arg-type]
 

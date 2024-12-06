@@ -36,6 +36,7 @@ from utils.helpers import (make_ram_atari_env,
                            make_highway_env)
 from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
+                          MiniGridFlatObsWrapper,
                           HighWayWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
@@ -95,10 +96,10 @@ if __name__ == '__main__':
             if eval_env:
                 eval_env = VecFrameStack(eval_env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
     elif args.env_type == 'minigrid':
-        from minigrid.wrappers import FlatObsWrapper
         register_minigrid_tests()
-        wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
+        wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else MiniGridFlatObsWrapper
         vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
+        # vec_env_kwargs = {'is_mixed': True}
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class)

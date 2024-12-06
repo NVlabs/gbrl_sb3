@@ -6,8 +6,10 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
+import operator
 import time
 from copy import deepcopy
+from functools import reduce
 from typing import (Any, Callable, Dict, List, Optional, OrderedDict,
                     SupportsFloat, Tuple, Type)
 
@@ -15,6 +17,7 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
 from gym.core import ObsType
+from gymnasium import spaces
 from gymnasium.core import ActType
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import ObservationWrapper
@@ -64,25 +67,110 @@ numerical_dtype = np.dtype('float32')
 categorical_dtype = np.dtype('S128')  
 
 
+class MiniGridFlatObsWrapper(ObservationWrapper):
+    """ Identical to FlatObsWrapper from MiniGrid but also allows distances to be incorporated in the observation space
+    Encode mission strings using a one-hot scheme,
+    and combine these with observed images into one flat array.
+
+    This wrapper is not applicable to BabyAI environments, given that these have their own language component.
+
+    Example:
+        >>> import gymnasium as gym
+        >>> import matplotlib.pyplot as plt
+        >>> from minigrid.wrappers import FlatObsWrapper
+        >>> env = gym.make("MiniGrid-LavaCrossingS11N5-v0")
+        >>> env_obs = FlatObsWrapper(env)
+        >>> obs, _ = env_obs.reset()
+        >>> obs.shape
+        (2835,)
+    """
+
+    def __init__(self, env, maxStrLen=96):
+        super().__init__(env)
+
+        self.maxStrLen = maxStrLen
+        self.numCharCodes = 28
+
+        imgSpace = env.observation_space.spaces["image"]
+        imgSize = reduce(operator.mul, imgSpace.shape, 1)
+
+        distanceSize = 0
+        if 'distances':
+            distanceSpace = env.observation_space.spaces['distances']
+            distanceSize = reduce(operator.mul, distanceSpace.shape, 1)
+        self.observation_space = spaces.Box(
+            low=0,
+            high=255,
+            shape=(imgSize + self.numCharCodes * self.maxStrLen + distanceSize,),
+            dtype="uint8",
+        )
+
+        self.cachedStr: str = None
+
+    def observation(self, obs):
+        image = obs["image"]
+        mission = obs["mission"]
+
+        # Cache the last-encoded mission string
+        if mission != self.cachedStr:
+            assert (
+                len(mission) <= self.maxStrLen
+            ), f"mission string too long ({len(mission)} chars)"
+            mission = mission.lower()
+
+            strArray = np.zeros(
+                shape=(self.maxStrLen, self.numCharCodes), dtype="float32"
+            )
+
+            for idx, ch in enumerate(mission):
+                if ch >= "a" and ch <= "z":
+                    chNo = ord(ch) - ord("a")
+                elif ch == " ":
+                    chNo = ord("z") - ord("a") + 1
+                elif ch == ",":
+                    chNo = ord("z") - ord("a") + 2
+                else:
+                    raise ValueError(
+                        f"Character {ch} is not available in mission string."
+                    )
+                assert chNo < self.numCharCodes, "%s : %d" % (ch, chNo)
+                strArray[idx, chNo] = 1
+
+            self.cachedStr = mission
+            self.cachedArray = strArray
+        if 'distances' in obs:
+            obs = np.concatenate((image.flatten(), self.cachedArray.flatten(), obs['distances']))
+        else:
+            obs = np.concatenate((image.flatten(), self.cachedArray.flatten()))
+
+        return obs
 class CategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
 
         self.image_shape = self.observation_space['image'].shape
         self.flattened_shape = self.image_shape[0]*self.image_shape[1] + 2
+        self.is_mixed = False
+        if 'distances' in self.observation_space.keys():
+            self.flattened_shape += self.observation_space['distances'].shape[0]
+            env.is_mixed = True
+            self.is_mixed = True
+        else:
+            env.is_categorical = True
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
-        env.is_categorical = True
+        
          
     def observation(self, observation):
         # Transform the observation in some way
-        categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype)
+        categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype if not self.is_mixed else object)
         for i in range(self.image_shape[0]):
             for j in range(self.image_shape[1]):
                 category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
                 categorical_array[i*self.image_shape[1] + j] = category.encode('utf-8')
         categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
         categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
-
+        if self.is_mixed:
+            categorical_array[-3:] = observation['distances']
         return np.ascontiguousarray(categorical_array)
 
     def reset(self, seed: int = None):
@@ -120,10 +208,10 @@ class CategoricalDummyVecEnv(DummyVecEnv):
         super().__init__(env_fns)
         obs_space = env.observation_space
         self.keys, shapes, _ = obs_space_info(obs_space)
-        self.is_mixed = is_mixed
+        self.is_mixed = is_mixed or(hasattr(env, 'is_mixed') and env.is_mixed) 
         self.is_categorical = True
 
-        self.buf_obs = OrderedDict([(k, np.zeros((self.num_envs, *tuple(shapes[k])), dtype=object if is_mixed else categorical_dtype)) for k in self.keys])
+        self.buf_obs = OrderedDict([(k, np.zeros((self.num_envs, *tuple(shapes[k])), dtype=object if self.is_mixed else categorical_dtype)) for k in self.keys])
         self.buf_dones = np.zeros((self.num_envs,), dtype=bool)
         self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos: List[Dict[str, Any]] = [{} for _ in range(self.num_envs)]

@@ -6,8 +6,7 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-import numpy as np 
-
+import numpy as np
 
 MIXED_ATARI_ENVS = ['Gopher', 'Breakout', 'Alien', 'Kangaroo', 'SpaceInvaders', 'Pong', 'Assault', 'Asterix', 'Bowling', 'Tennis', 'Freeway', 'Boxing']
 ATARI_GENERAL_EXTRACTION = ['Assault', 'Asterix', 'Bowling', 'Freeway', 'Boxing']
@@ -400,6 +399,7 @@ def pong_extraction(observation: np.ndarray, is_mixed: bool = True, min_value: f
     # max_value = 255
 
     useless_feature = np.array([float(np.random.randint(min_value, max_value))])
+    # useless_feature = np.array([float(np.random.uniform(low=min_value, high=max_value))])
     # print(useless_feature)
     if is_mixed:
         info = np.concatenate([player_position, player_orientation, np.array([x_momentum, y_momentum]), distance_ball_enemy, enemy_ball_orientation, ball_position, distances, orientation, prev_orientation, velocity[:, 0], velocity[:, 1],
@@ -436,7 +436,6 @@ def tennis_extraction(observation: np.ndarray, is_mixed: bool = True) -> np.ndar
     
     delta_x_distances = x_distances - prev_x_distances
     delta_y_distances = y_distances - prev_y_distances
-
 
     orientation = get_orientation(player_position, positions[1:, :], player_size, object_sizes[1:])
     prev_orientation = get_orientation(prev_positions[0], prev_positions[1:, :], player_size, object_sizes[1:])
@@ -835,10 +834,3 @@ def space_invaders_extraction(observation: np.ndarray, is_mixed: bool = True) ->
          info = np.concatenate([player_position, orientation_to_one_hot(prev_orientation), x_momentum_to_one_hot(x_momentum), 
                                y_momentum_to_one_hot(y_momentum), distances, delta_distances, orientation_to_one_hot(orientations), below_mapping_to_onehot(below_info), counts], axis=0, dtype=object)
     return info
-
-
-
-
-
-    
-    

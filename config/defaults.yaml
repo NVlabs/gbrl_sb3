@@ -107,7 +107,7 @@ ppo_nn:
   use_sde: False
   stats_window_size: 100
   sde_sample_freq: -1
-  learning_rate: 3.0e-5
+  learning_rate: 3.0e-4
   clip_range: 0.2
   clip_range_vf: null
   max_grad_norm: 0.5
