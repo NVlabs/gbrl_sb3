@@ -124,6 +124,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                             'control_variates': False,
                             'split_score_func': 'cosine',
                             'generator_type': "Quantile",
+                            'feature_weights': None,
                         },
                         'policy_optimizer': {
                             'policy_algo': 'SGD',

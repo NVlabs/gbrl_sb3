@@ -312,9 +312,9 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    args.env_type = args.env_type if args.env_type else 'ocatari'
+    # args.env_type = args.env_type if args.env_type else 'ocatari'
     # args.env_type = args.env_type if args.env_type else 'carl'
-    # args.env_type = args.env_type if args.env_type else 'minigrid'
+    args.env_type = args.env_type if args.env_type else 'minigrid'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'highway'
@@ -335,9 +335,10 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'discounting_chain'
     # args.env_name = args.env_name if args.env_name else 'connect_four'
     # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
-    args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
+    # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'CARLCartPole-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-6x6-N2-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -571,6 +572,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
@@ -628,6 +630,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
@@ -687,6 +690,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "actor_optimizer": {
                         "mu_optimizer": {
@@ -761,6 +765,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
@@ -816,6 +821,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "critic_optimizer": {
                         "algo": args.critic_algo,

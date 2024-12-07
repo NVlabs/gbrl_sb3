@@ -254,6 +254,7 @@ class DistanceFetchEnv(MiniGridEnv):
         target = objs[target_idx]
         self.targetType = target.type
         self.targetColor = target.color
+        # print(self.mission)
         assert hasattr(self, "mission")
 
     def step(self, action):
