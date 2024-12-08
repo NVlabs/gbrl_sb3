@@ -143,7 +143,7 @@ def register_minigrid_tests():
     )
 
 class DistanceFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, undersampling_rate: float = None, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, categorical: bool = False, undersampling_rate: float = None, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -154,6 +154,7 @@ class DistanceFetchEnv(MiniGridEnv):
         }
         if test_box_idx is not None:
             assert test_box_idx >= 0 and test_box_idx < 3
+        self.categorical = categorical
         self.test_box_idx = test_box_idx
         self.undersampling_rate = undersampling_rate
         self.color_names = sorted(list(self.colors.keys()))
@@ -186,19 +187,35 @@ class DistanceFetchEnv(MiniGridEnv):
             shape=(self.agent_view_size, self.agent_view_size, 3),
             dtype="uint8",
         )
+
         self.observation_space = spaces.Dict(
             {
                 "image": image_observation_space,
                 "direction": spaces.Discrete(4),
                 "mission": mission_space,
-                "distances": spaces.Box(
+                }
+        )
+        if not categorical:
+            self.observation_space['distances'] = spaces.Box(
                             low=0,
                             high=np.inf,
                             shape=(len(self.colors),),
                             dtype=float,
                         )
-                }
-        )
+        else:
+            self.observation_space['closest'] = spaces.Box(
+                            low=0,
+                            high=np.inf,
+                            shape=(1,),
+                            dtype=float,
+                        )
+            self.observation_space['farthest'] = spaces.Box(
+                            low=0,
+                            high=np.inf,
+                            shape=(1,),
+                            dtype=float,
+                        )
+        self.color_dict = {"red": 0, "green": 1, "blue": 2}
 
     def _calculate_probabilities(self):
         """Calculate probabilities for undersampling one color."""
@@ -247,14 +264,15 @@ class DistanceFetchEnv(MiniGridEnv):
         self.distances = np.linalg.norm((self.obj_pos - agent_pos), axis=1)
         # Generate the mission string
         self.mission =  self._rand_mission()
-        if 'farthest' in self.mission:
-            target_idx = np.argmax(self.distances)
-        else:
-            target_idx = np.argmin(self.distances)
+        closest_idx = np.argmin(self.distances)
+        farthest_idx = np.argmax(self.distances)
+        target_idx = farthest_idx if 'farthest' in self.mission else closest_idx
+
+        self.closest = objs[closest_idx]
+        self.farthest = objs[farthest_idx]
         target = objs[target_idx]
         self.targetType = target.type
         self.targetColor = target.color
-        # print(self.mission)
         assert hasattr(self, "mission")
 
     def step(self, action):
@@ -269,7 +287,10 @@ class DistanceFetchEnv(MiniGridEnv):
             else:
                 reward = 0
                 terminated = True
-        obs['distances'] = self.distances
+        if not self.categorical:
+            obs['distances'] = self.distances
+        obs['closest'] = self.closest.color
+        obs['farthest'] = self.farthest.color
         return obs, reward, terminated, truncated, info
     
     def reset(
@@ -280,7 +301,10 @@ class DistanceFetchEnv(MiniGridEnv):
     ) -> tuple[ObsType, dict[str, Any]]:
         super().reset(seed=seed)
         obs, info = super().reset(seed=seed, options=options)
-        obs['distances'] = self.distances
+        if not self.categorical:
+            obs['distances'] = self.distances
+        obs['closest'] = self.closest.color
+        obs['farthest'] = self.farthest.color
         return obs, info
 
 
@@ -292,9 +316,16 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-OODFetch-8x8-N3-v0",
         entry_point="env.minigrid:OODFetchEnv",
+        kwargs={"size": 8, "numObjs": 3},
     )
 
     register(
         id="MiniGrid-DistanceFetch-8x8-N3-v0",
         entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-Categorical-v0",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "categorical": True},
     )
