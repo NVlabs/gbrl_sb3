@@ -290,7 +290,7 @@ def parse_args():
     parser.add_argument('--split_score_func', type=str, choices=['cosine', 'L2', 'l2', 'COSINE', 'Cosine'])
     parser.add_argument('--generator_type', type=str, choices=['Quantile', 'quantile', 'l2', 'Uniform', 'uniform'])
     parser.add_argument('--grow_policy', type=str, choices=['Oblivious', 'Greedy', 'greedy', 'oblivious'])
-    parser.add_argument('--feature_weights', type=json_string_to_list
+    parser.add_argument('--feature_weights', type=json_string_to_list)
     # Saving params
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
