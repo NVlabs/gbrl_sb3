@@ -71,6 +71,20 @@ def preprocess_lr(lr: Union[str, float]) -> Union[float, Callable[[float], float
         return float(lr)
     return lr
 
+def json_string_to_list(json_string):
+    """Convert a JSON string to a List."""
+    if json_string is None or json_string.lower() in ('null','none'):
+        return None
+    try:
+        # Parse the JSON string into a Python list
+        loaded_list = json.loads(json_string)
+        # Ensure the result is a list
+        if not isinstance(loaded_list, list):
+            raise argparse.ArgumentTypeError("The JSON string must represent a list.")
+        return loaded_list
+    except json.JSONDecodeError as e:
+        raise argparse.ArgumentTypeError(f"Invalid JSON format for list. Error: {e}")
+    
 def json_string_to_dict(json_string):
     """Convert a JSON string to a dictionary."""
     if json_string is None or json_string.lower() in ('null','none'):
@@ -276,7 +290,7 @@ def parse_args():
     parser.add_argument('--split_score_func', type=str, choices=['cosine', 'L2', 'l2', 'COSINE', 'Cosine'])
     parser.add_argument('--generator_type', type=str, choices=['Quantile', 'quantile', 'l2', 'Uniform', 'uniform'])
     parser.add_argument('--grow_policy', type=str, choices=['Oblivious', 'Greedy', 'greedy', 'oblivious'])
-    parser.add_argument('--feature_weights', type=json.loads)
+    parser.add_argument('--feature_weights', type=json_string_to_list
     # Saving params
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
@@ -338,7 +352,8 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'CARLCartPole-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
