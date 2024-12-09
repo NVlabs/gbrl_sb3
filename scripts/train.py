@@ -105,7 +105,7 @@ if __name__ == '__main__':
             eval_kwargs = args.env_kwargs.copy()
             if 'SpuriousFetch' in args.env_name:
                 eval_kwargs['train'] = False
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class)
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
     elif args.env_type == 'highway':
         env = make_highway_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=HighWayWrapper)
         if args.evaluate:
