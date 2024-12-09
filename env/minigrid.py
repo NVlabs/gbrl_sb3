@@ -299,7 +299,7 @@ class DistanceFetchEnv(MiniGridEnv):
         return obs, info
 
 class SpuriousFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, train: bool = True, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, train: bool = True, randomize: bool = False, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -312,6 +312,7 @@ class SpuriousFetchEnv(MiniGridEnv):
             assert test_box_idx >= 0 and test_box_idx < 3
         self.test_box_idx = test_box_idx
         self.color_names = sorted(list(self.colors.keys()))
+        self.randomize = randomize
         self.train = train
         MISSION_SYNTAX = [
             "get a"
@@ -355,7 +356,10 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.grid.vert_wall(width - 1, 0)
         # Place a goal square in the bottom-right corner
         if self.train:
-            self.put_obj(Box('red'), width - 2, height - 2)
+            if self.randomize:
+                self.place_obj(Box('red'))
+            else:
+                self.put_obj(Box('red'), width - 2, height - 2)
 
         objs = []
         obs_red = Ball('red')
@@ -456,5 +460,10 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v0",
         entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3},
+        kwargs={"size": 8, "numObjs": 3, "randomize": False},
+    )
+    register(
+        id="MiniGrid-SpuriousFetch-8x8-N3-v1",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "randomize": True},
     )
