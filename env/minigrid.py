@@ -8,7 +8,7 @@
 ##############################################################################
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, List
 
 import numpy as np
 from gymnasium import spaces
@@ -143,7 +143,7 @@ def register_minigrid_tests():
     )
 
 class DistanceFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, categorical: bool = False, undersampling_rate: float = None, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, distances_type: str = 'raw', mission_probs: List | None = None, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -152,21 +152,26 @@ class DistanceFetchEnv(MiniGridEnv):
             "green": np.array([0, 255, 0]),
             "blue": np.array([0, 0, 255]),
         }
+        assert distances_type in ['raw', 'rank', 'categorical']
         if test_box_idx is not None:
             assert test_box_idx >= 0 and test_box_idx < 3
-        self.categorical = categorical
         self.test_box_idx = test_box_idx
-        self.undersampling_rate = undersampling_rate
+        self.mission_probs = [1.0, 0, 0, 0] if mission_probs is None else mission_probs
+        self.mission_probs = [float(prob) / sum(self.mission_probs) for prob in self.mission_probs]
         self.color_names = sorted(list(self.colors.keys()))
+        self.distances_type = distances_type
 
         MISSION_SYNTAX = [
             "get closest ball",
+            "get closest ball ignoring the red ball",
+            "get closest ball ignoring the",
             "get farthest ball",
         ]
+
         self.mission_syntax = MISSION_SYNTAX
         mission_space = MissionSpace(
             mission_func=self._gen_mission,
-            ordered_placeholders=[MISSION_SYNTAX],
+            ordered_placeholders=[MISSION_SYNTAX, self.color_names],
         )
 
         if max_steps is None:
@@ -195,48 +200,25 @@ class DistanceFetchEnv(MiniGridEnv):
                 "mission": mission_space,
                 }
         )
-        if not categorical:
-            self.observation_space['distances'] = spaces.Box(
-                            low=0,
-                            high=np.inf,
-                            shape=(len(self.colors),),
-                            dtype=float,
-                        )
-        else:
-            self.observation_space['closest'] = spaces.Box(
-                            low=0,
-                            high=np.inf,
-                            shape=(1,),
-                            dtype=float,
-                        )
-            self.observation_space['farthest'] = spaces.Box(
-                            low=0,
-                            high=np.inf,
-                            shape=(1,),
-                            dtype=float,
-                        )
-        self.color_dict = {"red": 0, "green": 1, "blue": 2}
-
-    def _calculate_probabilities(self):
-        """Calculate probabilities for undersampling one color."""
-        num_missions = len(self.mission_syntax)
-        if self.undersampling_rate is None or self.undersampling_rate <= 0:
-            return [1 / float(num_missions)] * num_missions  # Uniform distribution
-
-        # Solve for x based on the equation 2x + x / undersampling_rate = 1
-        y = float(self.undersampling_rate)
-        x = y / (float(num_missions - 1) * y + 1)
-        probabilities = [x, x / y]
-        return probabilities
+        self.observation_space['distances'] = spaces.Box(
+                        low=0,
+                        high=np.inf,
+                        shape=(len(self.colors),),
+                        dtype=float,
+                    )
 
     def _rand_mission(self):
         """Sample a color with custom probabilities."""
-        probabilities = self._calculate_probabilities()
-        return np.random.choice(self.mission_syntax, p=probabilities)
+        mission = np.random.choice(self.mission_syntax, p=self.mission_probs)
+        if mission == 'get closest ball ignoring the':
+            mission += ' ' + np.random.choice(self.color_names) + ' ball'
+        return mission
     
     @staticmethod
-    def _gen_mission(syntax: str):
-        return f"{syntax}"
+    def _gen_mission(syntax: str, color: str = None):
+        if color is None:
+            return f"{syntax}"
+        return f"{syntax} {color} ball"
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -261,16 +243,31 @@ class DistanceFetchEnv(MiniGridEnv):
         # Randomize the player start position and orientation
         agent_pos = self.place_agent()
         agent_pos = np.array(agent_pos)
-        self.distances = np.linalg.norm((self.obj_pos - agent_pos), axis=1)
+        distances = np.linalg.norm((self.obj_pos - agent_pos), axis=1)
+        sorted_pairs = sorted(zip(distances, objs), key=lambda x: x[0])
+        # Extract the sorted distances and objects
+        # sorted_distances = [pair[0] for pair in sorted_pairs]
+        sorted_objs = [pair[1] for pair in sorted_pairs]
+        sorted_colors = [obj.color for obj in sorted_objs]
         # Generate the mission string
         self.mission =  self._rand_mission()
-        closest_idx = np.argmin(self.distances)
-        farthest_idx = np.argmax(self.distances)
-        target_idx = farthest_idx if 'farthest' in self.mission else closest_idx
-
-        self.closest = objs[closest_idx]
-        self.farthest = objs[farthest_idx]
-        target = objs[target_idx]
+        if self.mission == 'get closest ball':
+            target_idx = 0
+        elif self.mission == 'get closest ball ignoring the red ball':
+            target_idx = 0 if sorted_objs[0].color != 'red' else 1
+        elif self.mission == 'get farthest ball':
+            target_idx = -1
+        else: 
+            color = self.mission.split("the")[-1].split("ball")[0].replace(" ", "")
+            target_idx = [idx for idx, obj in enumerate(sorted_objs) if color != obj.color][0]
+        target = sorted_objs[target_idx]
+        if self.distances_type == 'raw':
+            self.distances = distances 
+        elif self.distances_type == 'rank':
+            self.distances = np.zeros_like(distances)
+            colors_to_idx = {'red': 0, 'green': 1, 'blue': 2}
+            for i in range(len(sorted_objs)):
+                self.distances[colors_to_idx[sorted_objs[i].color]] = i + 1
         self.targetType = target.type
         self.targetColor = target.color
         assert hasattr(self, "mission")
@@ -287,10 +284,7 @@ class DistanceFetchEnv(MiniGridEnv):
             else:
                 reward = 0
                 terminated = True
-        if not self.categorical:
-            obs['distances'] = self.distances
-        obs['closest'] = self.closest.color
-        obs['farthest'] = self.farthest.color
+        obs['distances'] = self.distances
         return obs, reward, terminated, truncated, info
     
     def reset(
@@ -301,10 +295,7 @@ class DistanceFetchEnv(MiniGridEnv):
     ) -> tuple[ObsType, dict[str, Any]]:
         super().reset(seed=seed)
         obs, info = super().reset(seed=seed, options=options)
-        if not self.categorical:
-            obs['distances'] = self.distances
-        obs['closest'] = self.closest.color
-        obs['farthest'] = self.farthest.color
+        obs['distances'] = self.distances
         return obs, info
 
 
@@ -325,7 +316,42 @@ def register_minigrid_tests():
         kwargs={"size": 8, "numObjs": 3},
     )
     register(
-        id="MiniGrid-DistanceFetch-8x8-N3-Categorical-v0",
+        id="MiniGrid-DistanceFetch-8x8-N3-raw-v0",
         entry_point="env.minigrid:DistanceFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "categorical": True},
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "raw", "mission_probs": [1, 0, 0, 0]},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-rank-v0",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "rank", "mission_probs": [1, 0, 0, 0]},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-raw-v1",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "raw", "mission_probs": [1, 1, 0, 0]},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-rank-v1",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "rank", "mission_probs": [1, 1, 0, 0]},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-raw-v2",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "raw", "mission_probs": [1, 0, 1, 0]},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-rank-v2",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "rank", "mission_probs": [1, 0, 1, 0]},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-raw-v3",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "raw", "mission_probs": [1, 0, 0, 1]},
+    )
+    register(
+        id="MiniGrid-DistanceFetch-8x8-N3-rank-v3",
+        entry_point="env.minigrid:DistanceFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "distances_type": "rank", "mission_probs": [1, 0, 0, 1]},
     )

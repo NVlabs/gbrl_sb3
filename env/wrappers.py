@@ -98,14 +98,11 @@ class MiniGridFlatObsWrapper(ObservationWrapper):
         if 'distances' in env.observation_space.spaces.keys():
             distanceSpace = env.observation_space.spaces['distances']
             distanceSize = reduce(operator.mul, distanceSpace.shape, 1)
-        colorSize = 0
-        if 'closest' in env.observation_space.spaces.keys():
-            colorSize = 2*len(env.color_dict)
-            self.colors = env.color_dict
+
         self.observation_space = spaces.Box(
             low=0,
             high=255,
-            shape=(imgSize + self.numCharCodes * self.maxStrLen + distanceSize + colorSize,),
+            shape=(imgSize + self.numCharCodes * self.maxStrLen + distanceSize,),
             dtype="uint8",
         )
 
@@ -144,12 +141,6 @@ class MiniGridFlatObsWrapper(ObservationWrapper):
             self.cachedArray = strArray
         if 'distances' in obs:
             obs = np.concatenate((image.flatten(), self.cachedArray.flatten(), obs['distances']))
-        elif "closest" in obs and "farthest" in obs:
-            closest = np.zeros(len(self.colors))
-            farthest = np.zeros(len(self.colors))
-            closest[self.colors[obs["closest"]]] = 1
-            farthest[self.colors[obs["farthest"]]] = 1
-            obs = np.concatenate((image.flatten(), self.cachedArray.flatten(), closest, farthest))
         else:
             obs = np.concatenate((image.flatten(), self.cachedArray.flatten()))
 
@@ -166,9 +157,6 @@ class CategoricalObservationWrapper(ObservationWrapper):
             self.flattened_shape += self.observation_space['distances'].shape[0]
             env.is_mixed = True
             self.is_mixed = True
-        elif 'closest' in self.observation_space.spaces.keys():
-            self.flattened_shape += 2
-            self.closest = True 
         else:
             env.is_categorical = True
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
@@ -185,9 +173,6 @@ class CategoricalObservationWrapper(ObservationWrapper):
         categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
         if self.is_mixed:
             categorical_array[-3:] = observation['distances']
-        if self.closest:
-            categorical_array[-2] = observation["closest"].encode('utf-8')
-            categorical_array[-1] = observation["farthest"].encode('utf-8')
         return np.ascontiguousarray(categorical_array)
 
     def reset(self, seed: int = None):
