@@ -110,13 +110,12 @@ class A2C_GBRL(OnPolicyAlgorithm):
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
-        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'is_categorical') and env.is_categorical) 
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
-        self.is_categorical = is_categorical
-        self.is_mixed = is_mixed
-
         if is_categorical:
             policy_kwargs['is_categorical'] = True
+        self.is_categorical = is_categorical
+        self.is_mixed = is_mixed
 
         if isinstance(log_std_lr, str):
             if 'lin_' in log_std_lr:
@@ -141,7 +140,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
             verbose=verbose,
             device=device,
             seed=seed,
-            _init_setup_model=not is_categorical,
+            _init_setup_model=False,
             supported_action_spaces=(
                 spaces.Box,
                 spaces.Discrete,
@@ -152,30 +151,37 @@ class A2C_GBRL(OnPolicyAlgorithm):
         # Update optimizer inside the policy if we want to use RMSProp
         # (original implementation) rather than Adam
 
-        if is_categorical:
-            self._categorical_setup_model()
+        self.rollout_buffer_class =RolloutBuffer
+        self.rollout_buffer_kwargs = {}
+        if is_categorical or is_mixed:
+            self.rollout_buffer_class = CategoricalRolloutBuffer 
+            self.rollout_buffer_kwargs['is_mixed'] = is_mixed
+        
+        if _init_setup_model:
+            self.a2c_setup_model()
     
-    def _categorical_setup_model(self) -> None:
+    def a2c_setup_model(self) -> None:
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
-        self.rollout_buffer = CategoricalRolloutBuffer(
+        self.rollout_buffer = self.rollout_buffer_class(  # type: ignore[assignment]
             self.n_steps,
             self.observation_space,
             self.action_space,
-            device=self.device,
+            self.device,
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
-            n_envs=self.env.num_envs,
-            is_mixed=self.is_mixed,
+            n_envs=self.n_envs,
+            **self.rollout_buffer_kwargs,
         )
+
         # pytype:disable=not-instantiable
         self.policy = self.policy_class(  # type: ignore[assignment]
             self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
         )
         # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
-        # Initialize schedules for policy/value clipping
+
 
 
     def train(self) -> None:
