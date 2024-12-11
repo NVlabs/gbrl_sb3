@@ -11,8 +11,10 @@ from __future__ import division
 from __future__ import print_function
 import numpy as np
 import gymnasium
+import gym
 from collections import deque
 from gymnasium.spaces import Box, Discrete
+
 
 
 from gfootball.env import config
@@ -33,6 +35,39 @@ class FootballEnvWrapper(football_env.FootballEnv):
     def step(self, action):
         obs, reward, done, info = super().step(action)
         return obs, float(reward), done, False, info
+    
+class FootballEnvSpuriousWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+      gym.ObservationWrapper.__init__(self, env)
+      action_shape = np.shape(self.env.action_space)
+      shape = (action_shape[0] if len(action_shape) else 1, 120)
+      self.observation_space = gymnasium.spaces.Box(
+          low=-np.inf, high=np.inf, shape=shape, dtype=np.float32)
+
+    def get_stadium_info(self):
+        grass_idx = np.random.choice([0, 1, 2])
+        grass_type = np.zeros(3, dtype=float)
+        grass_type[grass_idx] = 1
+        is_raining = np.array([np.random.choice([0.0, 1.0])])
+        number_of_people = np.array([np.random.randint(50000)], dtype=float)
+        self.stadium_info = np.concatenate([grass_type, is_raining, number_of_people], axis=0)
+
+    def reset(self, **kwargs):
+        """Resets the environment, returning a modified observation using :meth:`self.observation`."""
+        obs, info = self.env.reset(**kwargs)
+        self.get_stadium_info()
+        return self.observation(obs), info
+
+    def step(self, action):
+        """Returns a modified observation using :meth:`self.observation` after calling :meth:`env.step`."""
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        if terminated or truncated:
+           self.get_stadium_info()
+        return self.observation(observation), reward, terminated, truncated, info
+    
+    def observation(self, observation):
+        """Returns a modified observation."""
+        return np.concatenate([observation, self.stadium_info], axis=0)
     
 
 class MultiAgentToSingleAgentWrapper(wrappers.MultiAgentToSingleAgent):
@@ -121,7 +156,8 @@ def create_environment_sb3(env_name='',
                        channel_dimensions=(
                            observation_preprocessing.SMM_WIDTH,
                            observation_preprocessing.SMM_HEIGHT),
-                       other_config_options={}):
+                       other_config_options={},
+                       **kwargs):
   """Creates a Google Research Football environment.
 
   Args:
@@ -241,6 +277,8 @@ def create_environment_sb3(env_name='',
       env, rewards, representation, channel_dimensions,
       (number_of_left_players_agent_controls +
        number_of_right_players_agent_controls == 1), stacked)
+  if kwargs.get('spurious', False):
+      env = FootballEnvSpuriousWrapper(env)
   return env
 
 class FootballGymSB3(gymnasium.Env):
@@ -248,7 +286,7 @@ class FootballGymSB3(gymnasium.Env):
     metadata = None
     
     def __init__(self, env_name="11_vs_11_easy_stochastic", rewards="scoring,checkpoints", 
-                 representation="simple115v2", 
+                 representation="simple115v2", **kwargs,
                 ):
         super(FootballGymSB3, self).__init__()
         self.env = create_environment_sb3(
@@ -264,10 +302,12 @@ class FootballGymSB3(gymnasium.Env):
             logdir=".",
             extra_players=None,
             number_of_left_players_agent_controls=1,
-            number_of_right_players_agent_controls=0)  
+            number_of_right_players_agent_controls=0,
+            **kwargs)  
         self.action_space = Discrete(19)
         # self.observation_space = Box(low=0, high=255, shape=(72, 96, 16), dtype=np.uint8)
-        self.observation_space = Box(low=float('-inf'), high=float('inf') , shape=(115,), dtype=np.float32)
+        shape_size = 120 if kwargs.get('spurious', False) else 115
+        self.observation_space = Box(low=float('-inf'), high=float('inf') , shape=(shape_size,), dtype=np.float32)
         self.reward_range = (-1, 1)
         
     def transform_obs(self, raw_obs):
