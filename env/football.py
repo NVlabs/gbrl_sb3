@@ -40,7 +40,7 @@ class FootballEnvSpuriousWrapper(gym.ObservationWrapper):
     def __init__(self, env):
       gym.ObservationWrapper.__init__(self, env)
       action_shape = np.shape(self.env.action_space)
-      shape = (action_shape[0] if len(action_shape) else 1, 120)
+      shape = (action_shape[0] if len(action_shape) else 1, 119)
       self.observation_space = gymnasium.spaces.Box(
           low=-np.inf, high=np.inf, shape=shape, dtype=np.float32)
 
@@ -49,8 +49,9 @@ class FootballEnvSpuriousWrapper(gym.ObservationWrapper):
         grass_type = np.zeros(3, dtype=float)
         grass_type[grass_idx] = 1
         is_raining = np.array([np.random.choice([0.0, 1.0])])
-        number_of_people = np.array([np.random.randint(50000)], dtype=float)
-        self.stadium_info = np.concatenate([grass_type, is_raining, number_of_people], axis=0)
+        # number_of_people = np.array([np.random.randint(50000)], dtype=float)
+        # self.stadium_info = np.concatenate([grass_type, is_raining, number_of_people], axis=0)
+        self.stadium_info = np.concatenate([grass_type, is_raining], axis=0)
 
     def reset(self, **kwargs):
         """Resets the environment, returning a modified observation using :meth:`self.observation`."""
@@ -306,7 +307,7 @@ class FootballGymSB3(gymnasium.Env):
             **kwargs)  
         self.action_space = Discrete(19)
         # self.observation_space = Box(low=0, high=255, shape=(72, 96, 16), dtype=np.uint8)
-        shape_size = 120 if kwargs.get('spurious', False) else 115
+        shape_size = 119 if kwargs.get('spurious', False) else 115
         self.observation_space = Box(low=float('-inf'), high=float('inf') , shape=(shape_size,), dtype=np.float32)
         self.reward_range = (-1, 1)
         
