@@ -219,7 +219,7 @@ def make_carl_env(
     import carl.envs as envs 
     import carl 
 
-    CONTEXT = {'CARLLunarLander-v0': envs.CARLLunarLander, 'CARLCartPole-v0': envs.CARLCartPole,
+    CONTEXT = {'CARLLunarLander': envs.CARLLunarLander, 'CARLCartPole': envs.CARLCartPole,
                'CARLAcrobot': envs.CARLAcrobot, 'CARLPendulum': envs.CARLPendulum,
                'CARLMountainCar': envs.CARLMountainCar}
 
