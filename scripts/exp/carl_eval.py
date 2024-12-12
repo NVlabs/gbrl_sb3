@@ -53,7 +53,7 @@ CONTEXT = {'CARLLunarLander': envs.CARLLunarLander, 'CARLCartPole': envs.CARLCar
 FEATURES_PER_ENV = {'CARLCartPole': ['gravity', 'length'],
                     'CARLLunarLander': ['GRAVITY_Y', 'MAIN_ENGINE_POWER'],
                     'CARLAcrobot': ['LINK_MASS_1', 'LINK_LENGTH_1', 'LINK_MASS_2', 'LINK_LENGTH_2', "MAX_VEL_1", "MAX_VEL_2"],
-                    'CARLPendulum': ['g', 'max_speed']}
+                    'CARLPendulum': ['g', 'gravity', 'l', 'dt', 'm']}
 
 NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]

@@ -328,7 +328,8 @@ def get_defaults(args, defaults):
     # Set hardcoded defaults
     # args.env_type = args.env_type if args.env_type else 'ocatari'
     # args.env_type = args.env_type if args.env_type else 'carl'
-    args.env_type = args.env_type if args.env_type else 'minigrid'
+    # args.env_type = args.env_type if args.env_type else 'minigrid'
+    args.env_type = args.env_type if args.env_type else 'football'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'highway'
@@ -336,8 +337,11 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'mujoco'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    # args.algo_type = args.algo_type if args.algo_type else 'a2c_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
+    # args.algo_type = args.algo_type if args.algo_type else 'a2c_nn'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
     # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
@@ -353,7 +357,11 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'CARLCartPole-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-rank-v3'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-SpuriousFetch-8x8-N3-v0'
+    args.env_name = args.env_name if args.env_name else 'academy_empty_goal'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']

@@ -741,6 +741,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         if "policy_kwargs" in data:
             if "device" in data["policy_kwargs"]:
                 del data["policy_kwargs"]["device"]
+            data['policy_kwargs']['tree_optimizer']['device'] = device
             # backward compatibility, convert to new format
             if "net_arch" in data["policy_kwargs"] and len(data["policy_kwargs"]["net_arch"]) > 0:
                 saved_net_arch = data["policy_kwargs"]["net_arch"]
