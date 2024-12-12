@@ -12,6 +12,8 @@ from __future__ import print_function
 import numpy as np
 import gymnasium
 import gym
+import os 
+import tempfile
 from collections import deque
 from gymnasium.spaces import Box, Discrete
 
@@ -21,8 +23,84 @@ from gfootball.env import config
 from gfootball.env import football_env
 from gfootball.env import observation_preprocessing, _process_representation_wrappers
 from gfootball.env import wrappers
+from gfootball.env import scenario_builder
 
 from stable_baselines3.common.env_checker import check_env
+
+import gfootball_engine as libgame
+import random
+import sys
+
+from absl import flags
+from absl import logging
+
+Player = libgame.FormationEntry
+Role = libgame.e_PlayerRole
+Team = libgame.e_Team
+
+FLAGS = flags.FLAGS
+
+import importlib
+
+
+class ModifiableScenario(scenario_builder.Scenario):
+
+  def __init__(self, config):
+    # Game config controls C++ engine and is derived from the main config.
+    self._scenario_cfg = libgame.ScenarioConfig.make()
+    self._config = config
+    self._active_team = Team.e_Left
+    scenario = None
+    try:
+      scenario = importlib.import_module('.football_scenarios.{}'.format(config['level']), package='env')
+    except ImportError as e:
+      logging.error('Loading scenario "%s" failed' % config['level'])
+      logging.error(e)
+      sys.exit(1)
+    scenario.build_scenario(self)
+    self.SetTeam(libgame.e_Team.e_Left)
+    self._FakePlayersForEmptyTeam(self._scenario_cfg.left_team)
+    self.SetTeam(libgame.e_Team.e_Right)
+    self._FakePlayersForEmptyTeam(self._scenario_cfg.right_team)
+    self._BuildScenarioConfig()
+
+class ModifiableConfig(config.Config):
+
+  def __init__(self, values=None):
+    self._values = {
+        'action_set': 'default',
+        'custom_display_stats': None,
+        'display_game_stats': True,
+        'dump_full_episodes': False,
+        'dump_scores': False,
+        'players': ['agent:left_players=1'],
+        'level': '11_vs_11_stochastic',
+        'physics_steps_per_frame': 10,
+        'render_resolution_x': 1280,
+        'real_time': False,
+        'tracesdir': os.path.join(tempfile.gettempdir(), 'dumps'),
+        'video_format': 'avi',
+        'video_quality_level': 0,  # 0 - low, 1 - medium, 2 - high
+        'write_video': False
+    }
+    self._values['render_resolution_y'] = int(
+        0.5625 * self._values['render_resolution_x'])
+    if values:
+      self._values.update(values)
+    self.NewScenario()
+
+  def NewScenario(self, inc = 1):
+    if 'episode_number' not in self._values:
+      self._values['episode_number'] = 0
+    self._values['episode_number'] += inc
+    self._scenario_values = {}
+    
+    from gfootball.env import scenario_builder
+    if self._values['level'] in scenario_builder.all_scenarios():
+      self._scenario_cfg = scenario_builder.Scenario(self).ScenarioConfig()
+    else:
+       self._scenario_cfg = ModifiableScenario(self).ScenarioConfig()
+       
 
 class FootballEnvWrapper(football_env.FootballEnv):
     def __init__(self, config):
@@ -235,7 +313,11 @@ def create_environment_sb3(env_name='',
   """
   assert env_name
 
-  scenario_config = config.Config({'level': env_name}).ScenarioConfig()
+  # scenario_config = config.Config({'level': env_name}).ScenarioConfig()
+  entry_config = {'level': env_name}
+  if 'seed' in kwargs:
+     entry_config['game_engine_random_seed'] = kwargs['seed']
+  scenario_config = ModifiableConfig(entry_config).ScenarioConfig()
   players = [('agent:left_players=%d,right_players=%d' % (
       number_of_left_players_agent_controls,
       number_of_right_players_agent_controls))]
@@ -263,7 +345,8 @@ def create_environment_sb3(env_name='',
       'write_video': write_video,
   }
   config_values.update(other_config_options)
-  c = config.Config(config_values)
+  # c = config.Config(config_values)
+  c = ModifiableConfig(config_values)
 
   env = FootballEnvWrapper(c)
   if multiagent_to_singleagent:
@@ -329,3 +412,5 @@ class FootballGymSB3(gymnasium.Env):
         return self.env.step([action])
     
 check_env(env=FootballGymSB3(), warn=True)
+
+

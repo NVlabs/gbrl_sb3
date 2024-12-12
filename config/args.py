@@ -359,7 +359,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-rank-v3'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SpuriousFetch-8x8-N3-v0'
-    args.env_name = args.env_name if args.env_name else 'academy_empty_goal'
+    args.env_name = args.env_name if args.env_name else 'academy_single_goal_versus_lazy_drop_player'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
     # Set defaults from YAML
