@@ -37,6 +37,7 @@ from utils.helpers import (make_ram_atari_env,
 from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
                           MiniGridFlatObsWrapper,
+                          FlatObsWrapperWithDirection,
                           HighWayWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
@@ -97,7 +98,8 @@ if __name__ == '__main__':
                 eval_env = VecFrameStack(eval_env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
     elif args.env_type == 'minigrid':
         register_minigrid_tests()
-        wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else MiniGridFlatObsWrapper
+        # wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else MiniGridFlatObsWrapper
+        wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
         vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
         # vec_env_kwargs = {'is_mixed': True}
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
@@ -190,3 +192,18 @@ if __name__ == '__main__':
     algo = NAME_TO_ALGO[args.algo_type](env=env, tensorboard_log=tensorboard_log, _init_setup_model=True, **algo_kwargs)
 
     algo.learn(total_timesteps=args.total_n_steps, callback=callback, log_interval=args.log_interval, progress_bar=False, **learn_kwargs)
+
+    if args.save_every > 0:
+        print("End of training save")
+        name_prefix = f'{args.env_type}/{args.env_name}/{args.algo_type}'
+        model_path = os.path.join(args.save_path, f"{name_prefix}_{args.total_n_steps}_steps.zip")
+        algo.save(model_path)
+        if args.verbose >= 2:
+            print(f"Saving model checkpoint to {model_path}")
+        save_vec_normalize = True if args.env_type != 'football' else False
+        if save_vec_normalize and algo.get_vec_normalize_env() is not None:
+                # Save the VecNormalize statistics
+            vec_normalize_path = os.path.join(args.save_path, f"{name_prefix}_vecnormalize_{args.total_n_steps}_steps.pkl")
+            algo.get_vec_normalize_env().save(vec_normalize_path)
+            if args.verbose >= 2:
+                print(f"Saving model VecNormalize to {vec_normalize_path}")
