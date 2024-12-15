@@ -31,7 +31,7 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
                                               VecNormalize, VecVideoRecorder)
 
 from env.ocatari import MIXED_ATARI_ENVS
-from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper
+from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper, FlatObsWrapperWithDirection
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, make_carl_env
 from utils.shap_visualization import MiniGridShapVisualizationWrapper, PolicyDeepExplainer
 from env.minigrid import register_minigrid_tests
@@ -175,7 +175,7 @@ def shap_evaluate_policy(
         current_rewards += rewards
         current_lengths += 1
         if dones.any():
-            print(f"Episode: {n_episode + 1} /{n_eval_episodes} ")
+            print(f"Episode: {n_episode + 1}/{n_eval_episodes} ")
             n_episode += 1
         for i in range(n_envs):
             if episode_counts[i] < episode_count_targets[i]:
@@ -233,7 +233,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cuda')
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--checkpoint', type=str)
-    parser.add_argument('--n_eval_episodes', type=int, default=20)
+    parser.add_argument('--n_eval_episodes', type=int, default=40)
     # parser.add_argument('--n_eval_episodes', type=int, default=10000)
     parser.add_argument('--video_length', type=int, default=150)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
@@ -266,27 +266,16 @@ if __name__ == '__main__':
     vecnormalize_path = vecnormalize_path.replace(".zip", ".pkl")
 
     eval_env = None
-    if 'atari' in args.env_type:
-        env_kwargs = {'full_action_space': False}
-        vec_env_cls = None
-        vec_env_kwargs = None
-        if args.env_type == "ocatari":
-            make_ram_atari_env = make_ram_ocatari_env
-            print("Using Ocatari environment")
-            vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_cls
-            vec_env_kwargs = {'is_mixed': True} if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_kwargs
-        eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
 
-        if args.atari_wrapper_kwargs and 'frame_stack' in args.atari_wrapper_kwargs:
-            eval_env = VecFrameStack(eval_env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
-    elif args.env_type == 'minigrid':
-        from minigrid.wrappers import FlatObsWrapper
-        register_minigrid_tests()
-        wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
-        vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-        eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
-    else:
-        print("Invalid env_type!")
+
+    register_minigrid_tests()
+    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
+    vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
+    # eval_kwargs['train'] = False
+    eval_kwargs = {} if args.env_kwargs is None else args.env_kwargs.copy()
+    eval_kwargs['train'] = False
+    eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+
     eval_env = MiniGridShapVisualizationWrapper(eval_env)
     if os.path.exists(vecnormalize_path):
         eval_env = VecNormalize.load(vecnormalize_path, eval_env)

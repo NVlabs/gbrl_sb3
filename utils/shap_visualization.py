@@ -302,7 +302,7 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
     def __init__(self, env, feature_labels=['Agent Direction', 'Mission']):
         super().__init__(env)
         self.feature_labels = feature_labels
-        self.additional_image = None  # To store the SHAP visualization
+        self.additional_image = np.zeros((256//2, 256, 3), dtype=np.uint8)  # To store the SHAP visualization
 
     def set_shap_values(self, shap_values):
         """
@@ -315,31 +315,46 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         Generates a combined heatmap and bar plot image from SHAP values.
         """
         # Ensure shap_values has 51 elements (49 for heatmap, 2 for bar plot)
-        if shap_values.shape[0] != 51:
-            raise ValueError("Expected 51 SHAP values.")
-        
-        # Split the SHAP values
-        image_shap = shap_values[:49].reshape(7, 7)
-        extra_shap = shap_values[49:]
-        dpi = 100
-        target_width = 800
+        if shap_values.shape[0] != 51 and len(shap_values) != 2836:
+            raise ValueError("Expected 51 SHAP values or 2836 or flat vector.")
+        if len(shap_values) == 2836:
+            image_shap = shap_values[:147].reshape(7, 7, 3).sum(axis=-1)
+            extra_shap = np.zeros(2)
+            extra_shap[0] = shap_values[-1]
+            extra_shap[1] = shap_values[147:-1].sum()
+
+        else:
+            # Split the SHAP values
+            image_shap = shap_values[:49].reshape(7, 7)
+            extra_shap = shap_values[49:]
+        image_shap = image_shap.T 
+        dpi = 200
+        target_width = 256*2
         target_height = 256
         figsize = (target_width / dpi, target_height / dpi)
+        width_ratios = [1, 1] 
         # Create the figure with two subplots
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios}, dpi=300)
         
         # Plot the heatmap
-        im = ax1.imshow(image_shap, cmap='viridis', aspect='equal')
-        ax1.set_title("7x7 SHAP Heatmap")
+        im = ax1.imshow(image_shap, cmap='viridis', aspect='equal', vmin=-6, vmax=6)
+        ax1.set_title("Agent View SHAP Heatmap", fontsize=5)  # Reduced fontsize
         ax1.axis('off')  # Hide axes
-        fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
+        ax1.axis('off')  # Hide axes
+        cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(labelsize=5)
+        # cbar.set_ylim((-6, 6))
         
         # Plot the bar chart
         ax2.bar(self.feature_labels, extra_shap, color=['blue', 'green'])
-        ax2.set_title("Additional Features")
-        ax2.set_ylabel("SHAP Value")
+        ax2.set_title("Additional Features", fontsize=5)
+        ax2.set_ylabel("SHAP Value", fontsize=5)
         ax2.set_xticks(range(len(self.feature_labels)))
-        ax2.set_xticklabels(self.feature_labels, rotation=45, ha='right')
+        ax2.set_xticklabels(self.feature_labels, rotation=0, ha='right', fontsize=5)
+        ax2.tick_params(axis='y', labelsize=5)
+        ax2.set_ylim((-6, 6))
+        fig.suptitle(f"Mission: {self.env.envs[0].mission}", fontsize=6)
+        
         
         # Adjust layout
         plt.tight_layout()
@@ -348,7 +363,6 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         fig.canvas.draw()
         image = np.array(fig.canvas.buffer_rgba())
         plot_img = image[:, :, :3]  # Discard alpha channel
-        
         plt.close(fig)
         
         return plot_img
@@ -359,7 +373,8 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
-        self.additional_image = None
+        # self.additional_image = None
+        self.additional_image = np.zeros((256//2, 256, 3), dtype=np.uint8)
         return self.env.reset()
 
 

@@ -325,6 +325,7 @@ class SpuriousFetchEnv(MiniGridEnv):
 
         if max_steps is None:
             max_steps = 5 * self.size**2
+        
 
         super().__init__(
             mission_space=mission_space,
@@ -335,6 +336,8 @@ class SpuriousFetchEnv(MiniGridEnv):
             max_steps=max_steps,
             **kwargs,
         )
+        self.agent_pov = True
+        self.metadata['render_fps'] = 3
 
     def _rand_color(self):
         """Sample a color with custom probabilities."""

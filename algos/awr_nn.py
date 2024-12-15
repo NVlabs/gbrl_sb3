@@ -59,6 +59,7 @@ class AWR(OffPolicyAlgorithm):
                 normalize_advantage: bool = False,
                 seed: Optional[int] = None,
                 device: Union[th.device, str] = "auto", 
+                _init_setup_model: bool = True,
                  ):
 
         # policy_kwargs['activation_fn'] = ACTIVATION[policy_kwargs['activation_fn']]
@@ -99,6 +100,7 @@ class AWR(OffPolicyAlgorithm):
         policy_kwargs=policy_kwargs,
         learning_rate=learning_rate,
         replay_buffer_kwargs={'gae_lambda': gae_lambda, 'gamma': gamma, 'return_type': reward_mode, 'env': env},
+        
         )
 
         super()._setup_model()
