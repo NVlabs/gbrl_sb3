@@ -30,7 +30,7 @@ from callback.callbacks import (ActorCriticCompressionCallback,
 from utils.helpers import set_seed
 from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
-                          HighWayWrapper)
+                          FlatObsWrapperWithDirection)
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
 
@@ -72,9 +72,9 @@ if __name__ == '__main__':
         args.env_kwargs = {}
     learn_kwargs = {}
 
-    from minigrid.wrappers import FlatObsWrapper
+    # from minigrid.wrappers import FlatObsWrapper
     register_minigrid_tests()
-    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
+    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
     

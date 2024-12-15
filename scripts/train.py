@@ -196,7 +196,7 @@ if __name__ == '__main__':
     if args.save_every > 0:
         print("End of training save")
         name_prefix = f'{args.env_type}/{args.env_name}/{args.algo_type}'
-        model_path = os.path.join(args.save_path, f"{name_prefix}_{args.total_n_steps}_steps.zip")
+        model_path = os.path.join(args.save_path, f"{name_prefix}/{args.save_name}_seed_{args.seed}_{args.total_n_steps}_steps.zip")
         algo.save(model_path)
         if args.verbose >= 2:
             print(f"Saving model checkpoint to {model_path}")
