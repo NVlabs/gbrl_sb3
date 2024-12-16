@@ -92,9 +92,9 @@ if __name__ == '__main__':
             env = VecNormalize(env, **args.wrapper_kwargs)
         if args.evaluate:
             names = {'academy_3_vs_1_with_keeper': 'standard', 'academy_3_vs_1_with_keeper_close_bot': 'close', 'academy_3_vs_1_with_keeper_far_bot': 'far'}
-            for env in ['academy_3_vs_1_with_keeper', 'academy_3_vs_1_with_keeper_close_bot', 'academy_3_vs_1_with_keeper_far_bot']:
+            for env_name in ['academy_3_vs_1_with_keeper', 'academy_3_vs_1_with_keeper_close_bot', 'academy_3_vs_1_with_keeper_far_bot']:
                 eval_kwargs = args.env_kwargs.copy() 
-                eval_kwargs['env_name'] = env
+                eval_kwargs['env_name'] = env_name
                 eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=eval_kwargs)
                 if args.wrapper == 'normalize': 
                     normalize_kwargs = args.wrapper_kwargs.copy()
@@ -103,7 +103,7 @@ if __name__ == '__main__':
                     eval_env = VecNormalize(eval_env, **normalize_kwargs)
                 
                 callback_list.append(MultiEvalCallback(
-                                            names[env],
+                                            names[env_name],
                                             eval_env,
                                             callback_on_new_best=None,
                                             callback_after_eval=None,
