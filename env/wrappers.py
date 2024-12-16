@@ -33,6 +33,7 @@ from stable_baselines3.common.vec_env.base_vec_env import (VecEnv,
                                                            VecEnvIndices,
                                                            VecEnvObs,
                                                            VecEnvStepReturn)
+from minigrid.wrappers import FullyObsWrapper
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 from stable_baselines3.common.vec_env.util import (copy_obs_dict, dict_to_obs,
                                                    obs_space_info)
@@ -226,7 +227,9 @@ class CategoricalObservationWrapper(ObservationWrapper):
         super().__init__(env)
 
         self.image_shape = self.observation_space['image'].shape
-        self.flattened_shape = self.image_shape[0]*self.image_shape[1] + 2
+        self.flattened_shape = self.image_shape[0]*self.image_shape[1] + 1
+        if not isinstance(env, FullyObsWrapper):
+            self.flattened_shape += 1
         self.is_mixed = False
         self.closest = False
         if 'distances' in self.observation_space.keys():
@@ -243,10 +246,16 @@ class CategoricalObservationWrapper(ObservationWrapper):
         categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype if not self.is_mixed else object)
         for i in range(self.image_shape[0]):
             for j in range(self.image_shape[1]):
-                category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
+                if isinstance(self.env, FullyObsWrapper) and str(IDX_TO_OBJECT[observation['image'][i, j, 0]]) == 'agent':
+                   category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(observation['image'][i, j, 2])}"   
+                else:
+                    category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
                 categorical_array[i*self.image_shape[1] + j] = category.encode('utf-8')
-        categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
-        categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
+        if isinstance(self.env, FullyObsWrapper):
+            categorical_array[self.image_shape[0]*self.image_shape[1]] = observation['mission'].encode('utf-8')
+        else:
+            categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
+            categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
         if self.is_mixed:
             categorical_array[-3:] = observation['distances']
         return np.ascontiguousarray(categorical_array)
