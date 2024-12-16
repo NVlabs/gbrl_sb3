@@ -302,15 +302,17 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
     def __init__(self, env, feature_labels=['Agent Direction', 'Mission']):
         super().__init__(env)
         self.feature_labels = feature_labels
-        self.additional_image = np.zeros((256//2, 256, 3), dtype=np.uint8)  # To store the SHAP visualization
+        self.height = 224
+        self.width = int(224*1.5)
+        self.additional_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)  # To store the SHAP visualization
 
-    def set_shap_values(self, shap_values):
+    def set_shap_values(self, shap_values, actions):
         """
         Generate the SHAP visualization and store it.
         """
-        self.additional_image = self.generate_shap_image(shap_values.squeeze())
+        self.additional_image = self.generate_shap_image(shap_values.squeeze(), actions)
 
-    def generate_shap_image(self, shap_values):
+    def generate_shap_image(self, shap_values, actions):
         """
         Generates a combined heatmap and bar plot image from SHAP values.
         """
@@ -328,32 +330,36 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
             image_shap = shap_values[:49].reshape(7, 7)
             extra_shap = shap_values[49:]
         image_shap = image_shap.T 
-        dpi = 200
-        target_width = 256*2
-        target_height = 256
+        dpi = 100
+        target_width = self.width
+        target_height = self.height 
         figsize = (target_width / dpi, target_height / dpi)
+        # figsize = (target_width, target_height)
         width_ratios = [1, 1] 
         # Create the figure with two subplots
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios}, dpi=300)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios}, dpi=dpi)
         
         # Plot the heatmap
-        im = ax1.imshow(image_shap, cmap='viridis', aspect='equal', vmin=-6, vmax=6)
-        ax1.set_title("Agent View SHAP Heatmap", fontsize=5)  # Reduced fontsize
+        im = ax1.imshow(image_shap, cmap='coolwarm', aspect='equal', vmin=-6, vmax=6)
+        ax1.set_title("Agent View SHAP Heatmap", fontsize=6)  # Reduced fontsize
         ax1.axis('off')  # Hide axes
         ax1.axis('off')  # Hide axes
         cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
-        cbar.ax.tick_params(labelsize=5)
+        cbar.ax.tick_params(labelsize=6)
         # cbar.set_ylim((-6, 6))
-        
+        norm = plt.Normalize(vmin=-3, vmax=3)  # Replace with your heatmap's vmin and vmax
+
+        # Map SHAP values to colors using the same colormap
+        colors = plt.cm.coolwarm(norm(extra_shap))
         # Plot the bar chart
-        ax2.bar(self.feature_labels, extra_shap, color=['blue', 'green'])
-        ax2.set_title("Additional Features", fontsize=5)
-        ax2.set_ylabel("SHAP Value", fontsize=5)
+        ax2.bar(self.feature_labels, extra_shap, color=colors)
+        ax2.set_title("Additional Features", fontsize=6)
+        ax2.set_ylabel("SHAP Value", fontsize=6)
         ax2.set_xticks(range(len(self.feature_labels)))
-        ax2.set_xticklabels(self.feature_labels, rotation=0, ha='right', fontsize=5)
-        ax2.tick_params(axis='y', labelsize=5)
+        ax2.set_xticklabels(self.feature_labels, rotation=0, ha='right', fontsize=6)
+        ax2.tick_params(axis='y', labelsize=6)
         ax2.set_ylim((-6, 6))
-        fig.suptitle(f"Mission: {self.env.envs[0].mission}", fontsize=6)
+        fig.suptitle(f"Mission: {self.env.envs[0].mission} \n Action: {actions}", fontsize=7)
         
         
         # Adjust layout
@@ -374,7 +380,7 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         # self.additional_image = None
-        self.additional_image = np.zeros((256//2, 256, 3), dtype=np.uint8)
+        self.additional_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         return self.env.reset()
 
 
@@ -392,7 +398,7 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
             if plot_height != frame_height:
                 scaling_factor = frame_height / plot_height
                 new_width = int(plot_width * scaling_factor)
-                resized_plot = cv2.resize(self.additional_image, (new_width, frame_height))
+                resized_plot = cv2.resize(self.additional_image, (new_width, frame_height), interpolation=cv2.INTER_LINEAR)
             else:
                 resized_plot = self.additional_image
             

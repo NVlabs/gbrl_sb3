@@ -337,7 +337,7 @@ class SpuriousFetchEnv(MiniGridEnv):
             **kwargs,
         )
         self.agent_pov = True
-        self.metadata['render_fps'] = 3
+        self.metadata['render_fps'] = 1
 
     def _rand_color(self):
         """Sample a color with custom probabilities."""

@@ -350,11 +350,11 @@ def create_environment_sb3(env_name='',
 
   env = FootballEnvWrapper(c)
   if multiagent_to_singleagent:
-    env = wrappers.MultiAgentToSingleAgentWrapper(
+    env = MultiAgentToSingleAgentWrapper(
         env, number_of_left_players_agent_controls,
         number_of_right_players_agent_controls)
   if dump_frequency > 1:
-    env = wrappers.PeriodicDumpWriterWrapper(env, dump_frequency, render)
+    env = PeriodicDumpWriterWrapper(env, dump_frequency, render)
   elif render:
     env.render()
   env = _apply_output_wrappers(
@@ -384,6 +384,7 @@ class FootballGymSB3(gymnasium.Env):
             write_video=False,
             dump_frequency=1,
             logdir=".",
+            # logdir="videos/",
             extra_players=None,
             number_of_left_players_agent_controls=1,
             number_of_right_players_agent_controls=0,

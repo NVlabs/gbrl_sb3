@@ -14,26 +14,8 @@
 
 
 """Class responsible for generating scenarios."""
-
-import importlib
-import os
-import pkgutil
-import random
-import sys
-
-from absl import flags
-from absl import logging
 import numpy as np
-
-import gfootball_engine as libgame
-
-Player = libgame.FormationEntry
-Role = libgame.e_PlayerRole
-Team = libgame.e_Team
-
-FLAGS = flags.FLAGS
-
-episode = 0
+from gfootball.scenarios import *
 
 
 def build_scenario(builder):
@@ -48,40 +30,40 @@ def build_scenario(builder):
   builder.SetBallPosition(-0.48, -0.06356)
 
   builder.SetTeam(Team.e_Left)
-  builder.AddPlayer(-1.000000, 0.000000, Role.e_PlayerRole_GK)
-  builder.AddPlayer(0.000000, 0.020000, Role.e_PlayerRole_RM)
-  builder.AddPlayer(0.000000, -0.020000, Role.e_PlayerRole_CF)
-  builder.AddPlayer(-0.422000, -0.19576, Role.e_PlayerRole_LB)
-  builder.AddPlayer(-0.500000, -0.06356, Role.e_PlayerRole_CB)
-  builder.AddPlayer(-0.500000, 0.063559, Role.e_PlayerRole_CB)
-  builder.AddPlayer(-0.422000, 0.195760, Role.e_PlayerRole_RB)
-  builder.AddPlayer(-0.184212, -0.10568, Role.e_PlayerRole_CM)
-  builder.AddPlayer(-0.267574, 0.000000, Role.e_PlayerRole_CM)
-  builder.AddPlayer(-0.184212, 0.105680, Role.e_PlayerRole_CM)
-  builder.AddPlayer(-0.010000, -0.21610, Role.e_PlayerRole_LM)
+  builder.AddPlayer(-1.000000, 0.000000, e_PlayerRole_GK)
+  builder.AddPlayer(0.000000, 0.020000, e_PlayerRole_RM)
+  builder.AddPlayer(0.000000, -0.020000, e_PlayerRole_CF)
+  builder.AddPlayer(-0.422000, -0.19576, e_PlayerRole_LB)
+  builder.AddPlayer(-0.500000, -0.06356, e_PlayerRole_CB)
+  builder.AddPlayer(-0.500000, 0.063559, e_PlayerRole_CB)
+  builder.AddPlayer(-0.422000, 0.195760, e_PlayerRole_RB)
+  builder.AddPlayer(-0.184212, -0.10568, e_PlayerRole_CM)
+  builder.AddPlayer(-0.267574, 0.000000, e_PlayerRole_CM)
+  builder.AddPlayer(-0.184212, 0.105680, e_PlayerRole_CM)
+  builder.AddPlayer(-0.010000, -0.21610, e_PlayerRole_LM)
 
   # All right players are lazy (i.e., they don't move, except the keeper)
   builder.SetTeam(Team.e_Right)
   random_drop = np.random.randint(0, high=10)
-  builder.AddPlayer(-1.000000, 0.000000, Role.e_PlayerRole_GK)
+  builder.AddPlayer(-1.000000, 0.000000, e_PlayerRole_GK)
   if random_drop != 0:
-    builder.AddPlayer(-0.050000, 0.000000, Role.e_PlayerRole_RM, True)
+    builder.AddPlayer(-0.050000, 0.000000, e_PlayerRole_RM, True)
   if random_drop != 1:
-    builder.AddPlayer(-0.010000, 0.216102, Role.e_PlayerRole_CF, True)
+    builder.AddPlayer(-0.010000, 0.216102, e_PlayerRole_CF, True)
   if random_drop != 2:
-    builder.AddPlayer(-0.422000, -0.19576, Role.e_PlayerRole_LB, True)
+    builder.AddPlayer(-0.422000, -0.19576, e_PlayerRole_LB, True)
   if random_drop != 3:
-    builder.AddPlayer(-0.500000, -0.06356, Role.e_PlayerRole_CB, True)
+    builder.AddPlayer(-0.500000, -0.06356, e_PlayerRole_CB, True)
   if random_drop != 4:
-    builder.AddPlayer(-0.500000, 0.063559, Role.e_PlayerRole_CB, True)
+    builder.AddPlayer(-0.500000, 0.063559, e_PlayerRole_CB, True)
   if random_drop != 5:
-    builder.AddPlayer(-0.422000, 0.195760, Role.e_PlayerRole_RB, True)
+    builder.AddPlayer(-0.422000, 0.195760, e_PlayerRole_RB, True)
   if random_drop != 6:
-    builder.AddPlayer(-0.184212, -0.10568, Role.e_PlayerRole_CM, True)
+    builder.AddPlayer(-0.184212, -0.10568, e_PlayerRole_CM, True)
   if random_drop != 7:
-    builder.AddPlayer(-0.267574, 0.000000, Role.e_PlayerRole_CM, True)
+    builder.AddPlayer(-0.267574, 0.000000, e_PlayerRole_CM, True)
   if random_drop != 8:
-    builder.AddPlayer(-0.184212, 0.105680, Role.e_PlayerRole_CM, True)
+    builder.AddPlayer(-0.184212, 0.105680, e_PlayerRole_CM, True)
   if random_drop != 9:
-    builder.AddPlayer(-0.010000, -0.21610, Role.e_PlayerRole_LM, True)
+    builder.AddPlayer(-0.010000, -0.21610, e_PlayerRole_LM, True)
 

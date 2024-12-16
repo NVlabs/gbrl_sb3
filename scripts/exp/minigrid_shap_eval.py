@@ -57,6 +57,14 @@ CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 
+MINIGRID_ACTIONS = {0: 'go left', 
+                    1: 'go right',
+                    2: 'go forward',
+                    3: 'pickup object',
+                    4: 'drop object',
+                    5: 'toggle/activate object',
+                    6: 'done'}
+
 
 def shap_evaluate_policy(
     model: "type_aliases.PolicyPredictor",
@@ -169,7 +177,11 @@ def shap_evaluate_policy(
             shap_observations = th.tensor(observations).to(model.device)
             e = PolicyDeepExplainer(model.policy, background_obs)
             shap_values = e.shap_values(shap_observations)[:, :, actions]
-        env.set_shap_values(shap_values)
+
+        env.set_shap_values(shap_values, MINIGRID_ACTIONS[actions[0]])
+        
+        if render:
+            env.render()
         new_observations, rewards, dones, infos = env.step(actions)
         
         current_rewards += rewards
@@ -209,9 +221,10 @@ def shap_evaluate_policy(
                     current_lengths[i] = 0
 
         observations = new_observations
+        if not env.recording:
+            print(f'Finished recording after {len(episode_rewards)} episodes')
+            break
 
-        if render:
-            env.render()
 
     mean_reward = np.mean(episode_rewards)
     std_reward = np.std(episode_rewards)
@@ -233,14 +246,16 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cuda')
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--checkpoint', type=str)
-    parser.add_argument('--n_eval_episodes', type=int, default=40)
+    parser.add_argument('--n_eval_episodes', type=int, default=1000)
     # parser.add_argument('--n_eval_episodes', type=int, default=10000)
-    parser.add_argument('--video_length', type=int, default=150)
+    parser.add_argument('--video_length', type=int, default=250)
+    # parser.add_argument('--video_length', type=int, default=25)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
     parser.add_argument('--env_kwargs', type=json_string_to_dict)
     parser.add_argument('--last_checkpoint', action="store_true")
     parser.add_argument('--record', action="store_true")
     parser.add_argument('--render', action="store_true")
+    parser.add_argument('--use_box', action="store_true")
     parser.add_argument('--deterministic', action="store_true")
     args = parser.parse_args()
 
@@ -273,7 +288,7 @@ if __name__ == '__main__':
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     # eval_kwargs['train'] = False
     eval_kwargs = {} if args.env_kwargs is None else args.env_kwargs.copy()
-    eval_kwargs['train'] = False
+    eval_kwargs['train'] = True if args.use_box else False
     eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
     eval_env = MiniGridShapVisualizationWrapper(eval_env)
@@ -285,7 +300,8 @@ if __name__ == '__main__':
         video_path = ROOT_PATH  / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
         if not os.path.exists(video_path):
             os.makedirs(video_path, exist_ok=True)
-        eval_env = VecVideoRecorder(eval_env, video_folder=video_path, record_video_trigger=lambda x: x == 0, name_prefix=f'eval_{model_fullname}', video_length=args.video_length)
+        name_prefix = f'eval_with_box_{model_fullname}' if args.use_box else f'eval_{model_fullname}'
+        eval_env = VecVideoRecorder(eval_env, video_folder=video_path, record_video_trigger=lambda x: x == 0, name_prefix=name_prefix, video_length=args.video_length)
 
     # set_seed(args.seed)
     
