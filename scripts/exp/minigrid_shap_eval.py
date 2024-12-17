@@ -28,12 +28,12 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.save_util import load_from_pkl
 from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
-                                              VecNormalize, VecVideoRecorder)
+                                              VecNormalize)
 
 from env.ocatari import MIXED_ATARI_ENVS
 from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper, FlatObsWrapperWithDirection
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, make_carl_env
-from utils.shap_visualization import MiniGridShapVisualizationWrapper, PolicyDeepExplainer
+from utils.shap_visualization import MiniGridShapVisualizationWrapper, PolicyDeepExplainer, ShapVecVideoRecorder
 from env.minigrid import register_minigrid_tests
 warnings.filterwarnings("ignore")
 
@@ -301,7 +301,7 @@ if __name__ == '__main__':
         if not os.path.exists(video_path):
             os.makedirs(video_path, exist_ok=True)
         name_prefix = f'eval_with_box_{model_fullname}' if args.use_box else f'eval_{model_fullname}'
-        eval_env = VecVideoRecorder(eval_env, video_folder=video_path, record_video_trigger=lambda x: x == 0, name_prefix=name_prefix, video_length=args.video_length)
+        eval_env = ShapVecVideoRecorder(eval_env, video_folder=video_path, record_video_trigger=lambda x: x == 0, name_prefix=name_prefix, video_length=args.video_length)
 
     # set_seed(args.seed)
     

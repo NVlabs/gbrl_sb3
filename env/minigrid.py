@@ -337,7 +337,7 @@ class SpuriousFetchEnv(MiniGridEnv):
             **kwargs,
         )
         self.agent_pov = True
-        self.metadata['render_fps'] = 1
+        self.metadata['render_fps'] = 2
 
     def _rand_color(self):
         """Sample a color with custom probabilities."""
@@ -526,4 +526,9 @@ def register_minigrid_tests():
         id="MiniGrid-SpuriousFetch-8x8-N3-v2",
         entry_point="env.minigrid:SpuriousFetchEnv",
         kwargs={"size": 8, "numObjs": 3, "randomize": False, "mission_based": True},
+    )
+    register(
+        id="MiniGrid-SpuriousFetch-8x8-N3-v3",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "train": True, "mission_based": False, "randomize": False},
     )

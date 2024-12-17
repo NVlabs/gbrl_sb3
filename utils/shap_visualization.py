@@ -25,6 +25,12 @@ from shap._explanation import Explanation
 from shap.explainers._explainer import Explainer
 from packaging import version
 import warnings
+from stable_baselines3.common.vec_env import VecVideoRecorder
+from typing import Callable
+
+from gymnasium.wrappers.monitoring import video_recorder
+
+from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs, VecEnvStepReturn, VecEnvWrapper
 from shap.explainers._deep.deep_pytorch import PyTorchDeep, add_interim_values, deeplift_grad, _check_additivity
 
 def get_logits(ac_policy, obs):
@@ -36,6 +42,47 @@ def get_logits(ac_policy, obs):
         latent_pi = ac_policy.mlp_extractor.forward_actor(pi_features)
     logits = ac_policy.action_net(latent_pi)
     return logits
+
+
+class ShapVecVideoRecorder(VecVideoRecorder):
+    """
+    Wraps a VecEnv or VecEnvWrapper object to record rendered image as mp4 video.
+    It requires ffmpeg or avconv to be installed on the machine.
+
+    :param venv:
+    :param video_folder: Where to save videos
+    :param record_video_trigger: Function that defines when to start recording.
+                                        The function takes the current number of step,
+                                        and returns whether we should start recording or not.
+    :param video_length:  Length of recorded videos
+    :param name_prefix: Prefix to the video name
+    """
+
+    def __init__(
+        self,
+        venv: VecEnv,
+        video_folder: str,
+        record_video_trigger: Callable[[int], bool],
+        video_length: int = 200,
+        name_prefix: str = "rl-video",
+    ):
+        super().__init__(venv, video_folder, record_video_trigger, video_length, name_prefix)
+
+    def step_wait(self) -> VecEnvStepReturn:
+        if self.recording:
+            self.video_recorder.capture_frame()
+            self.recorded_frames += 1
+            if self.recorded_frames > self.video_length:
+                print(f"Saving video to {self.video_recorder.path}")
+                self.close_video_recorder()
+        elif self._video_enabled():
+            self.start_video_recorder()
+        obs, rews, dones, infos = self.venv.step_wait()
+
+        self.step_id += 1
+
+        return obs, rews, dones, infos
+
 
 class PolicyPyTorchDeep(PyTorchDeep):
     def __init__(self, model, data):
