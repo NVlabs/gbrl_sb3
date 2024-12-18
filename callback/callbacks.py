@@ -497,8 +497,8 @@ class MultiEvalWithObsCallback(EvalCallback):
             self.logger.record(f"eval/{self.env_name}_mean_reward", float(mean_reward))
             self.logger.record(f"eval/{self.env_name}_mean_ep_length", mean_ep_length)
             for i in range(len(min_obs)):
-                self.logger.record(f"obs/min_{i}", float(min_obs[i]))
-                self.logger.record(f"obs/max_{i}", float(max_obs[i]))
+                self.logger.record(f"obs/{self.env_name}_min_{i}", float(min_obs[i]))
+                self.logger.record(f"obs/{self.env_name}_max_{i}", float(max_obs[i]))
 
             if len(self._is_success_buffer) > 0:
                 success_rate = np.mean(self._is_success_buffer)
