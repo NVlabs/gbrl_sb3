@@ -432,11 +432,15 @@ class MultiEvalWithObsCallback(EvalCallback):
         render: bool = False,
         verbose: int = 1,
         warn: bool = True,
+        min_values: np.array = None,
+        max_values: np.array =None
     ):
         super().__init__(eval_env, callback_on_new_best, callback_after_eval,
                          n_eval_episodes, eval_freq, log_path, best_model_save_path, 
                          deterministic, render, verbose, warn)
         self.env_name = env_name
+        self.min_values = min_values 
+        self.max_values = max_values
 
     def _on_step(self) -> bool:
         continue_training = True
@@ -459,6 +463,8 @@ class MultiEvalWithObsCallback(EvalCallback):
             episode_rewards, episode_lengths, min_obs, max_obs = evaluate_policy_and_obs(
                 self.model,
                 self.eval_env,
+                min_values=self.min_values, 
+                max_values=self.max_values,
                 n_eval_episodes=self.n_eval_episodes,
                 render=self.render,
                 deterministic=self.deterministic,

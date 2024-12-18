@@ -64,6 +64,9 @@ FEATURES_PER_ENV = {'CARLCartPole': ['gravity', 'length'],
                     'CARLAcrobot': ['LINK_MASS_1', 'LINK_LENGTH_1', 'LINK_MASS_2', 'LINK_LENGTH_2', "MAX_VEL_1", "MAX_VEL_2"],
                     'CARLPendulum': ['g', 'gravity', 'l', 'dt', 'm'],
                     'CARLMountainCar': ['min_position', 'max_position', 'max_speed', 'goal_position', 'goal_velocity', 'force', 'gravity']}
+MIN_VALUES = {'CARLCartPole': None}
+MAX_VALUES = {'CARLCartPole': None}
+
 
 if __name__ == '__main__':
     args = parse_args()
@@ -104,11 +107,13 @@ if __name__ == '__main__':
             if args.wrapper == 'normalize':
                 eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
             callback_list.append(MultiEvalWithObsCallback(
-                                f'{feature}_{proportion}',
+                                f'{feature}_{proportion:.2f}',
                                 eval_env,
                                 callback_on_new_best=None,
                                 callback_after_eval=None,
                                 best_model_save_path=None,
+                                min_values=MIN_VALUES[env_name],
+                                max_values=MAX_VALUES[env_name],
                                 log_path=None,
                                 eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
                                 n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 50),

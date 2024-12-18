@@ -886,6 +886,8 @@ def make_highway_env(
 def evaluate_policy_and_obs(
     model: "type_aliases.PolicyPredictor",
     env: Union[gym.Env, VecEnv],
+    min_values: np.array = None,
+    max_values: np.array = None,
     n_eval_episodes: int = 10,
     deterministic: bool = True,
     render: bool = False,
@@ -967,12 +969,18 @@ def evaluate_policy_and_obs(
     states = None
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
+        if min_values is not None and max_values is not None:
+            if isinstance(observations, th.Tensor):
+                observations = th.clamp(observations, min=th.tensor(min_values), max=th.tensor(max_values))
+            else:
+                observations = np.clip(observations, a_min=min_values, a_max=max_values)
         actions, states = model.predict(
             observations,  # type: ignore[arg-type]
             state=states,
             episode_start=episode_starts,
             deterministic=deterministic,
         )
+
         new_observations, rewards, dones, infos = env.step(actions)
         global_min_obs = np.minimum(global_min_obs, new_observations.min(axis=0))
         global_max_obs = np.maximum(global_max_obs, new_observations.max(axis=0))
