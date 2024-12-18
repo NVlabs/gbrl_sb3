@@ -353,20 +353,8 @@ class SpuriousFetchEnv(MiniGridEnv):
     
     def place_next_to(self, obj, target_obj):
         target_pos = target_obj.cur_pos
-        placed = False
-        for i in [-1, 0, 1]:
-            for j in [-1, 0, 1]:
-                if i == 0 and j == 0:
-                    continue
-                new_pos = (target_pos[0] + i, target_pos[1] + j)
-                new_pos_obj = self.grid.get(*new_pos)
-                if new_pos_obj is None:
-                    self.grid.set(new_pos[0], new_pos[1], obj)
-                    placed = True
-                    break
-            if placed:
-                break
-        return placed 
+        self.place_obj(obj, top=(target_pos[0]-1, target_pos[1] -1), size=(3, 3))
+
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -381,14 +369,15 @@ class SpuriousFetchEnv(MiniGridEnv):
         obs_red = Ball('red')
         obs_green = Ball('green')
         obs_blue = Ball('blue')
+        # Randomize the player start position and orientation
+        self.place_agent()
 
         objs = [obs_red, obs_green, obs_blue]
         self.place_obj(obs_red)
         self.place_obj(obs_green)
         self.place_obj(obs_blue)
         #     objs.append(obj)
-        # Randomize the player start position and orientation
-        self.place_agent()
+
         # Choose a random object to be picked up
         target = objs[target_idx]
         box_obj = Box('red')
@@ -396,12 +385,10 @@ class SpuriousFetchEnv(MiniGridEnv):
             if self.randomize:
                 self.place_obj(box_obj)
             elif self.mission_based:
-                placed = self.place_next_to(box_obj, target)
-                assert placed, f"Could not place object next to the {target.color} {target.type}"
+                self.place_next_to(box_obj, target)
             else:
                 obj_idx = np.random.choice([i for i in range(2) if i != target_idx])
-                placed = self.place_next_to(box_obj, objs[obj_idx])
-                assert placed, f"Could not place object next to the {objs[obj_idx].color} {objs[obj_idx].type}"
+                self.place_next_to(box_obj, objs[obj_idx])
 
         self.targetType = target.type
         self.targetColor = target.color
@@ -409,6 +396,8 @@ class SpuriousFetchEnv(MiniGridEnv):
         # Generate the mission string
         self.mission = "get a %s" % descStr
         assert hasattr(self, "mission")
+        start_cell = self.grid.get(*self.agent_pos)
+        assert start_cell is None or start_cell.can_overlap()
 
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
