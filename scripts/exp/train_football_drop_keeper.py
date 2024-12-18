@@ -93,7 +93,7 @@ if __name__ == '__main__':
         if args.evaluate:
             eval_kwargs = args.env_kwargs.copy() 
             if eval_kwargs['env_name'] == 'academy_3_vs_1_with_keeper':
-                eval_kwargs['env_name'] = 'academy_3_vs_1_without_keeper'
+                eval_kwargs['env_name'] = 'academy_3_vs_2_with_keeper'
             else:
                 eval_kwargs['env_name'] = 'academy_3_vs_1_with_keeper'
             same_eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=args.env_kwargs)
@@ -110,7 +110,7 @@ if __name__ == '__main__':
                                         differet_eval_env,
                                         callback_on_new_best=None,
                                         callback_after_eval=None,
-                                        best_model_save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'),
+                                        best_model_save_path=None,
                                         log_path=None,
                                         eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
                                         n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 5),
@@ -121,7 +121,7 @@ if __name__ == '__main__':
                                         same_eval_env,
                                         callback_on_new_best=None,
                                         callback_after_eval=None,
-                                        best_model_save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'),
+                                        best_model_save_path=None,
                                         log_path=None,
                                         eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
                                         n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 5),

@@ -172,7 +172,7 @@ def shap_evaluate_policy(
         )
         shap_values = None
         if 'gbrl' in algo_type.lower():
-            shap_values = model.policy.model.shap(observations)[:, :, actions]
+            shap_values = -model.policy.model.shap(observations)[:, :, actions]
         else:
             shap_observations = th.tensor(observations).to(model.device)
             e = PolicyDeepExplainer(model.policy, background_obs)
