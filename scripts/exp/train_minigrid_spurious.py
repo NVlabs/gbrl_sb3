@@ -19,10 +19,11 @@ import warnings
 from stable_baselines3.common.callbacks import (
     CallbackList, CheckpointCallback, EvalCallback,
     StopTrainingOnNoModelImprovement)
-from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
+from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack, 
                                               VecNormalize, VecVideoRecorder)
-
+from stable_baselines3.common.env_util import make_vec_env
 from callback.callbacks import (ActorCriticCompressionCallback,
+                                MultiEvalCallback,
                                 OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
@@ -78,52 +79,43 @@ if __name__ == '__main__':
         args.env_kwargs = {}
     learn_kwargs = {}
 
+    env_to_id = {'target': 0, 'non_target': 1, 'random': 2, 'no_box': 3}
+    scenario_name = 'MiniGrid-SpuriousFetch-8x8-N3-v'
 
     register_minigrid_tests()
-    wrapper_class = [FullyObsWrapper, CategoricalObservationWrapper] if args.algo_type in CATEGORICAL_ALGOS else [FullyObsWrapper, FlatObsWrapper]
+    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     # vec_env_kwargs = {'is_mixed': True}
-    env = make_multi_wrapper_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
-    if args.evaluate:
-        eval_kwargs = args.env_kwargs.copy()
-        if 'SpuriousFetch' in args.env_name:
-            eval_kwargs['train'] = False
-        eval_env = make_multi_wrapper_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
-  
-
+    env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+     
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
         env = VecNormalize(env, **args.wrapper_kwargs)
-        if eval_env is not None:
-            args.wrapper_kwargs['training'] = False 
-            args.wrapper_kwargs['norm_reward'] = False 
-            eval_env = VecNormalize(eval_env, **args.wrapper_kwargs)
+        eval_wrapper_kwargs = args.wrapper_kwargs.copy()
+        eval_wrapper_kwargs['training'] = False 
+        eval_wrapper_kwargs['norm_reward'] = False 
+    for env_type, env_id in env_to_id.items():
+        scenario = scenario_name + str(env_id)
+        eval_env = make_vec_env(scenario, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+        if args.wrapper == 'normalize':
+            eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
+        callback_list.append(MultiEvalCallback(
+                            env_type,
+                            eval_env,
+                            callback_on_new_best=None,
+                            callback_after_eval=None,
+                            best_model_save_path=None,
+                            log_path=None,
+                            eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
+                            n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 50),
+                            verbose=args.eval_kwargs.get('verbose', 1), 
+                            ))
+
+
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
         callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
-    if args.no_improvement_kwargs:
-        callback_list.append(StopTrainingOnNoImprovementInTraining(**args.no_improvement_kwargs, verbose=args.verbose))
-    if eval_env is not None:
-        stop_train_callback = None
-        if args.eval_kwargs and args.eval_kwargs.get('stop_train', False):
-            stop_train_callback = StopTrainingOnNoModelImprovement(max_no_improvement_evals=args.eval_kwargs.get('max_no_improvement_evals', 3),
-                                                                    min_evals=args.eval_kwargs.get('min_evals', 5), verbose=1)
-        if args.eval_kwargs.get('record', False):
-            video_path = ROOT_PATH  / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
-            if not os.path.exists(video_path):
-                os.makedirs(video_path, exist_ok=True)
-            
-            eval_env = VecVideoRecorder(eval_env, video_folder=video_path,  record_video_trigger=lambda x: x == args.eval_kwargs['eval_freq'], name_prefix=f'{args.save_name}_seed_{args.seed}_eval', video_length=args.eval_kwargs.get('video_length', 2000))
-        # save_vec_normalize = SaveVecNormalizeCallback(save_freq=1, save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'))
-        callback_list.append(EvalCallback(
-                                    eval_env,
-                                    callback_on_new_best=None,
-                                    callback_after_eval=stop_train_callback,
-                                    best_model_save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'),
-                                    log_path=None,
-                                    eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
-                                    n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 5),
-                                    verbose=args.eval_kwargs.get('verbose', 1),
-                                    ))   
+  
+
     callback = None
     if callback_list:
         callback = CallbackList(callback_list)

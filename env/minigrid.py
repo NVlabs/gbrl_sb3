@@ -299,7 +299,7 @@ class DistanceFetchEnv(MiniGridEnv):
         return obs, info
 
 class SpuriousFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, train: bool = True, randomize: bool = False, mission_based: bool = False, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -313,7 +313,7 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.test_box_idx = test_box_idx
         self.color_names = sorted(list(self.colors.keys()))
         self.randomize = randomize
-        self.train = train
+        self.use_box = use_box
         self.mission_based = mission_based
         MISSION_SYNTAX = [
             "get a"
@@ -336,7 +336,8 @@ class SpuriousFetchEnv(MiniGridEnv):
             max_steps=max_steps,
             **kwargs,
         )
-        self.agent_pov = True
+        # self.agent_pov = True
+        self.agent_pov = False
         self.metadata['render_fps'] = 2
 
     def _rand_color(self):
@@ -349,6 +350,23 @@ class SpuriousFetchEnv(MiniGridEnv):
     @staticmethod
     def _gen_mission(syntax: str, color: str, obj_type: str):
         return f"{syntax} {color} {obj_type}"
+    
+    def place_next_to(self, obj, target_obj):
+        target_pos = target_obj.cur_pos
+        placed = False
+        for i in [-1, 0, 1]:
+            for j in [-1, 0, 1]:
+                if i == 0 and j == 0:
+                    continue
+                new_pos = (target_pos[0] + i, target_pos[1] + j)
+                new_pos_obj = self.grid.get(*new_pos)
+                if new_pos_obj is None:
+                    self.grid.set(new_pos[0], new_pos[1], obj)
+                    placed = True
+                    break
+            if placed:
+                break
+        return placed 
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -359,20 +377,6 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.grid.vert_wall(0, 0)
         self.grid.vert_wall(width - 1, 0)
         # Place a goal square in the bottom-right corner
-        if self.train:
-            if self.randomize:
-                self.place_obj(Box('red'))
-            else:
-                place = np.random.choice([True, False])
-                if place:
-                    if self.mission_based:
-                        if target_idx == 0:
-                            self.put_obj(Box('red'), width - 2, height - 2)
-                        elif target_idx == 1:
-                            self.put_obj(Box('red'), width - 2, 1)
-                    else:
-                        self.put_obj(Box('red'), width - 2, height - 2)
-
         objs = []
         obs_red = Ball('red')
         obs_green = Ball('green')
@@ -387,6 +391,17 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.place_agent()
         # Choose a random object to be picked up
         target = objs[target_idx]
+        box_obj = Box('red')
+        if self.use_box:
+            if self.randomize:
+                self.place_obj(box_obj)
+            elif self.mission_based:
+                placed = self.place_next_to(box_obj, target)
+                assert placed, f"Could not place object next to the {target.color} {target.type}"
+            else:
+                obj_idx = np.random.choice([i for i in range(2) if i != target_idx])
+                placed = self.place_next_to(box_obj, objs[obj_idx])
+                assert placed, f"Could not place object next to the {objs[obj_idx].color} {objs[obj_idx].type}"
 
         self.targetType = target.type
         self.targetColor = target.color
@@ -515,20 +530,20 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v0",
         entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "randomize": False},
+        kwargs={"size": 8, "numObjs": 3},
     )
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v1",
         entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "randomize": True},
+        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": False, "randomize": False},
     )
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v2",
         entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "randomize": False, "mission_based": True},
+        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": False, "randomize": True},
     )
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v3",
         entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "train": True, "mission_based": False, "randomize": False},
+        kwargs={"size": 8, "numObjs": 3, "use_box": False},
     )
