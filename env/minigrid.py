@@ -336,8 +336,8 @@ class SpuriousFetchEnv(MiniGridEnv):
             max_steps=max_steps,
             **kwargs,
         )
-        # self.agent_pov = True
-        self.agent_pov = False
+        self.agent_pov = True
+        # self.agent_pov = False
         self.metadata['render_fps'] = 2
 
     def _rand_color(self):
