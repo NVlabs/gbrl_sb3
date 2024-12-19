@@ -80,8 +80,8 @@ class ActorCriticPolicy(BasePolicy):
         use_sde: bool = False,
         squash: bool = False,
         log_std_init: float = -2.0,
-        shared_tree_struct: bool=True,
-        log_std_schedule: float = 1e-3,
+        shared_tree_struct: bool = True,
+        log_std_schedule: Schedule = None,
         full_std: bool = True,
         sde_net_arch: Optional[List[int]] = None,
         use_expln: bool = False,
@@ -164,6 +164,7 @@ class ActorCriticPolicy(BasePolicy):
 
         if isinstance(self.action_dist, DiagGaussianDistribution) or isinstance(self.action_dist, SquashedDiagGaussianDistribution) :
             self.log_std = nn.Parameter(th.ones(self.action_dist.action_dim) * self.log_std_init, requires_grad=True)
+            assert log_std_schedule is not None, "log_std_schedule is None"
             self.log_std_optimizer = th.optim.Adam([self.log_std], lr=log_std_schedule(1))
         
         if self.nn_critic:

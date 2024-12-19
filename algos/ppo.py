@@ -176,7 +176,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
             else:
                 log_std_lr = float(log_std_lr)
-        policy_kwargs['log_std_schedule'] = log_std_lr
+        policy_kwargs['log_std_schedule'] = get_schedule_fn(log_std_lr)
         super().__init__(policy=policy,
         env=env,
         seed=seed,
