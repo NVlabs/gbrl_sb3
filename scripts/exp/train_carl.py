@@ -64,8 +64,10 @@ FEATURES_PER_ENV = {'CARLCartPole': ['gravity', 'length'],
                     'CARLAcrobot': ['LINK_MASS_1', 'LINK_LENGTH_1', 'LINK_MASS_2', 'LINK_LENGTH_2', "MAX_VEL_1", "MAX_VEL_2"],
                     'CARLPendulum': ['g', 'gravity', 'l', 'dt', 'm'],
                     'CARLMountainCar': ['min_position', 'max_position', 'max_speed', 'goal_position', 'goal_velocity', 'force', 'gravity']}
-MIN_VALUES = {'CARLCartPole': None}
-MAX_VALUES = {'CARLCartPole': None}
+MIN_VALUES = {'CARLCartPole': [-2.399992704,-1.063015103,-0.119786859,-1.334830999]}
+MAX_VALUES = {'CARLCartPole': [0.267801315,1.06205678,0.124372624,1.272921443]}
+# MIN_VALUES = {'CARLCartPole': None}
+# MAX_VALUES = {'CARLCartPole': None}
 
 
 if __name__ == '__main__':
