@@ -102,27 +102,27 @@ if __name__ == '__main__':
         eval_wrapper_kwargs['norm_reward'] = False 
     import numpy as np
     proportions = np.linspace(0.5, 2, num=10)
-
-    for feature in FEATURES_PER_ENV[args.env_name]:
-        for proportion in proportions:
-            eval_context = default_context.copy()
-            eval_context[feature] = eval_context[feature] * proportion
-            eval_env = make_eval_carl_env(CONTEXT[env_name], eval_context, n_envs=1, env_kwargs=args.env_kwargs)
-            if args.wrapper == 'normalize':
-                eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
-            callback_list.append(MultiEvalWithObsCallback(
-                                f'{feature}_{proportion:.2f}',
-                                eval_env,
-                                callback_on_new_best=None,
-                                callback_after_eval=None,
-                                best_model_save_path=None,
-                                min_values=MIN_VALUES[env_name],
-                                max_values=MAX_VALUES[env_name],
-                                log_path=None,
-                                eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
-                                n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 50),
-                            verbose=args.eval_kwargs.get('verbose', 1), 
-                            ))
+    if args.evaluate:
+        for feature in FEATURES_PER_ENV[args.env_name]:
+            for proportion in proportions:
+                eval_context = default_context.copy()
+                eval_context[feature] = eval_context[feature] * proportion
+                eval_env = make_eval_carl_env(CONTEXT[env_name], eval_context, n_envs=1, env_kwargs=args.env_kwargs)
+                if args.wrapper == 'normalize':
+                    eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
+                callback_list.append(MultiEvalWithObsCallback(
+                                    f'{feature}_{proportion:.2f}',
+                                    eval_env,
+                                    callback_on_new_best=None,
+                                    callback_after_eval=None,
+                                    best_model_save_path=None,
+                                    min_values=MIN_VALUES[env_name],
+                                    max_values=MAX_VALUES[env_name],
+                                    log_path=None,
+                                    eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
+                                    n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 50),
+                                verbose=args.eval_kwargs.get('verbose', 1), 
+                                ))
 
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
         callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
