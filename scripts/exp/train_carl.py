@@ -58,16 +58,18 @@ import carl.envs as envs
 
 CONTEXT = {'CARLLunarLander': envs.CARLLunarLander, 'CARLCartPole': envs.CARLCartPole,
            'CARLAcrobot': envs.CARLAcrobot, 'CARLPendulum': envs.CARLPendulum,
-           'CARLMountainCar': envs.CARLMountainCar}
+           'CARLMountainCar': envs.CARLMountainCar, 'CARLMountainCarContinuous': envs.CARLMountainCarContinuous}
 FEATURES_PER_ENV = {'CARLCartPole': ['gravity', 'length'],
                     'CARLLunarLander': ['GRAVITY_Y', 'MAIN_ENGINE_POWER'],
                     'CARLAcrobot': ['LINK_MASS_1', 'LINK_LENGTH_1', 'LINK_MASS_2', 'LINK_LENGTH_2', "MAX_VEL_1", "MAX_VEL_2"],
                     'CARLPendulum': ['g', 'gravity', 'l', 'dt', 'm'],
-                    'CARLMountainCar': ['min_position', 'max_position', 'max_speed', 'goal_position', 'goal_velocity', 'force', 'gravity']}
-MIN_VALUES = {'CARLCartPole': [-2.399992704,-1.063015103,-0.119786859,-1.334830999]}
-MAX_VALUES = {'CARLCartPole': [0.267801315,1.06205678,0.124372624,1.272921443]}
-# MIN_VALUES = {'CARLCartPole': None}
-# MAX_VALUES = {'CARLCartPole': None}
+                    'CARLMountainCar': ['min_position', 'max_position', 'max_speed', 'goal_position', 'goal_velocity', 'force', 'gravity'],
+                    'CARLMountainCarContinuous': ['min_position', 'max_position', 'max_speed', 'goal_position', 'goal_velocity', 'power'],
+                    }
+MIN_VALUES = {'CARLCartPole': None,
+              'CARLMountainCarContinuous': None}
+MAX_VALUES = {'CARLCartPole': None,
+              'CARLMountainCarContinuous': None}
 
 
 if __name__ == '__main__':
