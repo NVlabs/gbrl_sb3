@@ -253,7 +253,7 @@ class ActorCriticPolicy(BasePolicy):
             policy_lr, value_lr = lrs
         return policy_lr, value_lr
     
-    def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False, action_masks: Optional[np.ndarray] = None) -> th.Tensor:
+    def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False, action_masks: Optional[np.ndarray] = None, requires_grad: bool = False) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
 
@@ -261,7 +261,7 @@ class ActorCriticPolicy(BasePolicy):
         :param deterministic: Whether to use stochastic or deterministic actions
         :return: Taken action according to the policy
         """
-        return self.get_distribution(observation, action_masks).get_actions(deterministic=deterministic)
+        return self.get_distribution(obs=observation, action_masks=action_masks, requires_grad=requires_grad).get_actions(deterministic=deterministic)
 
     def predict(
         self,
@@ -292,7 +292,7 @@ class ActorCriticPolicy(BasePolicy):
         vectorized_env = is_vectorized_observation(observation, self.observation_space)
 
         with th.no_grad():
-            actions = self._predict(observation, deterministic=deterministic)
+            actions = self._predict(observation, deterministic=deterministic, requires_grad=False)
         # Convert to numpy, and reshape to the original action shape
         actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))
 
@@ -329,14 +329,14 @@ class ActorCriticPolicy(BasePolicy):
         self.distribution = distribution
         return values, log_prob, distribution.entropy()
     
-    def get_distribution(self, obs: Union[th.Tensor, np.ndarray], action_masks: Optional[np.ndarray] = None) -> Distribution:
+    def get_distribution(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = False, action_masks: Optional[np.ndarray] = None) -> Distribution:
         """
         Get the current policy distribution given the observations.
 
         :param obs:
         :return: the action distribution.
         """
-        distribution, _ = self._get_action_dist_from_obs(obs)
+        distribution, _ = self._get_action_dist_from_obs(obs, requires_grad=requires_grad)
         if action_masks is not None:
              distribution.apply_masking(action_masks)
         return distribution
