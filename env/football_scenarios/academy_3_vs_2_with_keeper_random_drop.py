@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from gfootball.scenarios import *
+import numpy as np
 
 
 def build_scenario(builder):
