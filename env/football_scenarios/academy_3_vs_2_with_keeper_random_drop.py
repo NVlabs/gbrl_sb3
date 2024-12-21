@@ -30,11 +30,17 @@ def build_scenario(builder):
   builder.AddPlayer(0.7, 0.2, e_PlayerRole_CM)
   builder.AddPlayer(0.7, -0.2, e_PlayerRole_CM)
 
+  drop_prob = np.random.choice([0, 1])
+
   random_drop = np.random.choice([0, 1])
 
   builder.SetTeam(Team.e_Right)
   builder.AddPlayer(-1.0, 0.0, e_PlayerRole_GK)
-  if random_drop == 0:
-    builder.AddPlayer(-0.75, -0.063559, e_PlayerRole_CB)
+  if drop_prob == 0:
+      builder.AddPlayer(-0.75, -0.063559, e_PlayerRole_CB)
+      builder.AddPlayer(-0.75, 0.063559, e_PlayerRole_CB)
   else:
-    builder.AddPlayer(-0.75, 0.063559, e_PlayerRole_CB)
+    if random_drop == 0:
+      builder.AddPlayer(-0.75, -0.063559, e_PlayerRole_CB)
+    else:
+      builder.AddPlayer(-0.75, 0.063559, e_PlayerRole_CB)

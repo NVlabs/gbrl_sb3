@@ -91,23 +91,22 @@ if __name__ == '__main__':
             args.wrapper_kwargs['gamma'] = args.gamma
             env = VecNormalize(env, **args.wrapper_kwargs)
         if args.evaluate:
-            eval_kwargs = args.env_kwargs.copy() 
-            if eval_kwargs['env_name'] == 'academy_3_vs_1_with_keeper':
-                eval_kwargs['env_name'] = 'academy_3_vs_2_with_keeper'
-            else:
-                eval_kwargs['env_name'] = 'academy_3_vs_1_with_keeper'
-            same_eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=args.env_kwargs)
-            differet_eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=eval_kwargs)
+            eval_kwargs_1 = args.env_kwargs.copy() 
+            eval_kwargs_2 = args.env_kwargs.copy() 
+            eval_kwargs_1['env_name'] = 'academy_3_vs_1_with_keeper'
+            eval_kwargs_2['env_name'] = 'academy_3_vs_2_with_keeper'
+            eval_env_1 = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=eval_kwargs_1)
+            eval_env_2 = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=eval_kwargs_2)
             if args.wrapper == 'normalize': 
                 normalize_kwargs = args.wrapper_kwargs.copy()
                 normalize_kwargs['training'] = False 
                 normalize_kwargs['norm_reward'] = False 
-                differet_eval_env = VecNormalize(differet_eval_env, **normalize_kwargs)
-                same_eval_env = VecNormalize(same_eval_env, **normalize_kwargs)
+                eval_env_1 = VecNormalize(eval_env_1, **normalize_kwargs)
+                eval_env_2 = VecNormalize(eval_env_2, **normalize_kwargs)
                     # save_vec_normalize = SaveVecNormalizeCallback(save_freq=1, save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'))
             callback_list.append(MultiEvalCallback(
-                                        'different',
-                                        differet_eval_env,
+                                        '3_vs_1',
+                                        eval_env_1,
                                         callback_on_new_best=None,
                                         callback_after_eval=None,
                                         best_model_save_path=None,
@@ -117,8 +116,8 @@ if __name__ == '__main__':
                                         verbose=args.eval_kwargs.get('verbose', 1),
                                         ))   
             callback_list.append(MultiEvalCallback(
-                                        'same',
-                                        same_eval_env,
+                                        '3_vs_2',
+                                        eval_env_2,
                                         callback_on_new_best=None,
                                         callback_after_eval=None,
                                         best_model_save_path=None,
