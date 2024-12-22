@@ -3,7 +3,7 @@ env:
   env_kwargs: null
   verbose: 1
   seed: 0
-  num_envs: 2
+  num_envs: 1
   eval_kwargs:
     eval_freq: 5000
     stop_train: False

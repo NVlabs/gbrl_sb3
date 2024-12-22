@@ -143,7 +143,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football', 'openspiel', 'bsuite', 'highway', 'carl', 'extrapolation']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football', 'openspiel', 'bsuite', 'highway', 'carl', 'extrapolation', 'sepsis']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -328,7 +328,7 @@ def get_defaults(args, defaults):
     # Set hardcoded defaults
     # args.env_type = args.env_type if args.env_type else 'ocatari'
     # args.env_type = args.env_type if args.env_type else 'carl'
-    args.env_type = args.env_type if args.env_type else 'extrapolation'
+    args.env_type = args.env_type if args.env_type else 'sepsis'
     # args.env_type = args.env_type if args.env_type else 'minigrid'
     # args.env_type = args.env_type if args.env_type else 'football'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
@@ -358,7 +358,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
     # args.env_name = args.env_name if args.env_name else 'CARLCartPole'
     # args.env_name = args.env_name if args.env_name else 'CARLMountainCarContinuous'
-    args.env_name = args.env_name if args.env_name else 'Extrapolation-Continuous-train'
+    args.env_name = args.env_name if args.env_name else 'Sepsis/ICU-Sepsis-v2'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-rank-v3'
