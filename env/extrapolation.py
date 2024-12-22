@@ -16,14 +16,14 @@ from gymnasium.core import ObsType, ActType
 
 
 class Extrapolation(gym.Env):
-    def __init__(self, discrete_actions: bool = False, dS: float = 0.1, goal: float = 0.8, max_steps: int = 100, obs_range: tuple = (-1, 1)):
+    def __init__(self, discrete_actions: bool = False, dS: float = 0.1, goal: float = 0.0, max_steps: int = 100, obs_range: tuple = (-1, 1)):
         self.observation_space = gym.spaces.Box(low=-np.inf,
             high=np.inf,
             shape=(1, ),
             dtype=float,)
          
         if discrete_actions:
-            self.action_space =  gym.spaces.Discrete(3)
+            self.action_space =  gym.spaces.Discrete(2)
             self.goal_tolerance = dS
         else:
             self.action_space = gym.spaces.Box(low=-1,
@@ -50,6 +50,7 @@ class Extrapolation(gym.Env):
             self._np_random, seed = seeding.np_random(seed)
         obs = np.array([self._np_random.uniform(*self.obs_range)])
         self.obs = obs.copy()
+        self.step_count = 0
         return obs, {}
 
     def step(self, action):
@@ -57,15 +58,16 @@ class Extrapolation(gym.Env):
         if isinstance(action, np.ndarray) or not isinstance(self.action_space, gym.spaces.Discrete):
             action = np.clip(action, -1, 1)
         else:
-            action = action - 1  # Map discrete {0,1,2} -> {-1,0,1}
+            action = -1 if action == 0 else 1
 
         observation = self.obs + action * self.dS if self.discrete_actions else self.obs + action
         self.step_count += 1
         self.obs  = observation.copy()
         terminated = abs(self.obs - self.goal) <= self.goal_tolerance
+        # reward = -(self.obs - self.goal)**2
         reward = 1 if terminated else 0
         truncated =  self.step_count >= self.max_steps
-        return observation, reward, bool(terminated), (truncated), {}
+        return observation, reward, bool(terminated), bool(truncated), {}
     
 
 def register_extrapolation_tests():
