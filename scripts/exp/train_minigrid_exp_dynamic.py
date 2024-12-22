@@ -88,7 +88,8 @@ if __name__ == '__main__':
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
-    callback_list.append(ChangeEnvCallback(int(2500000 / args.num_envs), change_undersampling_rate, warmup_time=10000000))
+    callback_list.append(ChangeEnvCallback(int(2500000 / args.num_envs), change_undersampling_rate, warmup_time=int(10000000 / args.num_envs)))
+
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
         env = VecNormalize(env, **args.wrapper_kwargs)

@@ -364,7 +364,7 @@ class ChangeEnvCallback(BaseCallback):
     :param verbose: Verbosity level: 0 for no output, 1 for info messages.
     """
     def __init__(self, change_freq: int, change_function: callable, change_function_args: tuple = (), 
-                 change_function_kwargs: dict = None, warmup_time: int = 0, verbose: int = 0):
+                 change_function_kwargs: dict = None, warmup_time: int = 0, verbose: int = 1):
         super().__init__(verbose=verbose)
         self.change_freq = change_freq
         self.change_function = change_function
