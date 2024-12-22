@@ -383,9 +383,9 @@ class SpuriousFetchEnv(MiniGridEnv):
                     return True
             return False
         
-        green_pos = self.place_obj(obs_green, reject_func=near_obj)
+        green_pos = self.place_obj(obs_green, reject_fn=near_obj)
         objPos.append(green_pos)
-        blue_pos = self.place_obj(obs_blue, reject_func=near_obj)
+        blue_pos = self.place_obj(obs_blue, reject_fn=near_obj)
         objPos.append(blue_pos)
         objs = [obs_red, obs_green, obs_blue]
         # Choose a random object to be picked up
