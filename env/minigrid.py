@@ -17,8 +17,9 @@ from gymnasium.envs.registration import register
 from minigrid.core.constants import COLOR_NAMES
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import Ball, Box, Goal, Key
+from minigrid.core.world_object import Ball, Box
 from minigrid.minigrid_env import MiniGridEnv
+import pygame
 
 
 class OODFetchEnv(MiniGridEnv):
@@ -356,7 +357,6 @@ class SpuriousFetchEnv(MiniGridEnv):
         target_pos = target_obj.cur_pos
         self.place_obj(obj, top=(target_pos[0]-1, target_pos[1] -1), size=(3, 3))
 
-
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
         target_idx = np.random.choice([0, 1, 2])
@@ -372,13 +372,22 @@ class SpuriousFetchEnv(MiniGridEnv):
         obs_blue = Ball('blue')
         # Randomize the player start position and orientation
         self.place_agent()
+        red_pos = self.place_obj(obs_red)
 
+        objPos = [red_pos]
+        def near_obj(env, p1):
+            for p2 in objPos:
+                dx = p1[0] - p2[0]
+                dy = p1[1] - p2[1]
+                if abs(dx) <= 1 and abs(dy) <= 1:
+                    return True
+            return False
+        
+        green_pos = self.place_obj(obs_green, reject_func=near_obj)
+        objPos.append(green_pos)
+        blue_pos = self.place_obj(obs_blue, reject_func=near_obj)
+        objPos.append(blue_pos)
         objs = [obs_red, obs_green, obs_blue]
-        self.place_obj(obs_red)
-        self.place_obj(obs_green)
-        self.place_obj(obs_blue)
-        #     objs.append(obj)
-
         # Choose a random object to be picked up
         target = objs[target_idx]
         box_obj = Box('red')
@@ -415,51 +424,51 @@ class SpuriousFetchEnv(MiniGridEnv):
 
         return obs, reward, terminated, truncated, info
 
-    def render(self):
-        img = self.get_frame(self.highlight, self.tile_size, self.agent_pov)
+    # def render(self):
+    #     img = self.get_frame(self.highlight, self.tile_size, self.agent_pov)
 
-        if self.render_mode == "human":
-            img = np.transpose(img, axes=(1, 0, 2))
-            if self.render_size is None:
-                self.render_size = img.shape[:2]
-            if self.window is None:
-                pygame.init()
-                pygame.display.init()
-                self.window = pygame.display.set_mode(
-                    (self.screen_size, self.screen_size)
-                )
-                pygame.display.set_caption("minigrid")
-            if self.clock is None:
-                self.clock = pygame.time.Clock()
-            surf = pygame.surfarray.make_surface(img)
+    #     if self.render_mode == "human":
+    #         img = np.transpose(img, axes=(1, 0, 2))
+    #         if self.render_size is None:
+    #             self.render_size = img.shape[:2]
+    #         if self.window is None:
+    #             pygame.init()
+    #             pygame.display.init()
+    #             self.window = pygame.display.set_mode(
+    #                 (self.screen_size, self.screen_size)
+    #             )
+    #             pygame.display.set_caption("minigrid")
+    #         if self.clock is None:
+    #             self.clock = pygame.time.Clock()
+    #         surf = pygame.surfarray.make_surface(img)
 
-            # Create background with mission description
-            offset = surf.get_size()[0] * 0.1
-            # offset = 32 if self.agent_pov else 64
-            bg = pygame.Surface(
-                (int(surf.get_size()[0] + offset), int(surf.get_size()[1] + offset))
-            )
-            bg.convert()
-            bg.fill((255, 255, 255))
-            bg.blit(surf, (offset / 2, 0))
+    #         # Create background with mission description
+    #         offset = surf.get_size()[0] * 0.1
+    #         # offset = 32 if self.agent_pov else 64
+    #         bg = pygame.Surface(
+    #             (int(surf.get_size()[0] + offset), int(surf.get_size()[1] + offset))
+    #         )
+    #         bg.convert()
+    #         bg.fill((255, 255, 255))
+    #         bg.blit(surf, (offset / 2, 0))
 
-            bg = pygame.transform.smoothscale(bg, (self.screen_size, self.screen_size))
+    #         bg = pygame.transform.smoothscale(bg, (self.screen_size, self.screen_size))
 
-            font_size = 22
-            text = self.mission
-            font = pygame.freetype.SysFont(pygame.font.get_default_font(), font_size)
-            text_rect = font.get_rect(text, size=font_size)
-            text_rect.center = bg.get_rect().center
-            text_rect.y = bg.get_height() - font_size * 1.5
-            font.render_to(bg, text_rect, text, size=font_size)
+    #         font_size = 22
+    #         text = self.mission
+    #         font = pygame.freetype.SysFont(pygame.font.get_default_font(), font_size)
+    #         text_rect = font.get_rect(text, size=font_size)
+    #         text_rect.center = bg.get_rect().center
+    #         text_rect.y = bg.get_height() - font_size * 1.5
+    #         font.render_to(bg, text_rect, text, size=font_size)
 
-            self.window.blit(bg, (0, 0))
-            pygame.event.pump()
-            self.clock.tick(self.metadata["render_fps"])
-            pygame.display.flip()
+    #         self.window.blit(bg, (0, 0))
+    #         pygame.event.pump()
+    #         self.clock.tick(self.metadata["render_fps"])
+    #         pygame.display.flip()
 
-        elif self.render_mode == "rgb_array":
-            return img
+    #     elif self.render_mode == "rgb_array":
+    #         return img
 
 
 def register_minigrid_tests():
@@ -520,7 +529,7 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v0",
         entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3},
+        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": True, "randomize": False},
     )
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v1",
