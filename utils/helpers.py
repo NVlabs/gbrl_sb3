@@ -371,7 +371,7 @@ def make_carl_env(
 
 def make_eval_carl_env(
     env_fnc: Callable[..., gym.Env],
-    context: Dict[str, Any],
+    context: List[Dict[str, Any]],
     n_envs: int = 1,
     seed: Optional[int] = None,
     start_index: int = 0,
@@ -412,6 +412,8 @@ def make_eval_carl_env(
     monitor_kwargs = monitor_kwargs or {}
     wrapper_kwargs = wrapper_kwargs or {}
     assert vec_env_kwargs is not None  # for mypy
+    if not isinstance(context, list):
+        context = [context]
 
     def make_env(rank: int) -> Callable[[], gym.Env]:
         def _init() -> gym.Env:
@@ -420,7 +422,7 @@ def make_eval_carl_env(
             assert wrapper_kwargs is not None
             assert env_kwargs is not None
 
-            env = env_fnc(contexts={0: context})  # type: ignore[arg-type]
+            env = env_fnc(contexts={i: cxt for i, cxt in enumerate(context)})  # type: ignore[arg-type]
             # Patch to support gym 0.21/0.26 and gymnasium
             env = _patch_env(env)
 
