@@ -55,17 +55,20 @@ class Extrapolation(gym.Env):
 
     def step(self, action):
         # Map the action (element of {0,1,2,3}) to the direction we walk in
-        if isinstance(action, np.ndarray) or not isinstance(self.action_space, gym.spaces.Discrete):
-            action = np.clip(action, -1, 1)
-        else:
+        if not isinstance(action, np.ndarray) and not isinstance(self.action_space, gym.spaces.Discrete):
+            # action = np.clip(action, -1, 1)
             action = -1 if action == 0 else 1
+        # if isinstance(action, np.ndarray) or not isinstance(self.action_space, gym.spaces.Discrete):
+        #     # action = np.clip(action, -1, 1)
+        # else:
+            
 
         observation = self.obs + action * self.dS if self.discrete_actions else self.obs + action
         self.step_count += 1
         self.obs  = observation.copy()
         terminated = abs(self.obs - self.goal) <= self.goal_tolerance
-        # reward = -(self.obs - self.goal)**2
-        reward = 1 if terminated else 0
+        reward = -(self.obs - self.goal)**2
+        # reward = 1 if terminated else 0
         truncated =  self.step_count >= self.max_steps
         return observation, reward, bool(terminated), bool(truncated), {}
     
