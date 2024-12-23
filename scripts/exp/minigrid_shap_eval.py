@@ -286,9 +286,7 @@ if __name__ == '__main__':
     register_minigrid_tests()
     wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-    # eval_kwargs['train'] = False
     eval_kwargs = {} if args.env_kwargs is None else args.env_kwargs.copy()
-    eval_kwargs['train'] = True if args.use_box else False
     eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
     eval_env = MiniGridShapVisualizationWrapper(eval_env)
