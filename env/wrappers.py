@@ -803,3 +803,25 @@ class CARLDummyVecEnvWithContext(DummyVecEnv):
         self._reset_seeds()
         return self._obs_from_buf()
 
+
+class SepsisObservationWrapper(ObservationWrapper):
+    def __init__(self, env, one_hot: bool = False):
+        super().__init__(env)
+
+        self.flattened_shape = 716 if one_hot else 1
+        self.one_hot = one_hot
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.single)
+        
+         
+    def observation(self, observation):
+        # Transform the observation in some way
+        if self.one_hot:
+            obs = np.zeros(self.flattened_shape, dtype=np.single)
+            obs[observation] = 1
+        else:
+            obs = np.array([str(observation).encode('utf-8')], dtype=categorical_dtype)
+        return np.ascontiguousarray(obs)
+
+    def reset(self, seed: int = None):
+        observation, info = self.env.reset(seed=seed)
+        return self.observation(observation), info

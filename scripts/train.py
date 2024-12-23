@@ -39,6 +39,7 @@ from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
                           MiniGridFlatObsWrapper,
                           FlatObsWrapperWithDirection,
+                          SepsisObservationWrapper,
                           HighWayWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
@@ -136,9 +137,12 @@ if __name__ == '__main__':
         if args.evaluate:
             eval_env = make_carl_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'sepsis':
-        env = make_sepsis_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        wrapper_class = SepsisObservationWrapper
+        vec_env_cls = CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
+        wrapper_kwargs = {'one_hot': args.algo_type not in CATEGORICAL_ALGOS}
+        env = make_sepsis_env(args.env_name, n_envs=args.num_envs, seed=args.seed, vec_env_cls=vec_env_cls, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, wrapper_kwargs=wrapper_kwargs)
         if args.evaluate:
-            eval_env = make_sepsis_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+            eval_env = make_sepsis_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls, wrapper_kwargs=wrapper_kwargs, wrapper_class=wrapper_class)
     elif args.env_type == 'openspiel':
         learn_kwargs['use_masking'] = True
         args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS else False
