@@ -26,7 +26,8 @@ from callback.callbacks import (ActorCriticCompressionCallback,
                                 OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining,
-                                MultiEvalWithObsCallback)
+                                MultiEvalWithObsCallback,
+                                MultiEvalCallback)
 from utils.helpers import set_seed
 from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
@@ -122,7 +123,7 @@ if __name__ == '__main__':
                 eval_env = make_eval_carl_env(CONTEXT[env_name], eval_context, n_envs=1, env_kwargs=args.env_kwargs)
                 if args.wrapper == 'normalize':
                     eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
-                callback_list.append(MultiEvalWithObsCallback(
+                callback_list.append(MultiEvalCallback(
                                     f'{feature}_{proportion:.2f}',
                                     eval_env,
                                     callback_on_new_best=None,
