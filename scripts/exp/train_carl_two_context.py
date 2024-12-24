@@ -129,8 +129,6 @@ if __name__ == '__main__':
                                     callback_on_new_best=None,
                                     callback_after_eval=None,
                                     best_model_save_path=None,
-                                    min_values=MIN_VALUES[env_name],
-                                    max_values=MAX_VALUES[env_name],
                                     log_path=None,
                                     eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
                                     n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 50),
