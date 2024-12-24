@@ -9,6 +9,7 @@
 import os
 import sys
 from pathlib import Path
+import numpy as np 
 
 ROOT_PATH = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT_PATH))
@@ -56,13 +57,19 @@ CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 
-def change_undersampling_rate(env, init_rate = 1, new_rate = 10):
-    if env.env.env.env.env.undersampling_rate is None or env.env.env.env.env.undersampling_rate  == 1:
-        env.env.env.env.env.undersampling_rate = new_rate 
-        print(f"Changed undersampling_rate from {init_rate} to {new_rate}")
+def change_target(env):
+    if env.env.env.env.env.test_box_idx is None:
+        env.env.env.env.env.test_box_idx = 0 
+        print(f"Changed test_box_idx from None to Red ball")
+    elif env.env.env.env.env.test_box_idx == 0:
+        env.env.env.env.env.test_box_idx = 1
+        print(f"Changed test_box_idx from Red ball to Green ball")
+    elif env.env.env.env.env.test_box_idx == 1:
+        env.env.env.env.env.test_box_idx = 2
+        print(f"Changed test_box_idx from Green ball to Blue ball")
     else: 
-        env.env.env.env.env.undersampling_rate = init_rate
-        print(f"Changed undersampling_rate from {new_rate} to {init_rate}")
+        env.env.env.env.env.test_box_idx = None
+        print(f"Changed test_box_idx from Blue Ball to None")
 
 if __name__ == '__main__':
     args = parse_args()
@@ -88,7 +95,11 @@ if __name__ == '__main__':
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
-    callback_list.append(ChangeEnvCallback(int(2500000 / args.num_envs), change_undersampling_rate, warmup_time=int(10000000 / args.num_envs)))
+    if args.callback_kwargs is None:
+        args.callback_kwargs = {}
+    warmup_time = args.callback_kwargs.get('warmup_time', 0)
+    callback_list.append(ChangeEnvCallback(int(2500000 / args.num_envs), change_target, warmup_time=int(warmup_time / args.num_envs)))
+    # callback_list.append(ChangeEnvCallback(int(1000 / args.num_envs), change_target, warmup_time=int(warmup_time / args.num_envs)))
 
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
@@ -115,10 +126,8 @@ if __name__ == '__main__':
                             ))
 
 
-    undersampling_rate = args.env_kwargs.get('undersampling_rate', 1)
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
-        # callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_{int(args.range[0])}_{int(args.range[1])}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
-        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_ur_{undersampling_rate}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
+        callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs), save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'), name_prefix=f'{args.save_name}_seed_{args.seed}', verbose=1, save_vecnormalize=True if args.env_type != 'football' else False))
     if args.no_improvement_kwargs:
         callback_list.append(StopTrainingOnNoImprovementInTraining(**args.no_improvement_kwargs, verbose=args.verbose))
 

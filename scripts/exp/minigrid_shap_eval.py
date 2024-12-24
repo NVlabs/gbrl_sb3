@@ -240,6 +240,7 @@ if __name__ == '__main__':
     parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'gym', 'mujoco', 'football', 'carl']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
+    parser.add_argument('--name_str', type=str, default='eval')  
     parser.add_argument('--folder_path', type=str, default=str(ROOT_PATH / 'saved_models'))
     # env args
     # parser.add_argument('--total_n_steps', type=int)
@@ -256,8 +257,12 @@ if __name__ == '__main__':
     parser.add_argument('--record', action="store_true")
     parser.add_argument('--render', action="store_true")
     parser.add_argument('--use_box', action="store_true")
+    parser.add_argument('--eval_env', type=str)
     parser.add_argument('--deterministic', action="store_true")
     args = parser.parse_args()
+
+    if args.eval_env is None:
+        args.eval_env = args.env_name
 
     model_fullname = args.model_name
     save_path = os.path.join(args.folder_path, args.env_type, args.env_name,args.algo_type)
@@ -287,7 +292,7 @@ if __name__ == '__main__':
     wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     eval_kwargs = {} if args.env_kwargs is None else args.env_kwargs.copy()
-    eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+    eval_env = make_vec_env(args.eval_env, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
     eval_env = MiniGridShapVisualizationWrapper(eval_env)
     if os.path.exists(vecnormalize_path):
@@ -298,7 +303,7 @@ if __name__ == '__main__':
         video_path = ROOT_PATH  / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
         if not os.path.exists(video_path):
             os.makedirs(video_path, exist_ok=True)
-        name_prefix = f'eval_with_box_{model_fullname}' if args.use_box else f'eval_{model_fullname}'
+        name_prefix = f'{args.name_str}_{model_fullname}'
         eval_env = ShapVecVideoRecorder(eval_env, video_folder=video_path, record_video_trigger=lambda x: x == 0, name_prefix=name_prefix, video_length=args.video_length)
 
     # set_seed(args.seed)

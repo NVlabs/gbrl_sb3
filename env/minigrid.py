@@ -23,7 +23,7 @@ import pygame
 
 
 class OODFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, undersampling_rate: float = None, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, probs: List[float] = [1, 1, 1], test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -35,7 +35,8 @@ class OODFetchEnv(MiniGridEnv):
         if test_box_idx is not None:
             assert test_box_idx >= 0 and test_box_idx < 3
         self.test_box_idx = test_box_idx
-        self.undersampling_rate = undersampling_rate
+        self.probs = np.array(probs)
+        self.probs = self.probs / np.sum(self.probs)
         self.color_names = sorted(list(self.colors.keys()))
 
         MISSION_SYNTAX = [
@@ -59,27 +60,9 @@ class OODFetchEnv(MiniGridEnv):
             **kwargs,
         )
 
-    def _calculate_probabilities(self):
-        """Calculate probabilities for undersampling one color."""
-        num_colors = len(self.color_names)
-        if self.undersampling_rate is None or self.undersampling_rate <= 0:
-            return [1 / float(num_colors)] * num_colors  # Uniform distribution
-
-        # Solve for x based on the equation 2x + x / undersampling_rate = 1
-        y = float(self.undersampling_rate)
-        x = y / (float(num_colors - 1) * y + 1)
-        probabilities = [x, x, x / y]
-        return probabilities
-
-    def _rand_color(self):
-        """Sample a color with custom probabilities."""
-        probabilities = self._calculate_probabilities()
-        return np.random.choice(self.color_names, p=probabilities)
-    
     def _rand_obj(self):
         """Sample a color with custom probabilities."""
-        probabilities = self._calculate_probabilities()
-        return np.random.choice([0, 1, 2], p=probabilities)
+        return np.random.choice([0, 1, 2], p=self.probs)
     @staticmethod
     def _gen_mission(syntax: str, color: str, obj_type: str):
         return f"{syntax} {color} {obj_type}"
@@ -101,8 +84,6 @@ class OODFetchEnv(MiniGridEnv):
         self.place_obj(obs_red)
         self.place_obj(obs_green)
         self.place_obj(obs_blue)
-        #     objs.append(obj)
-
         # Randomize the player start position and orientation
         self.place_agent()
         # Choose a random object to be picked up
@@ -337,10 +318,10 @@ class SpuriousFetchEnv(MiniGridEnv):
             max_steps=max_steps,
             **kwargs,
         )
-        # self.agent_pov = True
-        self.agent_pov = False
-        # self.metadata['render_fps'] = 2
-        self.metadata['render_fps'] = 10
+        self.agent_pov = True
+        # self.agent_pov = False
+        self.metadata['render_fps'] = 2
+        # self.metadata['render_fps'] = 10
 
     def _rand_color(self):
         """Sample a color with custom probabilities."""
