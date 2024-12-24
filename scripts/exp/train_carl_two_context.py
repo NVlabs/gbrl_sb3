@@ -120,7 +120,7 @@ if __name__ == '__main__':
             for proportion in proportions:
                 eval_context = default_context.copy()
                 eval_context[feature] = eval_context[feature] * proportion
-                eval_env = make_eval_carl_env(CONTEXT[env_name], eval_context, n_envs=1, env_kwargs=args.env_kwargs)
+                eval_env = make_eval_carl_env(CONTEXT[env_name], eval_context, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=CARLDummyVecEnvWithContext)
                 if args.wrapper == 'normalize':
                     eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)
                 callback_list.append(MultiEvalCallback(
