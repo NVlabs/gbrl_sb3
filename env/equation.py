@@ -68,7 +68,7 @@ class EquationEnv(gym.Env):
         prev_state = self.state.copy()
         state = self._gen_state(action)
         if state[0] == 0:
-            reward = 1
+            reward = 0.5
             terminated = True
         elif state[1] == 0:
             reward = 0.5
