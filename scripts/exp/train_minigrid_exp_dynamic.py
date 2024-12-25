@@ -60,15 +60,19 @@ OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 def change_target(env):
     if env.env.env.env.env.test_box_idx is None:
         env.env.env.env.env.test_box_idx = 0 
+        env.env.env.env.env.probs = np.array([0.7, 0.15, 0.15])
         print(f"Changed test_box_idx from None to Red ball")
     elif env.env.env.env.env.test_box_idx == 0:
         env.env.env.env.env.test_box_idx = 1
+        env.env.env.env.env.probs = np.array([0.15, 0.7, 0.15])
         print(f"Changed test_box_idx from Red ball to Green ball")
     elif env.env.env.env.env.test_box_idx == 1:
         env.env.env.env.env.test_box_idx = 2
+        env.env.env.env.env.probs = np.array([0.15, 0.15, 0.7])
         print(f"Changed test_box_idx from Green ball to Blue ball")
     else: 
         env.env.env.env.env.test_box_idx = None
+        env.env.env.env.env.probs = np.array([1.0, 1.0, 1.0]) / 3.0
         print(f"Changed test_box_idx from Blue Ball to None")
 
 if __name__ == '__main__':
@@ -93,6 +97,7 @@ if __name__ == '__main__':
     register_minigrid_tests()
     wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
+    args.env_kwargs['train'] = True
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
     if args.callback_kwargs is None:
@@ -110,6 +115,7 @@ if __name__ == '__main__':
     for i, ball_color in enumerate(['red', 'green', 'blue']):
         eval_env_kwargs = args.env_kwargs.copy()
         eval_env_kwargs['test_box_idx'] = i
+        eval_env_kwargs['train'] = False
         eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.wrapper == 'normalize':
             eval_env = VecNormalize(eval_env, **eval_wrapper_kwargs)

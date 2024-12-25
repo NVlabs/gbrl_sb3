@@ -23,7 +23,7 @@ import pygame
 
 
 class OODFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, probs: List[float] = [1, 1, 1], test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, probs: List[float] = [1, 1, 1], train: bool = True, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -38,6 +38,7 @@ class OODFetchEnv(MiniGridEnv):
         self.probs = np.array(probs)
         self.probs = self.probs / np.sum(self.probs)
         self.color_names = sorted(list(self.colors.keys()))
+        self.train = train
 
         MISSION_SYNTAX = [
             "get a"
@@ -87,7 +88,7 @@ class OODFetchEnv(MiniGridEnv):
         # Randomize the player start position and orientation
         self.place_agent()
         # Choose a random object to be picked up
-        if self.test_box_idx is None:
+        if self.test_box_idx is None or self.train:
             target = objs[self._rand_obj()]
         else:
             target = objs[self.test_box_idx]
