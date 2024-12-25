@@ -5,10 +5,10 @@ PyYAML==6.0.1
 rl_zoo3==2.1.0
 stable_baselines3==2.1.0
 sb3_contrib==2.1.0
-gymnasium_robotics<1.3.0
 wandb==0.16.0
 torch>=2.0.0
-mujoco-py==2.1.2.14
+gymnasium_robotics<1.3.0
+# mujoco-py==2.1.2.14
 minigrid==2.3.1
 gymnasium[atari]==0.29.1
 gymnasium[accept-rom-license]==0.29.1
