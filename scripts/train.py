@@ -37,7 +37,7 @@ from utils.helpers import (make_ram_atari_env,
                            make_highway_env)
 from env.wrappers import (CategoricalDummyVecEnv,
                           CategoricalObservationWrapper,
-                          MiniGridFlatObsWrapper,
+                          PointMazeObservationWrapper,
                           FlatObsWrapperWithDirection,
                           SepsisObservationWrapper,
                           HighWayWrapper)
@@ -124,7 +124,6 @@ if __name__ == '__main__':
         if args.evaluate:
             eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'mujoco' or args.env_type == 'gym':
-         
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
@@ -136,6 +135,14 @@ if __name__ == '__main__':
         env = make_carl_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
             eval_env = make_carl_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+    elif args.env_type == 'robotics':
+        import gymnasium as gym
+        import gymnasium_robotics
+        gym.register_envs(gymnasium_robotics)
+        wrapper_class = PointMazeObservationWrapper
+        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class)
+        if args.evaluate:
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class)
     elif args.env_type == 'sepsis':
         wrapper_class = SepsisObservationWrapper
         vec_env_cls = CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv

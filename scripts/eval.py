@@ -60,7 +60,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cuda')
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--checkpoint', type=str)
-    parser.add_argument('--n_eval_episodes', type=int, default=10)
+    parser.add_argument('--n_eval_episodes', type=int, default=50)
     # parser.add_argument('--n_eval_episodes', type=int, default=10000)
     parser.add_argument('--video_length', type=int, default=2000)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
@@ -68,8 +68,13 @@ if __name__ == '__main__':
     parser.add_argument('--last_checkpoint', action="store_true")
     parser.add_argument('--record', action="store_true")
     parser.add_argument('--render', action="store_true")
+    parser.add_argument('--eval_env_name', type=str)
+    parser.add_argument('--prefix', type=str, default='eval')
     parser.add_argument('--deterministic', action="store_true")
     args = parser.parse_args()
+
+    if args.eval_env_name is None:
+        args.eval_env_name = args.env_name
 
     model_fullname = args.model_name
     save_path = os.path.join(args.folder_path, args.env_type, args.env_name,args.algo_type)
@@ -100,9 +105,9 @@ if __name__ == '__main__':
         if args.env_type == "ocatari":
             make_ram_atari_env = make_ram_ocatari_env
             print("Using Ocatari environment")
-            vec_env_cls  = CategoricalDummyVecEnv if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_cls
-            vec_env_kwargs = {'is_mixed': True} if args.env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_kwargs
-        eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
+            vec_env_cls  = CategoricalDummyVecEnv if args.eval_env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_cls
+            vec_env_kwargs = {'is_mixed': True} if args.eval_env_name.split('-')[0] in MIXED_ATARI_ENVS and args.algo_type in CATEGORICAL_ALGOS else vec_env_kwargs
+        eval_env = make_ram_atari_env(args.eval_env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs) 
 
         if args.atari_wrapper_kwargs and 'frame_stack' in args.atari_wrapper_kwargs:
             eval_env = VecFrameStack(eval_env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
@@ -111,7 +116,7 @@ if __name__ == '__main__':
         register_minigrid_tests()
         wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
         vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-        eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
+        eval_env = make_vec_env(args.eval_env_name, n_envs=1, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
     elif args.env_type == 'football':
         try:
             from env.football import FootballGymSB3
@@ -119,12 +124,12 @@ if __name__ == '__main__':
             print("Could not find gfootball! please run pip install gfootball") 
         if args.env_kwargs is None:
             args.env_kwargs = {}
-        args.env_kwargs['env_name'] = args.env_name
+        args.env_kwargs['env_name'] = args.eval_env_name
         eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'mujoco' or args.env_type == 'gym':
-        eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+        eval_env = make_vec_env(args.eval_env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'carl':
-        eval_env = make_carl_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+        eval_env = make_carl_env(args.eval_env_name, n_envs=1, env_kwargs=args.env_kwargs)
     else:
         print("Invalid env_type!")
 
@@ -137,7 +142,7 @@ if __name__ == '__main__':
         video_path = ROOT_PATH  / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
         if not os.path.exists(video_path):
             os.makedirs(video_path, exist_ok=True)
-        eval_env = VecVideoRecorder(eval_env, video_folder=video_path, record_video_trigger=lambda x: x == 0, name_prefix=f'eval_{model_fullname}', video_length=args.video_length)
+        eval_env = VecVideoRecorder(eval_env, video_folder=video_path, record_video_trigger=lambda x: x == 0, name_prefix=f'{args.prefix}_{model_fullname}', video_length=args.video_length)
 
     # set_seed(args.seed)
     

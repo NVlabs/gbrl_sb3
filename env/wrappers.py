@@ -239,8 +239,7 @@ class CategoricalObservationWrapper(ObservationWrapper):
         else:
             env.is_categorical = True
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
-        
-         
+          
     def observation(self, observation):
         # Transform the observation in some way
         categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype if not self.is_mixed else object)
@@ -259,6 +258,20 @@ class CategoricalObservationWrapper(ObservationWrapper):
         if self.is_mixed:
             categorical_array[-3:] = observation['distances']
         return np.ascontiguousarray(categorical_array)
+
+    def reset(self, seed: int = None):
+        observation, info = self.env.reset(seed=seed)
+        return self.observation(observation), info
+    
+class PointMazeObservationWrapper(ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.flattened_shape = 6
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
+         
+    def observation(self, obs): 
+        full_obs = np.concatenate([obs['observation'], obs['desired_goal'] - obs['achieved_goal']], axis=0)
+        return np.ascontiguousarray(full_obs)
 
     def reset(self, seed: int = None):
         observation, info = self.env.reset(seed=seed)
