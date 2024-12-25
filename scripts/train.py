@@ -43,6 +43,7 @@ from env.wrappers import (CategoricalDummyVecEnv,
                           HighWayWrapper)
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
+from env.equation import register_equation_tests
 
 warnings.filterwarnings("ignore")
 
@@ -124,6 +125,11 @@ if __name__ == '__main__':
         if args.evaluate:
             eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'mujoco' or args.env_type == 'gym':
+        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        if args.evaluate:
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+    elif args.env_type == 'equation':
+        register_equation_tests()
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
