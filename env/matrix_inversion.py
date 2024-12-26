@@ -31,22 +31,45 @@ class MatrixInversionEnv(gym.Env):
         self.max_steps = 50
 
     def generate_valid_matrix(self):
-        matrix = np.eye(self.N)
-        for _ in range(5):  # Random row operations
-            operation = np.random.choice(['swap', 'scale', 'add'])
-            row1, row2 = np.random.choice(self.N, size=2, replace=False)
-            scalar = np.random.choice(self.scalar_values)
-            
-            if operation == 'swap':
-                matrix[[row1, row2]] = matrix[[row2, row1]]
-            elif operation == 'scale' and scalar != 0:
-                matrix[row1] *= scalar
-            elif operation == 'add' and row1 != row2:
-                matrix[row1] += matrix[row2]
+        """
+        Generate a valid invertible matrix by applying meaningful, non-redundant Gaussian elimination operations.
+        """
+        matrix = np.eye(self.N)  # Start with an identity matrix
+        self.creation_steps = []  # Log steps for optimal inversion
         
-        if np.linalg.det(matrix) == 0:
-            return self.generate_valid_matrix()
-        return matrix
+        used_scalars = set()
+        used_swaps = set()
+        
+        # Step 1: Apply N scaling operations
+        for i in range(self.N):
+            scalar = np.random.choice(self.scalar_values)
+            if scalar != 1 and scalar not in used_scalars:
+                matrix[i] *= scalar
+                self.creation_steps.append(('scale', i, None, scalar))
+                used_scalars.add(scalar)
+        
+            # Step 2: Apply N-1 swap operations
+            for i in range(self.N - 1):
+                row1, row2 = i, i + 1
+                if (row1, row2) not in used_swaps:
+                    matrix[[row1, row2]] = matrix[[row2, row1]]
+                    self.creation_steps.append(('swap', row1, row2, None))
+                    used_swaps.add((row1, row2))
+            
+            # Step 3: Apply N(N-1)/2 meaningful row addition operations
+            for i in range(self.N):
+                for j in range(i + 1, self.N):
+                    scalar = np.random.choice(self.scalar_values)
+                    if scalar != 0:
+                        matrix[j] += scalar * matrix[i]
+                        self.creation_steps.append(('add', j, i, scalar))
+            
+            # Step 4: Validate Invertibility
+            if np.linalg.det(matrix) == 0:
+                return self.generate_valid_matrix()
+            
+            self.optimal_steps = len(self.creation_steps)
+            return matrix
     
     def _get_state(self):
         return self.augmented_matrix.flatten()
@@ -73,18 +96,13 @@ class MatrixInversionEnv(gym.Env):
             if row1 != row2:
                 self.augmented_matrix[row1] += scalar * self.augmented_matrix[row2]
 
-        
         # Calculate Reward
         left_matrix = self.augmented_matrix[:, :self.N]
-        progress_error = np.linalg.norm(left_matrix.flatten() - np.eye(self.N).flatten())
-        reward = np.exp(-progress_error)  # Closer to identity → higher reward - 0.9 * (self.step_count / self.max_steps)
-        
         # Check Termination and Truncation
         terminated = np.allclose(left_matrix, np.eye(self.N), atol=1e-2)
         truncated = self.step_count >= self.max_steps
-        
-        if terminated:
-            reward += 1  - 0.9 * (self.step_count  / self.max_steps)  # Success bonus
+        reward = np.exp(-np.linalg.norm(left_matrix.flatten() - np.eye(self.N).flatten()) -0.9 * (self.step_count  / self.optimal_steps))
+        # print(reward)
         
         return self._get_state(), reward, terminated, truncated, {}
 
@@ -102,5 +120,29 @@ def register_mat_inv_tests():
         id="mat_inv-3-v0",
         entry_point="env.matrix_inversion:MatrixInversionEnv",
         kwargs={'N': 3},
+    )
+    
+    register(
+        id="mat_inv-4-v0",
+        entry_point="env.matrix_inversion:MatrixInversionEnv",
+        kwargs={'N': 4},
+    )
+    
+    register(
+        id="mat_inv-5-v0",
+        entry_point="env.matrix_inversion:MatrixInversionEnv",
+        kwargs={'N': 5},
+    )
+    
+    register(
+        id="mat_inv-6-v0",
+        entry_point="env.matrix_inversion:MatrixInversionEnv",
+        kwargs={'N': 6},
+    )
+    
+    register(
+        id="mat_inv-7-v0",
+        entry_point="env.matrix_inversion:MatrixInversionEnv",
+        kwargs={'N': 7},
     )
     
