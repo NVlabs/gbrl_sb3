@@ -143,7 +143,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'robotics', 'gym', 'mujoco', 'football', 'openspiel', 'bsuite', 'highway', 'carl', 'extrapolation', 'sepsis', 'equation', 'warehouse_sorting']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'robotics', 'gym', 'mujoco', 'football', 'openspiel', 'bsuite', 'highway', 'carl', 'extrapolation', 'sepsis', 'equation', 'warehouse_sorting', 'matrix_inv']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -335,7 +335,8 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'minigrid'
     # args.env_type = args.env_type if args.env_type else 'robotics'
     # args.env_type = args.env_type if args.env_type else 'equation'
-    args.env_type = args.env_type if args.env_type else 'warehouse_sorting'
+    # args.env_type = args.env_type if args.env_type else 'warehouse_sorting'
+    args.env_type = args.env_type if args.env_type else 'matrix_inv'
     # args.env_type = args.env_type if args.env_type else 'football'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'openspiel'
@@ -377,7 +378,8 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'PointMaze_Medium_Diverse_GRDense-v3'
     # args.env_name = args.env_name if args.env_name else 'PointMaze_Large_Diverse_GRDense-v3'
     # args.env_name = args.env_name if args.env_name else 'Equation-v0'
-    args.env_name = args.env_name if args.env_name else 'warehousesorting-3-v0'
+    # args.env_name = args.env_name if args.env_name else 'warehousesorting-3-v0'
+    args.env_name = args.env_name if args.env_name else 'mat_inv-2-v0'
     # args.env_name = args.env_name if args.env_name else 'academy_empty_goal'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
