@@ -127,9 +127,10 @@ class ActorCriticPolicy(BasePolicy):
         self.value_net = None
 
         self.logits_dim = get_action_dim(action_space)
-        self.discrete = isinstance(action_space, gym.spaces.Discrete)
-        if self.discrete:
+        if isinstance(action_space, gym.spaces.Discrete):
             self.logits_dim = self.logits_dim*action_space.n
+        elif isinstance(action_space, gym.spaces.MultiDiscrete):
+            self.logits_dim = action_space.nvec.sum()
 
         self.features_extractor = features_extractor_class(self.observation_space, **self.features_extractor_kwargs)
         self.features_dim = self.features_extractor.features_dim
@@ -228,11 +229,9 @@ class ActorCriticPolicy(BasePolicy):
         elif isinstance(self.action_dist, MaskableCategoricalDistribution):
             return self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, MultiCategoricalDistribution):
-            # Here mean_actions are the flattened logits
-            return self.action_dist.proba_distribution(action_logits=mean_actions)
+            return self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, BernoulliDistribution):
-            # Here mean_actions are the logits (before rounding to get the binary actions)
-            return self.action_dist.proba_distribution(action_logits=mean_actions)
+            return self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, StateDependentNoiseDistribution):
             raise NotImplementedError
             # return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
