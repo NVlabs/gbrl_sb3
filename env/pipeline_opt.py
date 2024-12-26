@@ -20,7 +20,7 @@ class PipelineSchedulingEnv(gym.Env):
     to minimize makespan.
     Supports parallel task scheduling with clear distinction between scheduled, running, and completed tasks.
     """
-    def __init__(self, n_tasks=5, max_resources=10, max_duration=10):
+    def __init__(self, n_tasks=8, max_resources=10, max_duration=10):
         super(PipelineSchedulingEnv, self).__init__()
         
         self.n_tasks = n_tasks
@@ -38,6 +38,7 @@ class PipelineSchedulingEnv(gym.Env):
             shape=(5 * self.n_tasks + 2,),
             dtype=np.float32
         )
+        
         
     def _generate_tasks(self):
         """Generate task properties and dependency graph."""
@@ -84,6 +85,7 @@ class PipelineSchedulingEnv(gym.Env):
         self.scheduled_tasks = set()
         self.running_tasks = set()
         self.completed_tasks = set()
+        self.rewarded_tasks = set()
         self.invalid_actions = 0
         return self._get_observation(), {}
     
@@ -98,9 +100,7 @@ class PipelineSchedulingEnv(gym.Env):
         
         if current_resource_usage > self.resources_available:
             # Invalid due to resource constraint, early termination
-            self.invalid_actions += 1
             terminated = True
-            reward -= 1
         else:
             for task in selected_tasks:
                 if task in self.scheduled_tasks or task in self.running_tasks or task in self.completed_tasks:
@@ -113,9 +113,8 @@ class PipelineSchedulingEnv(gym.Env):
                     self.running_tasks.add(task)
                     self.resources_available -= self.task_resources[task]
                 else:
-                    self.invalid_actions += 1
                     terminated = True
-                    reward -= 1
+
         
         # Update running tasks
         tasks_to_complete = set()
@@ -127,14 +126,15 @@ class PipelineSchedulingEnv(gym.Env):
         for task in tasks_to_complete:
             self.running_tasks.remove(task)
             self.completed_tasks.add(task)
-            reward += 1 / self.n_tasks  # Reward only for completed tasks
+            if task not in self.rewarded_tasks:
+                reward += 1 / self.n_tasks  # Reward only for completed tasks
+                self.rewarded_tasks.add(task)
         
         self.time_remaining -= 1
         
         if len(self.completed_tasks) == self.n_tasks:
             terminated = True
-            makespan_penalty = self.max_duration * self.n_tasks - self.time_remaining
-            reward += np.exp(-0.1 * makespan_penalty - 0.5 * self.invalid_actions)
+            # makespan_penalty = self.max_duration * self.n_tasks - self.time_remaining
         
         if self.time_remaining <= 0:
             truncated = True
