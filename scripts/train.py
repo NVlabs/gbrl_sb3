@@ -44,6 +44,7 @@ from env.wrappers import (CategoricalDummyVecEnv,
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
 from env.equation import register_equation_tests
+from env.warehouse_sorting import register_warehouse_sorting_tests
 
 warnings.filterwarnings("ignore")
 
@@ -130,6 +131,11 @@ if __name__ == '__main__':
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'equation':
         register_equation_tests()
+        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        if args.evaluate:
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+    elif args.env_type == 'warehouse_sorting':
+        register_warehouse_sorting_tests()
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
