@@ -24,15 +24,15 @@ class WarehouseSortingEnv(gym.Env):
 
         # actions are add/ subtract/ divide/ multiply and multiply by -1
         
-        self.action_space = spaces.Discrete(n_items) 
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=((self.n_features + 1) * n_items, ), dtype=float)
-        self.item_idx = 0
+        self.action_space = spaces.MultiDiscrete([n_items, n_items])
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=((self.n_features) * n_items, ), dtype=float)
         self.n_items = n_items
+        self.max_steps = 50
 
     
     def reset(self, seed=None, options=None):
         """Reset the environment to the initial state."""
-        self.item_idx = 0
+        self.step_count = 0
         items = []
         for i in range(self.n_items):
                 deadline = np.random.choice([1, 2, 3])
@@ -52,42 +52,56 @@ class WarehouseSortingEnv(gym.Env):
         self.sorted_indices = [item[0] + 1 for item in sorted_items]
         # Extract attributes without the original index for state representation
         item_attributes = [list(item[1:]) for item in items]
-        item_attributes = np.array(item_attributes).flatten()
-        active_index = np.zeros(self.n_items)
-        active_index[self.item_idx] = 1
-        self.state = np.concatenate([item_attributes, active_index], axis=0)
+        self.state = np.array(item_attributes).flatten()
+
+        self.wasted_actions = 0
+        
+        # Track assigned items and priorities
+        self.assigned_actions = set()
         return self.state, {}
     
-    def _gen_state(self, action):
+    def _gen_state(self, priority, item_idx):
         state = self.state.copy()
-        priority_idx = self.item_idx * self.n_features + self.features.index('priority')
-        state[priority_idx] = action + 1
-        # deactivate current active item
-        state[self.n_items*self.n_features + self.item_idx] = 0 
-        self.item_idx += 1
+        priority_idx = item_idx * self.n_features + self.features.index('priority')
+        state[priority_idx] = priority + 1
         return state
+    
+
+
+    def _calculate_reward(self):
+        """Evaluate correctness and penalize inefficiency."""
+        correct_count = 0
+        for i in range(self.n_items):
+            priority_idx = i * self.n_features + self.features.index('priority')
+            assigned_priority = self.state[priority_idx]
+            optimal_priority = self.sorted_indices[i]
+            if assigned_priority == optimal_priority:
+                correct_count += 1
+        
+        # Reward formula
+        reward = np.exp(-np.linalg.norm(correct_count - self.n_items) - 0.9 * self.step_count / self.max_steps - 0.5 * self.wasted_actions)
+        terminated = correct_count == self.n_items
+        return reward, terminated
 
     def step(self, action):
         """Take an action and return the next state, reward, and done flag."""
-        reward = 0
-        terminated = False 
-        truncated = False
-        info = {}
+        priority, item_idx = action
 
-        state = self._gen_state(action)
+        action_hash = (item_idx, priority)
 
-        if self.item_idx >= self.n_items:
-            terminated = True
-            for i in range(self.n_items):
-                priority_idx = i * self.n_features + self.features.index('priority')
-                priority = state[priority_idx]
-                if priority == self.sorted_indices[i]:
-                    reward += 1.0 / self.n_items
-        else: 
-            active_idx = self.n_items*self.n_features + self.item_idx
-            state[active_idx] = 1
-        self.state = state
-        return state, reward, terminated, truncated, info
+        if action_hash in self.assigned_actions:
+            self.wasted_actions += 1 
+
+        self.state = self._gen_state(priority, item_idx)
+        reward, terminated = self._calculate_reward()
+
+        self.step_count += 1
+
+        self.assigned_actions.add(action_hash)
+
+        truncated = self.step_count >= self.max_steps
+        
+        return self.state, reward, terminated, truncated, {}
     
 
 def register_warehouse_sorting_tests():
