@@ -79,7 +79,8 @@ class WarehouseSortingEnv(gym.Env):
                 correct_count += 1
         
         # Reward formula
-        reward = np.exp(-np.linalg.norm(correct_count - self.n_items) - 0.9 * self.step_count / self.max_steps - 0.5 * self.wasted_actions)
+        # reward = np.exp(-np.linalg.norm(correct_count - self.n_items) - 0.9 * self.step_count / self.max_steps - 0.5 * self.wasted_actions)
+        reward = correct_count/self.n_items - 0.9 * self.step_count / self.max_steps - 0.5 * self.wasted_actions
         terminated = correct_count == self.n_items
         return reward, terminated
 
