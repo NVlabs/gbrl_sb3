@@ -11,6 +11,7 @@ import gymnasium.spaces as spaces
 import numpy as np
 import networkx as nx
 from gymnasium.envs.registration import register
+import random
 
 
 class PipelineSchedulingEnv(gym.Env):
@@ -20,7 +21,7 @@ class PipelineSchedulingEnv(gym.Env):
     to minimize makespan.
     Supports parallel task scheduling with clear distinction between scheduled, running, and completed tasks.
     """
-    def __init__(self, n_tasks=8, max_resources=10, max_duration=10):
+    def __init__(self, n_tasks=5, max_resources=10, max_duration=10):
         super(PipelineSchedulingEnv, self).__init__()
         
         self.n_tasks = n_tasks
@@ -42,25 +43,55 @@ class PipelineSchedulingEnv(gym.Env):
         
     def _generate_tasks(self):
         """Generate task properties and dependency graph."""
-        valid_resources = False
-        while not valid_resources:
-            self.task_durations = np.random.randint(1, self.max_duration + 1, size=self.n_tasks)
-            self.task_resources = np.random.randint(1, self.max_resources // 2, size=self.n_tasks)
+        # valid_resources = False
+        # while not valid_resources:
+        self.task_durations = np.random.randint(1, self.max_duration + 1, size=self.n_tasks)
+        self.task_resources = np.random.randint(1, self.max_resources // 2, size=self.n_tasks)
             
-            # Ensure total resource feasibility
-            if np.sum(self.task_resources) <= self.max_resources:
-                valid_resources = True
+            # # Ensure total resource feasibility
+            # if np.sum(self.task_resources) <= self.max_resources:
+            #     valid_resources = True
+            # print(valid_resources)
         
-        # Generate random dependencies (ensure DAG)
-        self.task_dependencies = nx.DiGraph()
-        self.task_dependencies.add_nodes_from(range(self.n_tasks))
-        for i in range(self.n_tasks):
-            for j in range(i+1, self.n_tasks):
-                if np.random.rand() > 0.5:
-                    self.task_dependencies.add_edge(i, j)
+        # # Generate random dependencies (ensure DAG)
+        # self.task_dependencies = nx.DiGraph()
+        # self.task_dependencies.add_nodes_from(range(self.n_tasks))
+        # for i in range(self.n_tasks):
+        #     for j in range(i+1, self.n_tasks):
+        #         if np.random.rand() > 0.5:
+        # print('gothere')
+        #             self.task_dependencies.add_edge(i, j)
+        self.task_dependencies = self.generate_random_dag()
         
         if not nx.is_directed_acyclic_graph(self.task_dependencies):
-            self._generate_tasks()
+            # self._generate_tasks()
+            self.task_dependencies = self.generate_random_dag()
+        # self.print_dependencies()
+
+    def generate_random_dag(self, edge_probability=0.5):
+            """
+            Generates a random DAG using topological sort.
+
+            Args:
+                n_tasks: Number of tasks.
+                edge_probability: Probability of creating an edge between two nodes.
+
+            Returns:
+                A networkx DiGraph object representing the DAG.
+            """
+            G = nx.DiGraph()
+            G.add_nodes_from(range(self.n_tasks))
+
+            # Generate a random topological order
+            topological_order = list(range(self.n_tasks))
+            random.shuffle(topological_order)
+
+            for i, source in enumerate(topological_order):
+                for j in range(i + 1, self.n_tasks):
+                    if np.random.rand() < edge_probability:
+                        G.add_edge(source, topological_order[j])
+
+            return G
     
     def _get_observation(self):
         """Construct observation vector."""
@@ -77,10 +108,23 @@ class PipelineSchedulingEnv(gym.Env):
         obs.append(self.time_remaining)
         obs.append(self.resources_available)
         return np.array(obs, dtype=np.float32)
+
+    def print_dependencies(self):
+        """
+        Prints the dependencies in a readable format.
+
+        Args:
+            dependencies: The networkx DiGraph object representing task dependencies.
+        """
+        for node in self.task_dependencies.nodes():
+            predecessors = list(self.task_dependencies.predecessors(node))
+            if predecessors:
+                print(f"Task {node} depends on: {predecessors}")
     
     def reset(self, seed=None, options=None):
         self._generate_tasks()
-        self.time_remaining = self.max_duration * self.n_tasks
+        # self.time_remaining = self.max_duration * self.n_tasks * 0.3
+        self.time_remaining = self.max_duration * 2
         self.resources_available = self.max_resources
         self.scheduled_tasks = set()
         self.running_tasks = set()
@@ -100,6 +144,7 @@ class PipelineSchedulingEnv(gym.Env):
         
         if current_resource_usage > self.resources_available:
             # Invalid due to resource constraint, early termination
+            reward = -1
             terminated = True
         else:
             for task in selected_tasks:
@@ -113,6 +158,7 @@ class PipelineSchedulingEnv(gym.Env):
                     self.running_tasks.add(task)
                     self.resources_available -= self.task_resources[task]
                 else:
+                    reward = -1
                     terminated = True
 
         
@@ -126,18 +172,12 @@ class PipelineSchedulingEnv(gym.Env):
         for task in tasks_to_complete:
             self.running_tasks.remove(task)
             self.completed_tasks.add(task)
-            if task not in self.rewarded_tasks:
-                reward += 1 / self.n_tasks  # Reward only for completed tasks
-                self.rewarded_tasks.add(task)
         
         self.time_remaining -= 1
-        
-        if len(self.completed_tasks) == self.n_tasks:
-            terminated = True
-            # makespan_penalty = self.max_duration * self.n_tasks - self.time_remaining
-        
+    
         if self.time_remaining <= 0:
-            truncated = True
+            reward = len(self.completed_tasks) / self.n_tasks
+            terminated = True
         
         return self._get_observation(), reward, terminated, truncated, info
     
@@ -159,4 +199,19 @@ def register_pipeline_opt_tests():
         id="pipeline-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
         kwargs={'n_tasks': 5, 'max_resources': 10, 'max_duration': 10},
+    )
+    register(
+        id="pipeline-large-v0",
+        entry_point="env.pipeline_opt:PipelineSchedulingEnv",
+        kwargs={'n_tasks': 10, 'max_resources': 10, 'max_duration': 10},
+    )
+    register(
+        id="pipeline-low-v0",
+        entry_point="env.pipeline_opt:PipelineSchedulingEnv",
+        kwargs={'n_tasks': 10, 'max_resources': 5, 'max_duration': 10},
+    )
+    register(
+        id="pipeline-large-low-v0",
+        entry_point="env.pipeline_opt:PipelineSchedulingEnv",
+        kwargs={'n_tasks': 10, 'max_resources': 5, 'max_duration': 10},
     )
