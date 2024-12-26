@@ -75,6 +75,10 @@ class EquationEnv(gym.Env):
         # elif prev_state[1] == 0 and state[1] == 0:  # Repeating an invalid step
         #     terminated = True
 
+        if np.isnan(state).any() or np.isinf(state).any():
+            reward = -1
+            terminated = True
+            
         if state[0] == 0:
             terminated = True
 
