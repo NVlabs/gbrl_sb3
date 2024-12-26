@@ -54,13 +54,13 @@ class MatrixInversionEnv(gym.Env):
     def reset(self, seed=None, options=None):
         self.base_matrix = self.generate_valid_matrix()
         self.augmented_matrix = np.hstack((self.base_matrix, np.eye(self.N)))
-        self.n_steps = 0
+        self.step_count = 0
         return self._get_state(), {}
     
     def step(self, action):
         operation, row1, row2, scalar_idx = action
         scalar = self.scalar_values[scalar_idx]
-        self.n_steps += 1
+        self.step_count += 1
         
         # Apply row operations on the augmented matrix
         if operation == 0:  # Swap Rows
@@ -76,15 +76,15 @@ class MatrixInversionEnv(gym.Env):
         
         # Calculate Reward
         left_matrix = self.augmented_matrix[:, :self.N]
-        progress_error = np.linalg.norm(left_matrix - np.eye(self.N))
-        reward = -progress_error  # Closer to identity → higher reward
+        progress_error = np.linalg.norm(left_matrix.flatten() - np.eye(self.N).flatten())
+        reward = np.exp(-progress_error)  # Closer to identity → higher reward - 0.9 * (self.step_count / self.max_steps)
         
         # Check Termination and Truncation
         terminated = np.allclose(left_matrix, np.eye(self.N), atol=1e-2)
-        truncated = self.n_steps >= self.max_steps
+        truncated = self.step_count >= self.max_steps
         
         if terminated:
-            reward += 100  # Success bonus
+            reward += 1  - 0.9 * (self.step_count  / self.max_steps)  # Success bonus
         
         return self._get_state(), reward, terminated, truncated, {}
 
