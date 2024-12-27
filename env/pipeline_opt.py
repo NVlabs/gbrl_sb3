@@ -211,6 +211,7 @@ class PipelineSchedulingEnv(gym.Env):
         self.task_types = ['CPU', 'IO', 'MEMORY']
         self.one_hot_task_types = one_hot_task_types
         self.is_mixed = not one_hot_task_types
+        self.max_steps = 50
 
         # Action space: For each of the n_tasks, pick (0 or 1) -> schedule or not
         self.action_space = spaces.MultiBinary(self.n_tasks)
@@ -315,8 +316,41 @@ class PipelineSchedulingEnv(gym.Env):
         self.scheduled_tasks = set()
         self.running_tasks = set()
         self.completed_tasks = set()
-        
+        self.step_count = 0
         return self._get_observation(), {}
+
+    def compute_synergy_conflict_adjustment(self, selected_tasks_types):
+        """
+        selected_tasks_types: list of strings like ['CPU', 'MEMORY', 'CPU', 'IO', ...]
+
+        Returns a single integer or float that you add/subtract from base resource usage.
+        Positive => conflict overhead, Negative => synergy savings.
+        """
+        # Count the number of each type
+        count_cpu = selected_tasks_types.count('CPU')
+        count_mem = selected_tasks_types.count('MEMORY')
+        count_io  = selected_tasks_types.count('IO')
+        # If you have more types, just do more counts (e.g. 'GPU', 'DISK', etc.)
+        # Start with no adjustment
+        total_adjustment = 0
+        # 1) Conflict if multiple CPU tasks run together
+        #    e.g. if we have 2 CPU tasks => +3 resources, 
+        #    or increment for each CPU > 1. Up to you!
+        if (count_cpu >=1 and count_mem >=1 and count_io >=1):
+            # For example, add +2 conflict
+            total_adjustment += 3
+        elif (count_cpu >=1 and count_mem >=1):
+            total_adjustment -= 2
+        elif (count_cpu >=1 and count_io >=1):
+            total_adjustment += 2
+        elif count_cpu >=1:
+            total_adjustment += 1
+        elif count_mem >=1:
+            total_adjustment += 1
+        elif count_io >=1:
+            total_adjustment += 1
+      
+        return total_adjustment
 
     def step(self, action):
         """
@@ -331,60 +365,38 @@ class PipelineSchedulingEnv(gym.Env):
         reward = 0
         terminated = False
         truncated = False
+        self.step_count += 1
         info = {}
-
+    
         # 1) Filter out tasks that are already completed or already running
         #    We'll treat them as "invalid requests" if the agent tries again.
         valid_new_tasks = []
         for task_i in chosen_tasks:
-            if task_i in self.completed_tasks:
-                # reward -= 0.1  # penalty: task is already completed
-                terminated = True
-            elif task_i in self.running_tasks:
-                # reward -= 0.1  # penalty: task is already running
-                terminated = True
-            else:
-                # Check DAG dependencies
+            if task_i not in self.completed_tasks and task_i not in self.running_tasks:
                 deps_ok = all(d in self.completed_tasks 
                             for d in self.task_dependencies.predecessors(task_i))
-                if not deps_ok:
-                    # reward -= 0.1  # penalty: unmet dependencies
-                    terminated = True
-                else:
-                    # This is a genuinely "new" valid scheduling request
+                if deps_ok:
                     valid_new_tasks.append(task_i)
-        
+        resource_adjustment = self.compute_synergy_conflict_adjustment([self.task_types_list[i] for i in valid_new_tasks])
         # 2) Summation-based resource check
         #    Current usage from tasks that are already running:
         current_usage = sum(self.task_resources[t] for t in self.running_tasks)
         #    Additional usage from newly requested tasks:
         new_usage = sum(self.task_resources[t] for t in valid_new_tasks)
         
-        total_usage_if_scheduled = current_usage + new_usage
+        total_usage_if_scheduled = current_usage + new_usage + resource_adjustment
 
         if new_usage > 0:  # i.e., at least one new task is requested
-            if total_usage_if_scheduled > self.resources_available:
-                # 3A) If the sum exceeds available resources, penalize
-                # reward -= 0.2  
-                terminated = True
-                # Possibly skip scheduling them entirely
-                # valid_new_tasks = []
-                # Or you could do partial scheduling logic if you want
-            else:
-                # 3B) Otherwise, schedule them all
+            if total_usage_if_scheduled <= self.resources_available:
                 for task_i in valid_new_tasks:
                     self.running_tasks.add(task_i)
                     # Deduct the resource usage for each
                     self.resources_available -= self.task_resources[task_i]
         else:
-            # If agent didn't choose any valid tasks at all
-            # maybe truncated or some penalty
-            if len(chosen_tasks) == 0:
+            if len(valid_new_tasks) == 0:
                 truncated = True
                 reward -= 0.1
-
-        # 4) Now decrement durations of running tasks by min_duration
-        #    (Same logic you already have)
+                
         if self.running_tasks:
             min_duration = min(self.task_durations[t] for t in self.running_tasks)
         else:
@@ -411,6 +423,9 @@ class PipelineSchedulingEnv(gym.Env):
             terminated = True
         elif self.time_remaining <= 0:
             terminated = True
+        
+        if self.step_count >= self.max_steps:
+            truncated = True
 
         if terminated and not truncated:
             reward += self._compute_final_reward()
