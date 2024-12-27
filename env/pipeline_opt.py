@@ -338,15 +338,18 @@ class PipelineSchedulingEnv(gym.Env):
         valid_new_tasks = []
         for task_i in chosen_tasks:
             if task_i in self.completed_tasks:
-                reward -= 0.1  # penalty: task is already completed
+                # reward -= 0.1  # penalty: task is already completed
+                terminated = True
             elif task_i in self.running_tasks:
-                reward -= 0.1  # penalty: task is already running
+                # reward -= 0.1  # penalty: task is already running
+                terminated = True
             else:
                 # Check DAG dependencies
                 deps_ok = all(d in self.completed_tasks 
                             for d in self.task_dependencies.predecessors(task_i))
                 if not deps_ok:
-                    reward -= 0.1  # penalty: unmet dependencies
+                    # reward -= 0.1  # penalty: unmet dependencies
+                    terminated = True
                 else:
                     # This is a genuinely "new" valid scheduling request
                     valid_new_tasks.append(task_i)
@@ -362,7 +365,8 @@ class PipelineSchedulingEnv(gym.Env):
         if new_usage > 0:  # i.e., at least one new task is requested
             if total_usage_if_scheduled > self.resources_available:
                 # 3A) If the sum exceeds available resources, penalize
-                reward -= 0.2  
+                # reward -= 0.2  
+                terminated = True
                 # Possibly skip scheduling them entirely
                 # valid_new_tasks = []
                 # Or you could do partial scheduling logic if you want
