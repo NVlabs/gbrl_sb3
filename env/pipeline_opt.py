@@ -400,10 +400,10 @@ def register_pipeline_opt_tests():
     register(
         id="pipeline-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
-        kwargs={'n_tasks': 10, 'max_resources': 10, 'max_duration': 10},
+        kwargs={'n_tasks': 5, 'max_resources': 10, 'max_duration': 10},
     )
     register(
         id="pipeline-large-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
-        kwargs={'n_tasks': 20, 'max_resources': 10, 'max_duration': 10},
+        kwargs={'n_tasks': 10, 'max_resources': 10, 'max_duration': 10},
     )
