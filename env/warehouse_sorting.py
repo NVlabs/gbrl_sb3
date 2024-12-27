@@ -92,6 +92,7 @@ class WarehouseSortingEnv(gym.Env):
         priority, item_idx = action
         action_hash = (item_idx, priority)
         reward = 0
+        truncated = False
         
         if action_hash in self.assigned_actions:
             truncated = True
