@@ -240,20 +240,13 @@ class PipelineSchedulingEnv(gym.Env):
         self.task_types_list = random.choices(self.task_types, k=self.n_tasks)
         # Enforce some correlations
         for i, task_type in enumerate(self.task_types_list):
+            self.task_durations[i] = np.random.randint(1, self.max_duration)
             if task_type == 'CPU':
-                self.task_durations[i] = np.random.randint(1, max(1, self.max_duration // 2))
-                self.task_cpu_resources[i] = np.random.randint(1, max(1, self.max_resources // 3))
+                self.task_cpu_resources[i] = np.random.randint(1, self.max_resources)
             elif task_type == 'IO':
-                self.task_durations[i] = np.random.randint(
-                    max(1, self.max_duration // 2), self.max_duration
-                )
-                self.task_io_resources[i] = np.random.randint(
-                    max(1, self.max_resources // 4), max(1, self.max_resources // 2)
-                )
+                self.task_io_resources[i] = np.random.randint(1, self.max_resources)
             elif task_type == 'MEMORY':
-                self.task_mem_resources[i] = np.random.randint(
-                    max(1, self.max_resources // 2), self.max_resources
-                )
+                self.task_mem_resources[i] = np.random.randint(1, self.max_resources)
 
     def _get_observation(self):
         """Flattened observation of task states + global state."""
@@ -289,7 +282,7 @@ class PipelineSchedulingEnv(gym.Env):
         super().reset(seed=seed)
         self._generate_tasks()
         
-        self.time_remaining = sum(self.task_durations)
+        self.time_remaining = 25
         self.cpu_available = self.max_resources
         self.mem_available = self.max_resources
         self.io_available = self.max_resources
@@ -401,5 +394,5 @@ def register_pipeline_opt_tests():
     register(
         id="pipeline-large-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
-        kwargs={'n_tasks': 20, 'max_resources': 15, 'max_duration': 10},
+        kwargs={'n_tasks': 50, 'max_resources': 6, 'max_duration': 4},
     )
