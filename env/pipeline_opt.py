@@ -233,20 +233,20 @@ class PipelineSchedulingEnv(gym.Env):
         # Duration: Pareto, then clamp
         self.task_durations = np.zeros(self.n_tasks)
         # Resource usage: normal around max_resources/3, clamp
-        self.task_cpu_resources = np.zeros(self.n_tasks)
-        self.task_io_resources = np.zeros(self.n_tasks)
-        self.task_mem_resources = np.zeros(self.n_tasks)
+        self.task_cpu_resources = np.ones(self.n_tasks)
+        self.task_io_resources = np.ones(self.n_tasks)
+        self.task_mem_resources = np.ones(self.n_tasks)
         # Assign task types randomly
         self.task_types_list = random.choices(self.task_types, k=self.n_tasks)
         # Enforce some correlations
         for i, task_type in enumerate(self.task_types_list):
             self.task_durations[i] = np.random.randint(1, self.max_duration)
-            if task_type == 'CPU':
-                self.task_cpu_resources[i] = np.random.randint(1, self.max_resources)
-            elif task_type == 'IO':
-                self.task_io_resources[i] = np.random.randint(1, self.max_resources)
-            elif task_type == 'MEMORY':
-                self.task_mem_resources[i] = np.random.randint(1, self.max_resources)
+        #     if task_type == 'CPU':
+        #         self.task_cpu_resources[i] = np.random.randint(1, self.max_resources)
+        #     elif task_type == 'IO':
+        #         self.task_io_resources[i] = np.random.randint(1, self.max_resources)
+        #     elif task_type == 'MEMORY':
+        #         self.task_mem_resources[i] = np.random.randint(1, self.max_resources)
 
     def _get_observation(self):
         """Flattened observation of task states + global state."""
@@ -309,6 +309,13 @@ class PipelineSchedulingEnv(gym.Env):
         count_cpu = running_task_types.count('CPU')
         count_mem = running_task_types.count('MEMORY')
         count_io  = running_task_types.count('IO')
+
+        if count_cpu == 0:
+            self.cpu_available = self.max_resources
+        if count_mem == 0:
+            self.mem_available = self.max_resources
+        if count_io == 0:
+            self.io_available = self.max_resources
 
         if action != self.n_tasks and action not in self.completed_tasks and action not in self.running_tasks:
             valid_task = False
@@ -389,7 +396,7 @@ def register_pipeline_opt_tests():
     register(
         id="pipeline-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
-        kwargs={'n_tasks': 30, 'max_resources': 6, 'max_duration': 4},
+        kwargs={'n_tasks': 30, 'max_resources': 8, 'max_duration': 4},
     )
     register(
         id="pipeline-large-v0",
