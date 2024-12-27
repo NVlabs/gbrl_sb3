@@ -396,7 +396,7 @@ def register_pipeline_opt_tests():
     register(
         id="pipeline-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
-        kwargs={'n_tasks': 30, 'max_resources': 8, 'max_duration': 4},
+        kwargs={'n_tasks': 40, 'max_resources': 8, 'max_duration': 4},
     )
     register(
         id="pipeline-large-v0",
