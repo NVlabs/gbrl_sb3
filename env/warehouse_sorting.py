@@ -70,42 +70,55 @@ class WarehouseSortingEnv(gym.Env):
         priority_idx = item_idx * self.n_features + self.features.index('priority')
         state[priority_idx] = priority + 1
         return state
-    
-    def _calculate_reward(self):
-        correct_count = 0
-        for i in range(self.n_items):
-            priority_idx = i * self.n_features + self.features.index('priority')
-            assigned_priority = self.state[priority_idx]
-            optimal_priority = self.sorted_indices[i]
-            
-            if assigned_priority == optimal_priority and assigned_priority not in self.correct_priorities:
-                correct_count += 1
-                self.correct_priorities.add(assigned_priority)
 
-        reward = (
-            correct_count / self.n_items
-            - 0.9 * self.step_count / self.max_steps
-        )
-        return reward
     
     def step(self, action):
+        """
+        - Each item can give reward only once when it first gets the correct priority.
+        - If the action (item_idx, priority) is repeated, truncate episode immediately.
+        """
         priority, item_idx = action
         action_hash = (item_idx, priority)
-        reward = 0
+        reward = 0.0
         truncated = False
-        
+
+        # 1. Check if repeated action => truncate
         if action_hash in self.assigned_actions:
             truncated = True
         else:
+            # 2. Otherwise, apply the priority assignment
             self.state = self._gen_state(priority, item_idx)
             
-        
+            # 3. Check if this assignment is correct for the *first time*
+            #    'optimal_priority' is how we decided this item should be ranked.
+            #    Typically, "self.sorted_indices[item_idx]" or a similar mapping.
+            assigned_priority = priority + 1   # If you store priority as (priority+1) in state
+            optimal_priority = self.sorted_indices[item_idx]
+            
+            # If the assignment matches the optimal AND we haven't rewarded this item yet
+            if assigned_priority == optimal_priority and item_idx not in self.correct_priorities:
+                # Mark item as "correctly prioritized"
+                self.correct_priorities.add(item_idx)
+                # Give incremental reward = fraction of total
+                # so eventually you can sum to 1.0 if all items are correct
+                reward = 1.0 / self.n_items
+
+        # 4. Update bookkeeping
         self.step_count += 1
         self.assigned_actions.add(action_hash)
-        terminated = self.step_count >= self.max_steps
+
+        # 5. Check if we've run out of steps or if all items are correct
+        #    You might want to terminate if all items are correct:
+        all_correct = (len(self.correct_priorities) == self.n_items)
+        terminated = (self.step_count >= self.max_steps) or all_correct
+
+        # 6. Optionally apply final penalty only at termination (and not truncated)
         if terminated and not truncated:
-            reward, terminated = self._calculate_reward()
-        
+            # For example, subtract a fraction of the steps used
+            # This encourages finishing in fewer steps
+            time_penalty = 0.9 * (self.step_count / self.max_steps)
+            reward -= time_penalty
+
         return self.state, reward, terminated, truncated, {}
 
     def render(self, mode='human'):
