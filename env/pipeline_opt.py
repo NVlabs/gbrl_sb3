@@ -306,7 +306,6 @@ class PipelineSchedulingEnv(gym.Env):
         Otherwise, schedule them all.
         4. Decrement durations, check completions, update time, etc.
         """
-        chosen_tasks = np.where(action == 1)[0]
         reward = 0
         terminated = False
         truncated = False
@@ -317,32 +316,29 @@ class PipelineSchedulingEnv(gym.Env):
         count_cpu = running_task_types.count('CPU')
         count_mem = running_task_types.count('MEMORY')
         count_io  = running_task_types.count('IO')
-    
-        for task_i in chosen_tasks:
-            if task_i == self.n_tasks:
-                continue
-            if task_i not in self.completed_tasks and task_i not in self.running_tasks:
-                valid_task = False
-                if self.task_types_list[task_i] == 'CPU' and self.cpu_available >= self.task_cpu_resources[task_i]:
-                    valid_task = True
-                    self.cpu_available -= self.task_cpu_resources[task_i]
-                    if count_cpu > 0:
-                        self.cpu_available -= count_cpu
-                        self.cpu_available = max(self.cpu_available, 0)
-                elif self.task_types_list[task_i] == 'MEMORY' and self.mem_available >= self.task_mem_resources[task_i]:
-                    valid_task = True
-                    self.mem_available -= self.task_mem_resources[task_i]
-                    if count_mem > 0:
-                        self.mem_available -= count_mem
-                        self.mem_available = max(self.mem_available, 0)
-                elif self.task_types_list[task_i] == 'IO' and self.io_available >= self.task_io_resources[task_i]:
-                    valid_task = True
-                    self.io_available -= self.task_io_resources[task_i]
-                    if count_io > 0:
-                        self.io_available -= count_io
-                        self.io_available = max(self.io_available, 0)
-                if valid_task:
-                    self.running_tasks.add(task_i)
+
+        if action != self.n_tasks and action not in self.completed_tasks and action not in self.running_tasks:
+            valid_task = False
+            if self.task_types_list[action] == 'CPU' and self.cpu_available >= self.task_cpu_resources[action]:
+                valid_task = True
+                self.cpu_available -= self.task_cpu_resources[action]
+                if count_cpu > 0:
+                    self.cpu_available -= count_cpu
+                    self.cpu_available = max(self.cpu_available, 0)
+            elif self.task_types_list[action] == 'MEMORY' and self.mem_available >= self.task_mem_resources[action]:
+                valid_task = True
+                self.mem_available -= self.task_mem_resources[action]
+                if count_mem > 0:
+                    self.mem_available -= count_mem
+                    self.mem_available = max(self.mem_available, 0)
+            elif self.task_types_list[action] == 'IO' and self.io_available >= self.task_io_resources[action]:
+                valid_task = True
+                self.io_available -= self.task_io_resources[action]
+                if count_io > 0:
+                    self.io_available -= count_io
+                    self.io_available = max(self.io_available, 0)
+            if valid_task:
+                self.running_tasks.add(action)
         
         tasks_finished = []
         for task in self.running_tasks:
@@ -400,10 +396,10 @@ def register_pipeline_opt_tests():
     register(
         id="pipeline-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
-        kwargs={'n_tasks': 5, 'max_resources': 10, 'max_duration': 10},
+        kwargs={'n_tasks': 30, 'max_resources': 6, 'max_duration': 4},
     )
     register(
         id="pipeline-large-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
-        kwargs={'n_tasks': 10, 'max_resources': 10, 'max_duration': 10},
+        kwargs={'n_tasks': 20, 'max_resources': 15, 'max_duration': 10},
     )
