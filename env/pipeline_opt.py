@@ -202,7 +202,7 @@ class PipelineSchedulingEnv(gym.Env):
     - Option for One-Hot Encoding of Task Types
     """
 
-    def __init__(self, n_tasks=5, max_resources=10, max_duration=10, one_hot_task_types=False):
+    def __init__(self, n_tasks=40, max_resources=8, max_duration=4, one_hot_task_types=False):
         super(PipelineSchedulingEnv, self).__init__()
         
         self.n_tasks = n_tasks
@@ -213,12 +213,11 @@ class PipelineSchedulingEnv(gym.Env):
         self.is_mixed = not one_hot_task_types
         # Action space: For each of the n_tasks, pick (0 or 1) -> schedule or not
         self.action_space = spaces.Discrete(self.n_tasks + 1)
-
         # Observation space (same structure as your original):
         # Per task: 1 (or len(self.task_types) if one-hot) + 6
         # Global: 2
         task_features = 1 if not self.one_hot_task_types else len(self.task_types)
-        obs_dim = (task_features + 9) * self.n_tasks + 4
+        obs_dim = (task_features + 9) * self.n_tasks + 10
         self.observation_space = spaces.Box(
             low=0,
             high=max(self.max_resources, self.max_duration),
@@ -274,6 +273,17 @@ class PipelineSchedulingEnv(gym.Env):
         obs.append(self.io_available)
         obs.append(self.mem_available)
         obs.append(self.cpu_available)
+        obs.append(int(self.io_available < self.max_resources * 0.2))
+        obs.append(int(self.mem_available < self.max_resources * 0.2))
+        obs.append(int(self.cpu_available < self.max_resources * 0.2))
+        running_task_types = [self.task_types_list[task_i] for task_i in self.running_tasks]
+
+        count_cpu = running_task_types.count('CPU')
+        count_mem = running_task_types.count('MEMORY')
+        count_io  = running_task_types.count('IO')
+        obs.append(count_cpu)
+        obs.append(count_mem)
+        obs.append(count_io)
         
         return np.array(obs, dtype=object if self.is_mixed else np.float32)
 
@@ -331,6 +341,8 @@ class PipelineSchedulingEnv(gym.Env):
                 if count_mem > 0:
                     self.mem_available -= count_mem
                     self.mem_available = max(self.mem_available, 0)
+                if self.cpu_available < self.max_resources * 0.2:
+                    reward += 0.1  # Encourage MEM scheduling under CPU saturation
             elif self.task_types_list[action] == 'IO' and self.io_available >= self.task_io_resources[action]:
                 valid_task = True
                 self.io_available -= self.task_io_resources[action]
