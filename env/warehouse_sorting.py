@@ -73,7 +73,6 @@ class WarehouseSortingEnv(gym.Env):
     
     def _calculate_reward(self):
         correct_count = 0
-        priority_penalty = 0
         for i in range(self.n_items):
             priority_idx = i * self.n_features + self.features.index('priority')
             assigned_priority = self.state[priority_idx]
@@ -82,31 +81,29 @@ class WarehouseSortingEnv(gym.Env):
             if assigned_priority == optimal_priority and assigned_priority not in self.correct_priorities:
                 correct_count += 1
                 self.correct_priorities.add(assigned_priority)
-            else:
-                priority_penalty += 0.1
-        
+
         reward = (
             correct_count / self.n_items
             - 0.9 * self.step_count / self.max_steps
-            - priority_penalty
         )
-        terminated = correct_count == self.n_items
-        return reward, terminated
+        return reward
     
     def step(self, action):
         priority, item_idx = action
         action_hash = (item_idx, priority)
+        reward = 0
         
         if action_hash in self.assigned_actions:
-            reward = -0.5
-            terminated = True
+            truncated = True
         else:
             self.state = self._gen_state(priority, item_idx)
-            reward, terminated = self._calculate_reward()
+            
         
         self.step_count += 1
         self.assigned_actions.add(action_hash)
-        truncated = self.step_count >= self.max_steps
+        terminated = self.step_count >= self.max_steps
+        if terminated and not truncated:
+            reward, terminated = self._calculate_reward()
         
         return self.state, reward, terminated, truncated, {}
 
