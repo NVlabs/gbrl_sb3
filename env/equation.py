@@ -23,7 +23,9 @@ class EquationEnv(gym.Env):
 
         # actions are add/ subtract/ divide/ multiply and multiply by -1
         
-        self.action_space = spaces.Discrete(4*9 + 1) 
+        # self.action_space = spaces.Discrete(4*9 + 1) 
+        # self.action_space = spaces.Discrete(4*9 + 1) 
+        self.action_space = spaces.MultiDiscrete([4, 9, 1])
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(3, ), dtype=float)
         self.step_count = 0
         self.max_steps = 50
@@ -42,9 +44,10 @@ class EquationEnv(gym.Env):
     
     def _gen_state(self, action):
         state = self.state
-        action_type = action // 9
-        action_number = action % 9
-        if action_type == 5:
+        action_type, action_number, minus_1 = action
+        # action_type = action // 9
+        # action_number = action % 9
+        if minus_1:
             state = -state 
         elif action_type == 0:
             state[1] += action_number + 1
@@ -56,16 +59,28 @@ class EquationEnv(gym.Env):
             state = state / (action_number + 1)
         else:
             state = state * (action_number + 1)
+        # if action_type == 5:
+        #     state = -state 
+        # elif action_type == 0:
+        #     state[1] += action_number + 1
+        #     state[2] += action_number + 1
+        # elif action_type == 1:
+        #     state[1] -= action_number+ 1
+        #     state[2] -= action_number + 1
+        # elif action_type == 2:
+        #     state = state / (action_number + 1)
+        # else:
+        #     state = state * (action_number + 1)
         self.state = state
         return state
     
     def step(self, action):
         """Take an action and return the next state, reward, and done flag."""
+
         reward = 0
         terminated = False 
         truncated = False
         info = {}
-        prev_state = self.state.copy()
         state = self._gen_state(action)
         if state[0] == 1 and state[1] == 0:  # Isolating x condition
             reward = 1.0

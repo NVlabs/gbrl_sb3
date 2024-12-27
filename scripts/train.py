@@ -97,7 +97,6 @@ if __name__ == '__main__':
         env = make_ram_atari_env(args.env_name, n_envs=args.num_envs, seed=args.seed, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs, neurosymbolic_kwargs=args.neurosymbolic_kwargs) 
         if args.evaluate:
             eval_env = make_ram_atari_env(args.env_name, n_envs=1, wrapper_kwargs=args.atari_wrapper_kwargs, env_kwargs=env_kwargs, vec_env_cls=vec_env_cls, vec_env_kwargs=vec_env_kwargs, neurosymbolic_kwargs=args.neurosymbolic_kwargs) 
-
         if args.atari_wrapper_kwargs and 'frame_stack' in args.atari_wrapper_kwargs:
             env = VecFrameStack(env, n_stack=args.atari_wrapper_kwargs['frame_stack'])
             if eval_env:
@@ -138,9 +137,11 @@ if __name__ == '__main__':
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'pipeline_opt':
         register_pipeline_opt_tests()
-        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        args.env_kwargs['one_hot_task_types'] = False if args.algo_type in CATEGORICAL_ALGOS else True
+        vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
+        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
         if args.evaluate:
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
     elif args.env_type == 'warehouse_sorting':
         register_warehouse_sorting_tests()
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
