@@ -217,6 +217,7 @@ class PipelineSchedulingEnv(gym.Env):
         print(f"Time Remaining: {self.time_remaining}")
         print(f"Resources Available: {self.resources_available}")
 
+
 class HPCSchedulingEnv(gym.Env):
     """
     Realistic Pipeline Scheduling Environment
@@ -244,10 +245,11 @@ class HPCSchedulingEnv(gym.Env):
         # Observation space
         # Global State: cpu_available, mem_available, io_available, time_remaining
         # Task-Level: duration, required_CPU, required_MEM, required_IO, is_running, is_completed, cooldown_timer, cooldown_active
+        task_features = 9 + (self.n_tasks + 1) if not self.is_mixed else 10
         self.observation_space = spaces.Box(
             low=0,
             high=1,
-            shape=(4 + self.n_tasks * 8,),  # 4 global + 8 per task
+            shape=(4 + self.n_tasks * task_features,),  # 4 global + 8 per task
             dtype=np.float32
         )
         
@@ -268,6 +270,7 @@ class HPCSchedulingEnv(gym.Env):
         self.task_cooldowns = np.zeros(self.n_tasks, dtype=int)
         self.task_running = np.zeros(self.n_tasks, dtype=bool)
         self.task_completed = np.zeros(self.n_tasks, dtype=bool)
+        self.task_dependencies = np.random.choice([-1] + list(range(self.n_tasks)), size=self.n_tasks)
         
         return self._get_observation(), {}
     
@@ -283,7 +286,14 @@ class HPCSchedulingEnv(gym.Env):
         for i in range(self.n_tasks):
             has_resource = self.task_cpu[i] <= self.cpu and self.task_mem[i] <= self.mem and self.task_io[i] <= self.io
             is_schedulable = has_resource and not self.task_running[i] and not self.task_completed[i]
+            depends_on = self.task_dependencies[i]
+            dependency_completed = (depends_on == -1) or self.task_completed[depends_on]
             if not self.is_mixed:
+                one_hot = [0] * (self.n_tasks + 1)
+                if depends_on == -1:
+                    one_hot[-1] = 1
+                else:
+                    one_hot[depends_on] = 1
                 obs.extend([
                     self.task_durations[i],
                     self.task_cpu[i],
@@ -293,6 +303,8 @@ class HPCSchedulingEnv(gym.Env):
                     int(self.task_completed[i]),
                     int(is_schedulable),
                     self.task_cooldowns[i],
+                    *one_hot,
+                    int(dependency_completed)
                 ])
             else:
                 obs.extend([
@@ -304,6 +316,8 @@ class HPCSchedulingEnv(gym.Env):
                     str(bool(self.task_completed[i])).encode('utf-8'),
                     str(bool(is_schedulable)).encode('utf-8'),
                     self.task_cooldowns[i],
+                    str(depends_on).encode('utf-8'),
+                    str(dependency_completed).encode('utf-8'),
                 ])
         
         return np.array(obs, dtype=np.float32 if not self.is_mixed else object)
@@ -323,16 +337,18 @@ class HPCSchedulingEnv(gym.Env):
         # Check if any task is schedulable
         for i in range(self.n_tasks):
             has_resource = self.task_cpu[i] <= self.cpu and self.task_mem[i] <= self.mem and self.task_io[i] <= self.io
-            if (has_resource and
-                not self.task_running[i] and
-                not self.task_completed[i]):
+            depends_on = self.task_dependencies[i]
+            dependency_completed = (depends_on == -1) or self.task_completed[depends_on]
+            if (has_resource and not self.task_running[i] and dependency_completed and not self.task_completed[i]):
                 no_schedulable_tasks = False
                 break
         
         # Handle Task Scheduling
         if action < self.n_tasks and not self.task_running[action] and not self.task_completed[action]:
             has_resource = self.task_cpu[action] <= self.cpu and self.task_mem[action] <= self.mem and self.task_io[action] <= self.io
-            if has_resource:
+            depends_on = self.task_dependencies[action]
+            dependency_completed = (depends_on == -1) or self.task_completed[depends_on]
+            if has_resource and dependency_completed:
                 self.cpu -= self.task_cpu[action]
                 self.mem -= self.task_mem[action]
                 self.io -= self.task_io[action]
