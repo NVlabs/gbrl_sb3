@@ -285,9 +285,9 @@ class HPCSchedulingEnv(gym.Env):
         
         for i in range(self.n_tasks):
             has_resource = self.task_cpu[i] <= self.cpu and self.task_mem[i] <= self.mem and self.task_io[i] <= self.io
-            is_schedulable = has_resource and not self.task_running[i] and not self.task_completed[i]
             depends_on = self.task_dependencies[i]
             dependency_completed = (depends_on == -1) or self.task_completed[depends_on]
+            is_schedulable = has_resource and not self.task_running[i] and not self.task_completed[i] and dependency_completed
             if not self.is_mixed:
                 one_hot = [0] * (self.n_tasks + 1)
                 if depends_on == -1:
