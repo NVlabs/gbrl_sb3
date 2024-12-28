@@ -13,116 +13,135 @@ from gymnasium.envs.registration import register
 
 class WarehouseSortingEnv(gym.Env):
     """
-    Enhanced Warehouse Sorting Task Environment.
-    Logical rules create irregular and non-linear decision boundaries,
-    favoring tree-based models.
+    Enhanced Warehouse Sorting Environment.
+    - Three customer types with distinct sorting preferences.
+    - Explicit sorting with item positioning.
+    - Sparse reward: Given only at the end of the episode.
+    - Clear rules: Easy for humans and GBTs, difficult for NNs.
     """
-    features = ['deadline', 'weight', 'is_fragile', 'priority', 'urgency', 'handling_time']
+    features = ['distance', 'weight', 'is_fragile', 'position', 'is_sorted']
     n_features = len(features)
     
-    def __init__(self, n_items: int):
+    def __init__(self, n_items: int = 5, max_steps: int = 10, is_mixed: bool = False):
         super(WarehouseSortingEnv, self).__init__()
         self.n_items = n_items
-        self.max_steps = 50
+        self.max_steps = max_steps
+        self.is_mixed = is_mixed
         
-        # Actions: (priority, item_idx)
-        self.action_space = spaces.MultiDiscrete([n_items, n_items])
+        # Action: Select an item and target position
+        self.action_space = spaces.MultiDiscrete([self.n_items, self.n_items])
+        
+        # Observation: Item attributes + Position + Customer Type
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf,
-            shape=((self.n_features) * n_items,), dtype=float
+            low=0,
+            high=1,
+            shape=(self.n_items * (self.n_features + 1), ),  # Each item + customer type
+            dtype=np.float32
         )
         
-    def reset(self, seed=None, options=None):
-        self.step_count = 0
-        self.correct_priorities = set()
-        self.assigned_actions = set()
-        
-        items = []
-        for i in range(self.n_items):
-            deadline = np.random.choice([1, 2, 3])
-            weight = np.random.normal(loc=5, scale=3)
-            weight = max(weight, 1)
-            is_fragile = np.random.choice([0, 1])
-            urgency = np.random.choice([0, 1])
-            handling_time = (weight * 0.5) + (is_fragile * 2)
-            priority = 0
-            
-            items.append((i, deadline, weight, is_fragile, urgency, handling_time, priority))
-        
-        # Clear and Logical Sorting Rules
-        sorted_items = sorted(
-            items,
-            key=lambda x: (
-                -x[4],                    # Urgency first (highest priority)
-                x[1] + x[5],              # Deadline adjusted by handling time
-                -x[2] if x[3] == 1 else x[2]  # Weight prioritized differently for fragile items
-            )
-        )
-        
-        self.sorted_indices = [item[0] + 1 for item in sorted_items]
-        item_attributes = [list(item[1:]) for item in items]
-        self.state = np.array(item_attributes).flatten()
-        
-        return self.state, {}
+        self.reset()
     
-    def _gen_state(self, priority, item_idx):
-        state = self.state.copy()
-        priority_idx = item_idx * self.n_features + self.features.index('priority')
-        state[priority_idx] = priority + 1
-        return state
-
+    def reset(self, seed=None, options=None):
+        """Reset environment state."""
+        super().reset(seed=seed)
+        self.step_count = 0
+        self.items = []
+        
+        for i in range(self.n_items):
+            distance = np.random.uniform(1, 100)  # Distance in arbitrary units
+            weight = np.random.uniform(1, 10)  # Weight in arbitrary units
+            is_fragile = np.random.choice([0, 1])  # Fragile (0 or 1)
+            
+            self.items.append({
+                'distance': distance,
+                'weight': weight,
+                'is_fragile': is_fragile,
+                'position': i,  # Initial order is unsorted
+                'is_sorted': 0
+            })
+        
+        # Randomly assign a customer type (1, 2, or 3)
+        self.customer_type = np.random.choice([1, 2, 3])
+        
+        # Optimal sorting order based on customer preferences
+        if self.customer_type == 1:
+            self.optimal_order = sorted(
+                range(self.n_items),
+                key=lambda i: (self.items[i]['distance'], self.items[i]['weight'], -self.items[i]['is_fragile'])
+            )
+        elif self.customer_type == 2:
+            self.optimal_order = sorted(
+                range(self.n_items),
+                key=lambda i: (self.items[i]['distance'], -self.items[i]['is_fragile'], self.items[i]['weight'])
+            )
+        else:  # Customer 3
+            self.optimal_order = sorted(
+                range(self.n_items),
+                key=lambda i: (-self.items[i]['is_fragile'], self.items[i]['weight'])
+            )
+        
+        return self._get_observation(), {}
+    
+    def _get_observation(self):
+        """Construct the observation space."""
+        obs = []
+        for i, item in enumerate(self.items):
+            if self.is_mixed:
+                obs.extend([
+                    item['distance'] / 100,  # Normalize
+                    item['weight'] / 10,     # Normalize
+                    str(bool(item['is_fragile'])).encode('utf-8'),
+                    item['position'],
+                    str(bool(item['is_sorted'])).encode('utf-8'),
+                    str(self.customer_type).encode('utf-8')   # Encode customer type
+                ])
+            else:
+                obs.extend([
+                    item['distance'] / 100,  # Normalize
+                    item['weight'] / 10,     # Normalize
+                    item['is_fragile'],
+                    item['position'] / self.n_items,  # Normalize position
+                    item['is_sorted'],
+                    self.customer_type / 3   # Encode customer type
+                ])
+        return np.array(obs, dtype=object if self.is_mixed else np.float32)
     
     def step(self, action):
         """
-        - Each item can give reward only once when it first gets the correct priority.
-        - If the action (item_idx, priority) is repeated, truncate episode immediately.
+        Perform an action: Select an item and place it in a position.
         """
-        priority, item_idx = action
-        action_hash = (item_idx, priority)
-        reward = 0.0
-        truncated = False
-
-        # 1. Check if repeated action => truncate
-        if action_hash in self.assigned_actions:
-            truncated = True
-        else:
-            # 2. Otherwise, apply the priority assignment
-            self.state = self._gen_state(priority, item_idx)
-            
-            # 3. Check if this assignment is correct for the *first time*
-            #    'optimal_priority' is how we decided this item should be ranked.
-            #    Typically, "self.sorted_indices[item_idx]" or a similar mapping.
-            assigned_priority = priority + 1   # If you store priority as (priority+1) in state
-            optimal_priority = self.sorted_indices[item_idx]
-            
-            # If the assignment matches the optimal AND we haven't rewarded this item yet
-            if assigned_priority == optimal_priority and item_idx not in self.correct_priorities:
-                # Mark item as "correctly prioritized"
-                self.correct_priorities.add(item_idx)
-                # Give incremental reward = fraction of total
-                # so eventually you can sum to 1.0 if all items are correct
-                reward = 1.0 / self.n_items
-
-        # 4. Update bookkeeping
+        item_idx, target_position = action
+        reward = 0
+        terminated = False
+        info = {}
+        
         self.step_count += 1
-        self.assigned_actions.add(action_hash)
-
-        # 5. Check if we've run out of steps or if all items are correct
-        #    You might want to terminate if all items are correct:
-        all_correct = (len(self.correct_priorities) == self.n_items)
-        terminated = (self.step_count >= self.max_steps) or all_correct
-
-        # 6. Optionally apply final penalty only at termination (and not truncated)
-        if terminated and not truncated:
-            # For example, subtract a fraction of the steps used
-            # This encourages finishing in fewer steps
-            time_penalty = 0.9 * (self.step_count / self.max_steps)
-            reward -= time_penalty
-
-        return self.state, reward, terminated, truncated, {}
-
+        truncated = self.step_count >= self.max_steps
+        
+        # Check if the move is valid
+        if self.items[item_idx]['is_sorted']:
+            reward -= 0.1  # Penalty for trying to sort an already sorted item
+        else:
+            # Update item position and mark as sorted
+            self.items[item_idx]['position'] = target_position
+            self.items[item_idx]['is_sorted'] = 1
+        
+        # Check if all items are sorted
+        all_sorted = all(item['is_sorted'] for item in self.items)
+        if all_sorted and not truncated:
+            terminated = True
+            # Evaluate final reward based on correct order
+            final_order = [item['position'] for item in self.items]
+            correct = sum(1 for i, idx in enumerate(final_order) if idx == self.optimal_order[i])
+            reward = correct / self.n_items  # Fraction of correctly prioritized items
+        
+        return self._get_observation(), reward, terminated, truncated, info
+    
     def render(self, mode='human'):
-        print(f"Step: {self.step_count}, State: {self.state}")
+        print(f"Customer Type: {self.customer_type}")
+        print(f"Step: {self.step_count}")
+        for i, item in enumerate(self.items):
+            print(f"Item {i}: {item}")
 
 def register_warehouse_sorting_tests():
     # PutNear
