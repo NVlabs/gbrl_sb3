@@ -14,182 +14,6 @@ from gymnasium.envs.registration import register
 import random
 
 
-# class PipelineSchedulingEnv(gym.Env):
-#     """
-#     Pipeline Scheduling Environment
-#     The agent must schedule tasks respecting dependencies and resource constraints
-#     to minimize makespan.
-#     Supports parallel task scheduling with clear distinction between scheduled, running, and completed tasks.
-#     """
-#     def __init__(self, n_tasks=5, max_resources=10, max_duration=10):
-#         super(PipelineSchedulingEnv, self).__init__()
-        
-#         self.n_tasks = n_tasks
-#         self.max_resources = max_resources
-#         self.max_duration = max_duration
-        
-#         # Action space: Select tasks to schedule next
-#         self.action_space = spaces.MultiBinary(self.n_tasks)  # Binary vector for task selection
-        
-#         # Observation space
-#         # [Task Duration, Resource Required, Dependency Fulfilled, Task Scheduled, Task Running] * n_tasks + [Time Remaining, Resource Available]
-#         self.observation_space = spaces.Box(
-#             low=0,
-#             high=max(self.max_resources, self.max_duration),
-#             shape=(5 * self.n_tasks + 2,),
-#             dtype=np.float32
-#         )
-        
-        
-#     def _generate_tasks(self):
-#         """Generate task properties and dependency graph."""
-#         # valid_resources = False
-#         # while not valid_resources:
-#         self.task_durations = np.random.randint(1, self.max_duration + 1, size=self.n_tasks)
-#         self.task_resources = np.random.randint(1, self.max_resources // 2, size=self.n_tasks)
-            
-#             # # Ensure total resource feasibility
-#             # if np.sum(self.task_resources) <= self.max_resources:
-#             #     valid_resources = True
-#             # print(valid_resources)
-        
-#         # # Generate random dependencies (ensure DAG)
-#         # self.task_dependencies = nx.DiGraph()
-#         # self.task_dependencies.add_nodes_from(range(self.n_tasks))
-#         # for i in range(self.n_tasks):
-#         #     for j in range(i+1, self.n_tasks):
-#         #         if np.random.rand() > 0.5:
-#         # print('gothere')
-#         #             self.task_dependencies.add_edge(i, j)
-#         self.task_dependencies = self.generate_random_dag()
-        
-#         if not nx.is_directed_acyclic_graph(self.task_dependencies):
-#             # self._generate_tasks()
-#             self.task_dependencies = self.generate_random_dag()
-#         # self.print_dependencies()
-
-#     def generate_random_dag(self, edge_probability=0.5):
-#             """
-#             Generates a random DAG using topological sort.
-
-#             Args:
-#                 n_tasks: Number of tasks.
-#                 edge_probability: Probability of creating an edge between two nodes.
-
-#             Returns:
-#                 A networkx DiGraph object representing the DAG.
-#             """
-#             G = nx.DiGraph()
-#             G.add_nodes_from(range(self.n_tasks))
-
-#             # Generate a random topological order
-#             topological_order = list(range(self.n_tasks))
-#             random.shuffle(topological_order)
-
-#             for i, source in enumerate(topological_order):
-#                 for j in range(i + 1, self.n_tasks):
-#                     if np.random.rand() < edge_probability:
-#                         G.add_edge(source, topological_order[j])
-
-#             return G
-    
-#     def _get_observation(self):
-#         """Construct observation vector."""
-#         obs = []
-#         for i in range(self.n_tasks):
-#             dependency_fulfilled = all(dep in self.completed_tasks for dep in self.task_dependencies.predecessors(i))
-#             obs.extend([
-#                 self.task_durations[i],
-#                 self.task_resources[i],
-#                 int(dependency_fulfilled),
-#                 int(i in self.scheduled_tasks),
-#                 int(i in self.running_tasks)
-#             ])
-#         obs.append(self.time_remaining)
-#         obs.append(self.resources_available)
-#         return np.array(obs, dtype=np.float32)
-
-#     def print_dependencies(self):
-#         """
-#         Prints the dependencies in a readable format.
-
-#         Args:
-#             dependencies: The networkx DiGraph object representing task dependencies.
-#         """
-#         for node in self.task_dependencies.nodes():
-#             predecessors = list(self.task_dependencies.predecessors(node))
-#             if predecessors:
-#                 print(f"Task {node} depends on: {predecessors}")
-    
-#     def reset(self, seed=None, options=None):
-#         self._generate_tasks()
-#         # self.time_remaining = self.max_duration * self.n_tasks * 0.3
-#         self.time_remaining = self.max_duration * 2
-#         self.resources_available = self.max_resources
-#         self.scheduled_tasks = set()
-#         self.running_tasks = set()
-#         self.completed_tasks = set()
-#         self.rewarded_tasks = set()
-#         self.invalid_actions = 0
-#         return self._get_observation(), {}
-    
-#     def step(self, action):
-#         reward = 0
-#         terminated = False
-#         truncated = False
-#         info = {}
-        
-#         selected_tasks = np.where(action == 1)[0]
-#         current_resource_usage = sum(self.task_resources[task] for task in selected_tasks if task not in self.running_tasks)
-        
-#         if current_resource_usage > self.resources_available:
-#             # Invalid due to resource constraint, early termination
-#             reward = -1
-#             terminated = True
-#         else:
-#             for task in selected_tasks:
-#                 if task in self.scheduled_tasks or task in self.running_tasks or task in self.completed_tasks:
-#                     # Ignore already processed tasks
-#                     continue
-                
-#                 dependency_fulfilled = all(dep in self.completed_tasks for dep in self.task_dependencies.predecessors(task))
-#                 if dependency_fulfilled:
-#                     self.scheduled_tasks.add(task)
-#                     self.running_tasks.add(task)
-#                     self.resources_available -= self.task_resources[task]
-#                 else:
-#                     reward = -1
-#                     terminated = True
-
-        
-#         # Update running tasks
-#         tasks_to_complete = set()
-#         for task in self.running_tasks:
-#             self.task_durations[task] -= 1
-#             if self.task_durations[task] <= 0:
-#                 tasks_to_complete.add(task)
-        
-#         for task in tasks_to_complete:
-#             self.running_tasks.remove(task)
-#             self.completed_tasks.add(task)
-        
-#         self.time_remaining -= 1
-    
-#         if self.time_remaining <= 0:
-#             reward = len(self.completed_tasks) / self.n_tasks
-#             terminated = True
-        
-#         return self._get_observation(), reward, terminated, truncated, info
-    
-#     def render(self, mode='human'):
-#         print(f"Scheduled Tasks: {self.scheduled_tasks}")
-#         print(f"Running Tasks: {self.running_tasks}")
-#         print(f"Completed Tasks: {self.completed_tasks}")
-#         print(f"Time Remaining: {self.time_remaining}")
-#         print(f"Resources Available: {self.resources_available}")
-#         print(f"Invalid Actions: {self.invalid_actions}")
-    
-
 class PipelineSchedulingEnv(gym.Env):
     """
     Enhanced Pipeline Scheduling Environment
@@ -198,7 +22,6 @@ class PipelineSchedulingEnv(gym.Env):
     - Non-uniform sampling for task properties
     - Sparse final reward (normalized by n_tasks, +1 bonus if all tasks are done)
     - Temporal and resource-based traps
-    - DAG dependencies must be fulfilled before scheduling a task
     - Option for One-Hot Encoding of Task Types
     """
 
@@ -240,12 +63,6 @@ class PipelineSchedulingEnv(gym.Env):
         # Enforce some correlations
         for i, task_type in enumerate(self.task_types_list):
             self.task_durations[i] = np.random.randint(1, self.max_duration)
-        #     if task_type == 'CPU':
-        #         self.task_cpu_resources[i] = np.random.randint(1, self.max_resources)
-        #     elif task_type == 'IO':
-        #         self.task_io_resources[i] = np.random.randint(1, self.max_resources)
-        #     elif task_type == 'MEMORY':
-        #         self.task_mem_resources[i] = np.random.randint(1, self.max_resources)
 
     def _get_observation(self):
         """Flattened observation of task states + global state."""
@@ -400,6 +217,176 @@ class PipelineSchedulingEnv(gym.Env):
         print(f"Time Remaining: {self.time_remaining}")
         print(f"Resources Available: {self.resources_available}")
 
+class HPCSchedulingEnv(gym.Env):
+    """
+    Realistic Pipeline Scheduling Environment
+    - Tasks consume CPU, MEM, and IO resources
+    - Random cooldown timer for tasks
+    - Idle penalty applies only when no tasks are running and none are schedulable
+    - Sparse rewards (only for task completion)
+    """
+    
+    def __init__(self, n_tasks: int=10, max_time: int=25, one_hot_task_types: bool = False):
+        super(HPCSchedulingEnv, self).__init__()
+        
+        # Fixed global resources
+        self.max_cpu = 4
+        self.max_mem = 16
+        self.max_io = 8
+        
+        self.n_tasks = n_tasks
+        self.max_time = max_time
+        self.is_mixed = not one_hot_task_types
+        
+        # Action space: Choose a task or No-Op
+        self.action_space = spaces.Discrete(self.n_tasks + 1)  # Tasks + No-Op
+        
+        # Observation space
+        # Global State: cpu_available, mem_available, io_available, time_remaining
+        # Task-Level: duration, required_CPU, required_MEM, required_IO, is_running, is_completed, cooldown_timer, cooldown_active
+        self.observation_space = spaces.Box(
+            low=0,
+            high=1,
+            shape=(4 + self.n_tasks * 8,),  # 4 global + 8 per task
+            dtype=np.float32
+        )
+        
+        self.reset()
+    
+    def reset(self, seed=None, options=None):
+        """Reset environment state."""
+        super().reset(seed=seed)
+        self.cpu = self.max_cpu
+        self.mem = self.max_mem
+        self.io = self.max_io
+        self.time_remaining = self.max_time
+        
+        self.task_durations = np.random.randint(1, 5, size=self.n_tasks)
+        self.task_cpu = np.random.randint(1, self.max_cpu + 1, size=self.n_tasks)
+        self.task_mem = np.random.randint(1, self.max_mem + 1, size=self.n_tasks)
+        self.task_io = np.random.randint(1, self.max_io + 1, size=self.n_tasks)
+        self.task_cooldowns = np.zeros(self.n_tasks, dtype=int)
+        self.task_running = np.zeros(self.n_tasks, dtype=bool)
+        self.task_completed = np.zeros(self.n_tasks, dtype=bool)
+        
+        return self._get_observation(), {}
+    
+    def _get_observation(self):
+        """Construct the observation vector."""
+        obs = [
+            self.cpu,
+            self.mem,
+            self.io,
+            self.time_remaining
+        ]
+        
+        for i in range(self.n_tasks):
+            has_resource = self.task_cpu[i] <= self.cpu and self.task_mem[i] <= self.mem and self.task_io[i] <= self.io
+            is_schedulable = has_resource and not self.task_running[i] and not self.task_completed[i]
+            if not self.is_mixed:
+                obs.extend([
+                    self.task_durations[i],
+                    self.task_cpu[i],
+                    self.task_mem[i],
+                    self.task_io[i],
+                    int(self.task_running[i]),
+                    int(self.task_completed[i]),
+                    int(is_schedulable),
+                    self.task_cooldowns[i],
+                ])
+            else:
+                obs.extend([
+                    self.task_durations[i],
+                    self.task_cpu[i],
+                    self.task_mem[i],
+                    self.task_io[i],
+                    str(bool(self.task_running[i])).encode('utf-8'),
+                    str(bool(self.task_completed[i])).encode('utf-8'),
+                    str(bool(is_schedulable)).encode('utf-8'),
+                    self.task_cooldowns[i],
+                ])
+        
+        return np.array(obs, dtype=np.float32 if not self.is_mixed else object)
+    
+    def step(self, action):
+        """
+        Perform an action.
+        - If action < n_tasks: Attempt to schedule a task
+        - If action == n_tasks: No-Op
+        """
+        reward = 0
+        terminated = False
+        info = {}
+        
+        no_schedulable_tasks = True
+        
+        # Check if any task is schedulable
+        for i in range(self.n_tasks):
+            has_resource = self.task_cpu[i] <= self.cpu and self.task_mem[i] <= self.mem and self.task_io[i] <= self.io
+            if (has_resource and
+                not self.task_running[i] and
+                not self.task_completed[i]):
+                no_schedulable_tasks = False
+                break
+        
+        # Handle Task Scheduling
+        if action < self.n_tasks and not self.task_running[action] and not self.task_completed[action]:
+            has_resource = self.task_cpu[action] <= self.cpu and self.task_mem[action] <= self.mem and self.task_io[action] <= self.io
+            if has_resource:
+                self.cpu -= self.task_cpu[action]
+                self.mem -= self.task_mem[action]
+                self.io -= self.task_io[action]
+                self.task_running[action] = True
+        
+        # Task Progression
+        finished_tasks = []
+        for i in range(self.n_tasks):
+            if self.task_running[i]:
+                self.task_durations[i] -= 1
+                if self.task_durations[i] <= 0:
+                    finished_tasks.append(i)
+        
+        for task in finished_tasks:
+            self.task_running[task] = False
+            self.task_completed[task] = True
+            # self.task_cooldowns[task] = np.random.randint(0, 5)  # Assign cooldown time
+            self.task_cooldowns[task] = int(np.mean([self.task_cpu[task], self.task_mem[task], self.task_io[task]]) / 2) + np.random.randint(0, 2)
+        
+        # Cooldown Recovery
+        for i in range(self.n_tasks):
+            if self.task_cooldowns[i] > 0:
+                self.task_cooldowns[i] -= 1
+                if self.task_cooldowns[i] == 0:
+                    self.cpu += self.task_cpu[i]
+                    self.mem += self.task_mem[i]
+                    self.io += self.task_io[i]
+                    self.cpu = min(self.cpu, self.max_cpu)
+                    self.mem = min(self.mem, self.max_mem)
+                    self.io = min(self.io, self.max_io)
+        
+        # Apply Idle Penalty
+        if action == self.n_tasks and len(np.where(self.task_running)[0]) == 0 and no_schedulable_tasks:
+            reward -= 0.01  # Idle penalty only applies when no tasks are running and none are schedulable
+        
+        # Time Decrement
+        self.time_remaining -= 1
+        if self.time_remaining <= 0 or all(self.task_completed):
+            terminated = True
+        
+        if terminated:
+            reward += np.sum(self.task_completed) / self.n_tasks
+            bonus = 1 if self.time_remaining > 0 and np.sum(self.task_completed) == self.n_tasks else 0 
+            reward += bonus
+        
+        return self._get_observation(), reward, terminated, False, info
+    
+    def render(self, mode='human'):
+        """Display the current state."""
+        print(f"Time Remaining: {self.time_remaining}")
+        print(f"Resources: CPU={self.cpu}, MEM={self.mem}, IO={self.io}")
+        print(f"Running Tasks: {np.where(self.task_running)[0]}")
+        print(f"Completed Tasks: {np.where(self.task_completed)[0]}")
+        print(f"Cooldowns: {self.task_cooldowns}")
 
 def register_pipeline_opt_tests():
     # PutNear
@@ -414,4 +401,9 @@ def register_pipeline_opt_tests():
         id="pipeline-large-v0",
         entry_point="env.pipeline_opt:PipelineSchedulingEnv",
         kwargs={'n_tasks': 50, 'max_resources': 6, 'max_duration': 4},
+    )
+    register(
+        id="pipeline-v1",
+        entry_point="env.pipeline_opt:HPCSchedulingEnv",
+        kwargs={'n_tasks': 10},
     )
