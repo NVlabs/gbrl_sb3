@@ -60,7 +60,9 @@ class HPCSchedulingEnv(gym.Env):
         Args:
             use_cooldowns (bool): Whether to include cooldowns.
         """
-        rule = np.random.choice([1, 2, 3, 4])  # Randomly select a rule
+        rule = np.random.choice([2, 3, 4])  # Randomly select a rule
+        # rule = np.random.choice([1, 2, 3])  # Randomly select a rule
+        # rule = 3 # Randomly select a rule
         
         if rule == 1:  # Parallel Everything Immediately
             resource_pool = []
@@ -89,18 +91,38 @@ class HPCSchedulingEnv(gym.Env):
                 self.task_io[i] = io
                 self.task_durations[i] = duration
                 self.task_cooldowns[i] = (cpu + mem + io) // 3
+                self.task_dependencies[i] = -1
             # self.time_remaining = 8
         
         elif rule == 2:  # Sequential via Dependencies
             task_inds = list(range(self.n_tasks))
+            task_inds[0] = -1
             np.random.shuffle(task_inds)
+            resource_pool = []
+            cpu_sum = 0
+            mem_sum = 0
+            io_sum = 0
             for i in range(self.n_tasks):
-                self.task_cpu[i] = np.random.randint(1, self.max_cpu // 2)
-                self.task_mem[i] = np.random.randint(1, self.max_mem // 2)
-                self.task_io[i] = np.random.randint(1, self.max_io // 2)
-                self.task_durations[i] = np.random.randint(2, 5)
-                if i > 0:
-                    self.task_dependencies[task_inds[i]] = task_inds[i - 1]
+                if i < self.n_tasks - 1:
+                    cpu = np.random.randint(1, int(self.max_cpu // self.n_tasks))
+                    mem = np.random.randint(1, int(self.max_mem // self.n_tasks))
+                    io = np.random.randint(1, int(self.max_io // self.n_tasks))
+                    cpu_sum += cpu
+                    mem_sum += mem
+                    io_sum += io
+                else:
+                    cpu = self.max_cpu - cpu_sum
+                    mem = self.max_mem - mem_sum
+                    io = self.max_io - io_sum
+                duration = np.random.randint(2, 5)
+                resource_pool.append((cpu, mem, io, duration))
+            np.random.shuffle(resource_pool)
+            for i, (cpu, mem, io, duration) in enumerate(resource_pool):
+                self.task_cpu[i] = cpu
+                self.task_mem[i] = mem
+                self.task_io[i] = io
+                self.task_durations[i] = duration
+                self.task_dependencies[i] = task_inds[i]
                 self.task_cooldowns[i] = np.random.randint(1, 3)
             
                 # self.time_remaining = np.sum(self.task_cooldowns) + np.sum(self.task_durations)
@@ -108,16 +130,20 @@ class HPCSchedulingEnv(gym.Env):
         elif rule == 3:  # Parallel x-Track
             x = np.random.choice([2, 3])
             track_resources = [self.max_cpu // x, self.max_mem // x, self.max_io // x]
-            
+            task_inds = list(range(self.n_tasks))
+            np.random.shuffle(task_inds)
+            parallel_inds = task_inds[:x]
+            other_tasks = [t for t in task_inds if t not in parallel_inds]
+            order_ = np.random.choice([False, True])
             for i in range(self.n_tasks):
-                self.task_cpu[i] = np.random.randint(1, track_resources[0])
-                self.task_mem[i] = np.random.randint(1, track_resources[1])
-                self.task_io[i] = np.random.randint(1, track_resources[2])
+                self.task_cpu[i] = track_resources[0] if i in parallel_inds else self.max_cpu - 1
+                self.task_mem[i] = track_resources[1] if i in parallel_inds else self.max_mem - 1
+                self.task_io[i] = track_resources[2] if i in parallel_inds else self.max_io - 1
                 self.task_durations[i] = np.random.randint(2, 5)
-                if i % x == 0:
-                    self.task_dependencies[i] = -1
+                if order_:
+                    self.task_dependencies[i] = parallel_inds[0] if i not in parallel_inds else -1
                 else:
-                    self.task_dependencies[i] = i - (i % x)
+                    self.task_dependencies[i] = other_tasks[0] if i in parallel_inds else -1
                 self.task_cooldowns[i] = (self.task_cpu[i] + self.task_mem[i] + self.task_io[i]) // 3
             # self.time_remaining = np.sum(self.task_cooldowns) + np.sum(self.task_durations) - np.random.randint(0, 5)
         
@@ -136,8 +162,7 @@ class HPCSchedulingEnv(gym.Env):
                 self.task_mem[i] = mem
                 self.task_io[i] = io
                 self.task_durations[i] = duration
-                if i > 0:
-                    self.task_dependencies[i] = i - 1
+                self.task_dependencies[i] = -1
                 self.task_cooldowns[i] = (cpu + mem + io) // 2
         self.time_remaining = np.sum(self.task_cooldowns) + np.sum(self.task_durations) 
         
@@ -253,7 +278,7 @@ class HPCSchedulingEnv(gym.Env):
         terminated = False
         info = {}
         
-        schedulable_tasks = False
+        schedulable_tasks = True
         
         # Check if any task is schedulable
         for i in range(self.n_tasks):
@@ -301,7 +326,7 @@ class HPCSchedulingEnv(gym.Env):
                     self.mem = min(self.mem, self.max_mem)
                     self.io = min(self.io, self.max_io)
         
-        # Apply Idle Penalty
+        # # Apply Idle Penalty
         if action == self.n_tasks and len(np.where(self.task_running)[0]) == 0 and schedulable_tasks:
             reward -= 0.1  # Idle penalty only applies when no tasks are running and none are schedulable
         
