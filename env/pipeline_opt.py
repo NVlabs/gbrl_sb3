@@ -238,6 +238,12 @@ class HPCSchedulingEnv(gym.Env):
         self.n_tasks = n_tasks
         self.max_time = max_time
         self.is_mixed = not one_hot_task_types
+        self.run_status = {0: 'running', 1: 'completed', 2: 'idle'}
+        self.schedule_status = {0: 'finished', 1: 'schedulable', 2: 'no_resources', 3: 'dependency_incomplete', 4: 'cooldown_active'}
+
+        # feature categories:
+        # run_status: running, completed, idle
+        # status: schedulable, dependency unsatisfied, resources unavailable, cooldown_active
         
         # Action space: Choose a task or No-Op
         self.action_space = spaces.Discrete(self.n_tasks + 1)  # Tasks + No-Op
@@ -245,11 +251,12 @@ class HPCSchedulingEnv(gym.Env):
         # Observation space
         # Global State: cpu_available, mem_available, io_available, time_remaining
         # Task-Level: duration, required_CPU, required_MEM, required_IO, is_running, is_completed, cooldown_timer, cooldown_active
-        task_features = 9 + (self.n_tasks + 1) if not self.is_mixed else 10
+        global_features = 6
+        task_features = len(self.run_status) + len(self.schedule_status) + 5 if not self.is_mixed else 7
         self.observation_space = spaces.Box(
             low=0,
             high=1,
-            shape=(4 + self.n_tasks * task_features,),  # 4 global + 8 per task
+            shape=(global_features + self.n_tasks * task_features,),  # 4 global + 8 per task
             dtype=np.float32
         )
         
@@ -271,8 +278,34 @@ class HPCSchedulingEnv(gym.Env):
         self.task_running = np.zeros(self.n_tasks, dtype=bool)
         self.task_completed = np.zeros(self.n_tasks, dtype=bool)
         self.task_dependencies = np.random.choice([-1] + list(range(self.n_tasks)), size=self.n_tasks)
+        self.prev_action = 0
         
         return self._get_observation(), {}
+    
+    def _get_run_status(self, task_i):
+        if self.task_running[task_i]:
+             return 0
+        if self.task_completed[task_i]:
+            return 1 
+        return 2
+    
+    def _get_schedule_status(self, task_i):
+        has_resource = self.task_cpu[task_i] <= self.cpu and self.task_mem[task_i] <= self.mem and self.task_io[task_i] <= self.io
+        has_cooldown = self.task_cooldowns[task_i] > 0
+        completed = self.task_completed[task_i]
+        running = self.task_running[task_i]
+        depends_on = self.task_dependencies[task_i]
+        dependency_completed = (depends_on == -1) or self.task_completed[depends_on]
+        if running or completed:
+            return 0
+        if has_resource and dependency_completed and not has_cooldown:
+            return 1
+        elif not has_resource and dependency_completed and not has_cooldown:
+            return 2
+        elif has_resource and not dependency_completed:
+            return 3
+        else:
+            return 4
     
     def _get_observation(self):
         """Construct the observation vector."""
@@ -282,29 +315,33 @@ class HPCSchedulingEnv(gym.Env):
             self.io,
             self.time_remaining
         ]
+
+        if not self.is_mixed:
+            obs.append(self.prev_action)
+        else:
+            obs.append(str(self.prev_action).encode('utf-8'))
+
+        n_schedulable_tasks = 0
         
         for i in range(self.n_tasks):
-            has_resource = self.task_cpu[i] <= self.cpu and self.task_mem[i] <= self.mem and self.task_io[i] <= self.io
             depends_on = self.task_dependencies[i]
-            dependency_completed = (depends_on == -1) or self.task_completed[depends_on]
-            is_schedulable = has_resource and not self.task_running[i] and not self.task_completed[i] and dependency_completed
+            run_status = self._get_run_status(i)
+            schedule_status = self._get_schedule_status(i) 
+            if schedule_status == 1:
+                n_schedulable_tasks += 1
             if not self.is_mixed:
-                one_hot = [0] * (self.n_tasks + 1)
-                if depends_on == -1:
-                    one_hot[-1] = 1
-                else:
-                    one_hot[depends_on] = 1
+                one_hot_run = [0] * len(self.run_status)
+                one_hot_run[run_status] = 1
+                one_hot_schedule = [0] * len(self.schedule_status)
+                one_hot_schedule[schedule_status] = 1
                 obs.extend([
                     self.task_durations[i],
                     self.task_cpu[i],
                     self.task_mem[i],
                     self.task_io[i],
-                    int(self.task_running[i]),
-                    int(self.task_completed[i]),
-                    int(is_schedulable),
-                    self.task_cooldowns[i],
-                    *one_hot,
-                    int(dependency_completed)
+                    *one_hot_run,
+                    *one_hot_schedule,
+                    depends_on,
                 ])
             else:
                 obs.extend([
@@ -312,14 +349,11 @@ class HPCSchedulingEnv(gym.Env):
                     self.task_cpu[i],
                     self.task_mem[i],
                     self.task_io[i],
-                    str(bool(self.task_running[i])).encode('utf-8'),
-                    str(bool(self.task_completed[i])).encode('utf-8'),
-                    str(bool(is_schedulable)).encode('utf-8'),
-                    self.task_cooldowns[i],
+                    self.run_status[run_status].encode('utf-8'),
+                    self.schedule_status[schedule_status].encode('utf-8'),
                     str(depends_on).encode('utf-8'),
-                    str(dependency_completed).encode('utf-8'),
                 ])
-        
+        obs.append(n_schedulable_tasks)
         return np.array(obs, dtype=np.float32 if not self.is_mixed else object)
     
     def step(self, action):
@@ -382,7 +416,7 @@ class HPCSchedulingEnv(gym.Env):
         
         # Apply Idle Penalty
         if action == self.n_tasks and len(np.where(self.task_running)[0]) == 0 and no_schedulable_tasks:
-            reward -= 0.01  # Idle penalty only applies when no tasks are running and none are schedulable
+            reward -= 0.1  # Idle penalty only applies when no tasks are running and none are schedulable
         
         # Time Decrement
         self.time_remaining -= 1
@@ -394,7 +428,10 @@ class HPCSchedulingEnv(gym.Env):
             bonus = 1 if self.time_remaining > 0 and np.sum(self.task_completed) == self.n_tasks else 0 
             reward += bonus
         
-        return self._get_observation(), reward, terminated, False, info
+        obs = self._get_observation()
+        self.prev_action = action
+        
+        return obs, reward, terminated, False, info
     
     def render(self, mode='human'):
         """Display the current state."""
@@ -421,5 +458,5 @@ def register_pipeline_opt_tests():
     register(
         id="pipeline-v1",
         entry_point="env.pipeline_opt:HPCSchedulingEnv",
-        kwargs={'n_tasks': 10},
+        kwargs={'n_tasks': 5},
     )
