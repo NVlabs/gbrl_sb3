@@ -107,7 +107,7 @@ class EquationEnv(gym.Env):
         info = {}
         state = self._gen_state(action)
         if state[0] == 1 and state[1] == 0:  # Isolating x condition
-            reward = 1.0
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps)
             terminated = True
         # elif state[1] == 0 and prev_state[1] != 0:  # First time isolating the constant
         #     reward = 0.5
