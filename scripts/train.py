@@ -132,9 +132,11 @@ if __name__ == '__main__':
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'equation':
         register_equation_tests()
-        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS and 'v1' in args.env_name else False
+        vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS and 'v1' in args.env_name else DummyVecEnv
+        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
         if args.evaluate:
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
     elif args.env_type == 'pipeline_opt':
         register_pipeline_opt_tests()
         args.env_kwargs['one_hot_task_types'] = False if args.algo_type in CATEGORICAL_ALGOS else True

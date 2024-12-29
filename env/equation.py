@@ -18,19 +18,31 @@ class EquationEnv(gym.Env):
     based on logical dependencies.
     """
     
-    def __init__(self):
+    def __init__(self, with_history: bool = False, is_mixed: bool = False):
         super(EquationEnv, self).__init__()
 
         # actions are add/ subtract/ divide/ multiply and multiply by -1
         
         # self.action_space = spaces.Discrete(4*9 + 1) 
         # self.action_space = spaces.Discrete(4*9 + 1) 
-        self.action_space = spaces.MultiDiscrete([4, 9, 1])
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(3, ), dtype=float)
+        self.n_action_types = 4
+        self.digits = 9
+        self.inverse = 2
+        self.with_history = with_history
+
+        self.coef = 3
+        shape = self.coef
+        if self.with_history:
+            if is_mixed:
+                shape = self.coef + 3
+            else:
+                shape = self.coef + self.n_action_types + self.digits + self.inverse
+        self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.inverse])
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
         self.step_count = 0
         self.max_steps = 50
+        self.is_mixed = is_mixed
 
-    
     def reset(self, seed=None, options=None):
         """Reset the environment to the initial state."""
         nums = [] 
@@ -38,8 +50,20 @@ class EquationEnv(gym.Env):
             digit = np.random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
             sign = np.random.choice([-1, 1])
             nums.append(digit*sign)
+        if self.with_history:
+            if self.is_mixed:
+                nums.append('None'.encode('utf-8'))
+                nums.append(0)
+                nums.append('None'.encode('utf-8'))
+            else:
+                one_hot = [0] * self.n_action_types
+                nums.extend(one_hot)
+                one_hot = [0] * self.digits
+                nums.extend(one_hot)
+                one_hot = [0] * self.inverse
+                nums.extend(one_hot)
         self.step_count = 0
-        self.state = np.array(nums, dtype=np.single)
+        self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
         return self.state, {}
     
     def _gen_state(self, action):
@@ -48,29 +72,29 @@ class EquationEnv(gym.Env):
         # action_type = action // 9
         # action_number = action % 9
         if minus_1:
-            state = -state 
+            state[:self.coef] = -state[:self.coef] 
         elif action_type == 0:
             state[1] += action_number + 1
             state[2] += action_number + 1
         elif action_type == 1:
-            state[1] -= action_number+ 1
+            state[1] -= action_number + 1
             state[2] -= action_number + 1
         elif action_type == 2:
-            state = state / (action_number + 1)
+            state[:self.coef] = state[:self.coef] / (action_number + 1)
         else:
-            state = state * (action_number + 1)
-        # if action_type == 5:
-        #     state = -state 
-        # elif action_type == 0:
-        #     state[1] += action_number + 1
-        #     state[2] += action_number + 1
-        # elif action_type == 1:
-        #     state[1] -= action_number+ 1
-        #     state[2] -= action_number + 1
-        # elif action_type == 2:
-        #     state = state / (action_number + 1)
-        # else:
-        #     state = state * (action_number + 1)
+            state[:self.coef] = state[:self.coef] * (action_number + 1)
+        
+        if self.with_history:
+            if self.is_mixed: 
+                state[self.coef] = str(action_type).encode('utf-8')
+                state[self.coef + 1] = action_number + 1
+                state[self.coef + 2] = str(bool(minus_1)).encode('utf-8')
+            else:
+                state[self.coef:] = 0
+                state[self.coef + action_type] = 1 
+                state[self.coef + self.n_action_types + action_number] = 1 
+                state[self.coef + self.n_action_types + self.digits + minus_1] = 1 
+
         self.state = state
         return state
     
@@ -90,7 +114,7 @@ class EquationEnv(gym.Env):
         # elif prev_state[1] == 0 and state[1] == 0:  # Repeating an invalid step
         #     terminated = True
 
-        if np.isnan(state).any() or np.isinf(state).any():
+        if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
             reward = -1
             terminated = True
             
@@ -111,4 +135,9 @@ def register_equation_tests():
         id="Equation-v0",
         entry_point="env.equation:EquationEnv",
         kwargs={},
+    )
+    register(
+        id="Equation-v1",
+        entry_point="env.equation:EquationEnv",
+        kwargs={'with_history': True},
     )
