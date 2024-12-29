@@ -92,14 +92,17 @@ class HPCSchedulingEnv(gym.Env):
             # self.time_remaining = 8
         
         elif rule == 2:  # Sequential via Dependencies
+            task_inds = list(range(self.n_tasks))
+            np.random.shuffle(task_inds)
             for i in range(self.n_tasks):
                 self.task_cpu[i] = np.random.randint(1, self.max_cpu // 2)
                 self.task_mem[i] = np.random.randint(1, self.max_mem // 2)
                 self.task_io[i] = np.random.randint(1, self.max_io // 2)
                 self.task_durations[i] = np.random.randint(2, 5)
                 if i > 0:
-                    self.task_dependencies[i] = i - 1
+                    self.task_dependencies[task_inds[i]] = task_inds[i - 1]
                 self.task_cooldowns[i] = np.random.randint(1, 3)
+            
                 # self.time_remaining = np.sum(self.task_cooldowns) + np.sum(self.task_durations)
         
         elif rule == 3:  # Parallel x-Track
