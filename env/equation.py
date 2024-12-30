@@ -151,9 +151,11 @@ class FractionLinearEquationEnv(gym.Env):
     def reset(self, seed=None, options=None):
         """Reset the environment to the initial state."""
         nums = [] 
-        for _ in range(4):
+        for i in range(4):
             digit = np.random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
             sign = np.random.choice([-1, 1])
+            if i == 3:
+                sign = 1
             nums.append(digit*sign)
         self.step_count = 0
         self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
@@ -289,6 +291,21 @@ class TwoVariableLinearEquationEnv(gym.Env):
                     state[5] = 0
             else:
                 state[0] -= state[4]
+                state[4] = 0
+                if self.is_mixed:
+                    state[5] = 'True'
+                else:
+                    state[5] = 1
+        else:
+            if x_on_left:
+                state[4] += state[0]
+                state[0] = 0
+                if self.is_mixed:
+                    state[5] = 'False'
+                else:
+                    state[5] = 0
+            else:
+                state[0] += state[4]
                 state[4] = 0
                 if self.is_mixed:
                     state[5] = 'True'
