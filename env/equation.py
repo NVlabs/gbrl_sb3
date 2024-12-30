@@ -11,6 +11,7 @@ from gymnasium import spaces
 import numpy as np
 from gymnasium.envs.registration import register
 
+
 class LinearEquationEnv(gym.Env):
     """
     Custom Gym Environment for isolating a linear equation: start with: ax + b = c
@@ -130,7 +131,7 @@ class FractionLinearEquationEnv(gym.Env):
     Goal: Isolate x
     """
     
-    def __init__(self, with_history: bool = False, is_mixed: bool = False):
+    def __init__(self, is_mixed: bool = False):
         super(FractionLinearEquationEnv, self).__init__()
 
         # actions are add/ subtract/ divide/ multiply and multiply by -1
@@ -138,15 +139,9 @@ class FractionLinearEquationEnv(gym.Env):
         self.n_action_types = 4
         self.digits = 9
         self.inverse = 2
-        self.with_history = with_history
 
         self.coef = 4
         shape = self.coef
-        if self.with_history:
-            if is_mixed:
-                shape = self.coef + 3
-            else:
-                shape = self.coef + self.n_action_types + self.digits + self.inverse
         self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.inverse])
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
         self.step_count = 0
@@ -160,18 +155,6 @@ class FractionLinearEquationEnv(gym.Env):
             digit = np.random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
             sign = np.random.choice([-1, 1])
             nums.append(digit*sign)
-        if self.with_history:
-            if self.is_mixed:
-                nums.append('None'.encode('utf-8'))
-                nums.append(0)
-                nums.append('None'.encode('utf-8'))
-            else:
-                one_hot = [0] * self.n_action_types
-                nums.extend(one_hot)
-                one_hot = [0] * self.digits
-                nums.extend(one_hot)
-                one_hot = [0] * self.inverse
-                nums.extend(one_hot)
         self.step_count = 0
         self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
         self.frac_value = self.state[3]
@@ -184,30 +167,21 @@ class FractionLinearEquationEnv(gym.Env):
         # action_type = action // 9
         # action_number = action % 9
         if minus_1:
-            state[:self.coef] = -state[:self.coef] 
+            state[0] *= -1
+            state[1] *= -1
+            state[2] *= -1 
         elif action_type == 0:
-            state[1] += action_number + 1
+            state[1] += (action_number + 1) * state[3]
             state[2] += action_number + 1
         elif action_type == 1:
-            state[1] -= action_number + 1
+            state[1] -= (action_number + 1) * state[3]
             state[2] -= action_number + 1
         elif action_type == 2:
-            state[:self.coef-1] = state[:self.coef-1] / (action_number + 1)
-            state[3] *= (action_number + 1)
+            state[2] = state[2] / (action_number + 1) 
+            state[3] = state[3] * (action_number + 1)
         else:
-            state[:self.coef-1] = state[:self.coef-1] * (action_number + 1)
+            state[2] = state[2] * (action_number + 1)
             state[3] = state[3] / (action_number + 1)
-        
-        if self.with_history:
-            if self.is_mixed: 
-                state[self.coef] = str(action_type).encode('utf-8')
-                state[self.coef + 1] = action_number + 1
-                state[self.coef + 2] = str(bool(minus_1)).encode('utf-8')
-            else:
-                state[self.coef:] = 0
-                state[self.coef + action_type] = 1 
-                state[self.coef + self.n_action_types + action_number] = 1 
-                state[self.coef + self.n_action_types + self.digits + minus_1] = 1 
         self.state = state
         return state
     
@@ -250,25 +224,18 @@ class TwoVariableLinearEquationEnv(gym.Env):
     Goal: Isolate x
     """
     
-    def __init__(self, with_history: bool = False, is_mixed: bool = False):
+    def __init__(self, is_mixed: bool = False):
         super(TwoVariableLinearEquationEnv, self).__init__()
 
         # actions are add/ subtract/ divide/ multiply /add x / subtract x and multiply by -1
         
         self.n_action_types = 4
         self.digits = 9
-        self.inverse = 2
-        self.move_x = 2
-        self.with_history = with_history
-
+        self.additional = 4
         self.coef = 5 
         shape = self.coef + 1
-        if self.with_history:
-            if is_mixed:
-                shape = self.coef + 3 + 1
-            else:
-                shape = self.coef + self.n_action_types + self.digits + self.inverse + 1
-        self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.inverse, self.move_x])
+        
+        self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.additional])
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
         self.step_count = 0
         self.max_steps = 50
@@ -284,19 +251,7 @@ class TwoVariableLinearEquationEnv(gym.Env):
         
         nums.extend([0,
                      'True'.encode('utf-8') if self.is_mixed else 1])
-    
-        if self.with_history:
-            if self.is_mixed:
-                nums.append('None'.encode('utf-8'))
-                nums.append(0)
-                nums.append('None'.encode('utf-8'))
-            else:
-                one_hot = [0] * self.n_action_types
-                nums.extend(one_hot)
-                one_hot = [0] * self.digits
-                nums.extend(one_hot)
-                one_hot = [0] * self.inverse
-                nums.extend(one_hot)
+
         self.step_count = 0
         self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
         self.prev_x_pos = True
@@ -310,48 +265,35 @@ class TwoVariableLinearEquationEnv(gym.Env):
             x_on_left = True if x_on_left == 'True' else False 
         else:
             x_on_left = bool(x_on_left)
-        action_type, action_number, minus_1, move_x = action
-        if minus_1:
+        action_type, action_number, additional = action
+        if additional == 0:
+            if action_type == 0:
+                state[2] += action_number + 1
+                state[3] += action_number + 1
+            elif action_type == 1:
+                state[2] -= action_number + 1
+                state[3] -= action_number + 1
+            elif action_type == 2:
+                state[:self.coef] = state[:self.coef] / (action_number + 1)
+            else:
+                state[:self.coef] = state[:self.coef] * (action_number + 1)
+        elif additional == 1:
             state[:self.coef] = -state[:self.coef] 
-        elif move_x:
+        elif additional == 2:
             if x_on_left:
-                state[4] += state[0]
+                state[4] -= state[0]
                 state[0] = 0
-                self.switched = True
                 if self.is_mixed:
                     state[5] = 'False'
                 else:
                     state[5] = 0
             else:
-                state[0] += state[4]
+                state[0] -= state[4]
                 state[4] = 0
                 if self.is_mixed:
                     state[5] = 'True'
                 else:
                     state[5] = 1
-
-        elif action_type == 0:
-            state[2] += action_number + 1
-            state[3] += action_number + 1
-        elif action_type == 1:
-            state[2] -= action_number + 1
-            state[3] -= action_number + 1
-        elif action_type == 2:
-            state[:self.coef] = state[:self.coef] / (action_number + 1)
-        else:
-            state[:self.coef] = state[:self.coef] * (action_number + 1)
-        
-        if self.with_history:
-            if self.is_mixed: 
-                state[self.coef] = str(action_type).encode('utf-8')
-                state[self.coef + 1] = action_number + 1
-                state[self.coef + 2] = str(bool(minus_1)).encode('utf-8')
-            else:
-                state[self.coef:] = 0
-                state[self.coef + action_type] = 1 
-                state[self.coef + self.n_action_types + action_number] = 1 
-                state[self.coef + self.n_action_types + self.digits + minus_1] = 1 
-
         self.state = state
         return state
     
@@ -376,7 +318,7 @@ class TwoVariableLinearEquationEnv(gym.Env):
         if self.prev_x_pos and not x_on_left and not self.bonus_given:
             reward += 0.1
             self.bonus_given = True
-        if not self.prev_x_pos != x_on_left:
+        if not self.prev_x_pos and x_on_left:
             reward += -0.5
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
