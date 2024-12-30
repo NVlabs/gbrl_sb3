@@ -283,7 +283,7 @@ class DistanceFetchEnv(MiniGridEnv):
 
 
 class SpuriousFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False, purple_ball: bool = False, gray_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False, purple_ball: bool = False, grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -298,7 +298,7 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.color_names = sorted(list(self.colors.keys()))
         self.randomize = randomize
         self.purple_ball = purple_ball
-        self.gray_ball = gray_ball
+        self.grey_ball = grey_ball
         self.use_box = use_box
         self.mission_based = mission_based
         MISSION_SYNTAX = [
@@ -384,9 +384,9 @@ class SpuriousFetchEnv(MiniGridEnv):
         if self.purple_ball:
             purple_ball = Ball('purple')
             self.place_obj(purple_ball, reject_fn=near_obj)
-        if self.gray_ball:
-            gray_ball = Ball('gray')
-            self.place_obj(gray_ball, reject_fn=near_obj)
+        if self.grey_ball:
+            grey_ball = Ball('grey')
+            self.place_obj(grey_ball, reject_fn=near_obj)
 
         self.targetType = target.type
         self.targetColor = target.color
@@ -496,5 +496,5 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-SpuriousFetch-8x8-N3-v5",
         entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "use_box": False, "purple_ball": True, 'gray_ball': True},
+        kwargs={"size": 8, "numObjs": 3, "use_box": False, "purple_ball": True, 'grey_ball': True},
     )
