@@ -230,7 +230,7 @@ class FractionLinearEquationEnv(gym.Env):
             reward += 0.1
             self.bonus_given = True
         if self.frac_value == 1 and state[3] != 1:
-            reward -= -0.5
+            reward += -0.5
             
         if state[0] == 0:
             terminated = True
@@ -372,12 +372,11 @@ class TwoVariableLinearEquationEnv(gym.Env):
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 # remove bonus
             terminated = True
 
-        if self.prev_x_post and not x_on_left and not self.bonus_given:
+        if self.prev_x_pos and not x_on_left and not self.bonus_given:
             reward += 0.1
             self.bonus_given = True
-        if not self.prev_x_post != x_on_left:
-            reward -= -0.5
-
+        if not self.prev_x_pos != x_on_left:
+            reward += -0.5
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
             reward = -1
