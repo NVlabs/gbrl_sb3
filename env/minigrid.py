@@ -281,8 +281,9 @@ class DistanceFetchEnv(MiniGridEnv):
         obs['distances'] = self.distances
         return obs, info
 
+
 class SpuriousFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False, purple_ball: bool = False, gray_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -296,6 +297,8 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.test_box_idx = test_box_idx
         self.color_names = sorted(list(self.colors.keys()))
         self.randomize = randomize
+        self.purple_ball = purple_ball
+        self.gray_ball = gray_ball
         self.use_box = use_box
         self.mission_based = mission_based
         MISSION_SYNTAX = [
@@ -323,14 +326,11 @@ class SpuriousFetchEnv(MiniGridEnv):
         # self.agent_pov = False
         self.metadata['render_fps'] = 2
         # self.metadata['render_fps'] = 10
-
-    def _rand_color(self):
-        """Sample a color with custom probabilities."""
-        return np.random.choice(self.color_names)
     
     def _rand_obj(self):
         """Sample a color with custom probabilities."""
         return np.random.choice([0, 1, 2])
+    
     @staticmethod
     def _gen_mission(syntax: str, color: str, obj_type: str):
         return f"{syntax} {color} {obj_type}"
@@ -375,12 +375,18 @@ class SpuriousFetchEnv(MiniGridEnv):
         box_obj = Box('red')
         if self.use_box:
             if self.randomize:
-                self.place_obj(box_obj)
+                self.place_obj(box_obj, reject_fn=near_obj)
             elif self.mission_based:
                 self.place_next_to(box_obj, target)
             else:
                 obj_idx = np.random.choice([i for i in range(2) if i != target_idx])
                 self.place_next_to(box_obj, objs[obj_idx])
+        if self.purple_ball:
+            purple_ball = Ball('purple')
+            self.place_obj(purple_ball, reject_fn=near_obj)
+        if self.gray_ball:
+            gray_ball = Ball('gray')
+            self.place_obj(gray_ball, reject_fn=near_obj)
 
         self.targetType = target.type
         self.targetColor = target.color
@@ -405,52 +411,6 @@ class SpuriousFetchEnv(MiniGridEnv):
                 terminated = True
 
         return obs, reward, terminated, truncated, info
-
-    # def render(self):
-    #     img = self.get_frame(self.highlight, self.tile_size, self.agent_pov)
-
-    #     if self.render_mode == "human":
-    #         img = np.transpose(img, axes=(1, 0, 2))
-    #         if self.render_size is None:
-    #             self.render_size = img.shape[:2]
-    #         if self.window is None:
-    #             pygame.init()
-    #             pygame.display.init()
-    #             self.window = pygame.display.set_mode(
-    #                 (self.screen_size, self.screen_size)
-    #             )
-    #             pygame.display.set_caption("minigrid")
-    #         if self.clock is None:
-    #             self.clock = pygame.time.Clock()
-    #         surf = pygame.surfarray.make_surface(img)
-
-    #         # Create background with mission description
-    #         offset = surf.get_size()[0] * 0.1
-    #         # offset = 32 if self.agent_pov else 64
-    #         bg = pygame.Surface(
-    #             (int(surf.get_size()[0] + offset), int(surf.get_size()[1] + offset))
-    #         )
-    #         bg.convert()
-    #         bg.fill((255, 255, 255))
-    #         bg.blit(surf, (offset / 2, 0))
-
-    #         bg = pygame.transform.smoothscale(bg, (self.screen_size, self.screen_size))
-
-    #         font_size = 22
-    #         text = self.mission
-    #         font = pygame.freetype.SysFont(pygame.font.get_default_font(), font_size)
-    #         text_rect = font.get_rect(text, size=font_size)
-    #         text_rect.center = bg.get_rect().center
-    #         text_rect.y = bg.get_height() - font_size * 1.5
-    #         font.render_to(bg, text_rect, text, size=font_size)
-
-    #         self.window.blit(bg, (0, 0))
-    #         pygame.event.pump()
-    #         self.clock.tick(self.metadata["render_fps"])
-    #         pygame.display.flip()
-
-    #     elif self.render_mode == "rgb_array":
-    #         return img
 
 
 def register_minigrid_tests():
@@ -527,4 +487,14 @@ def register_minigrid_tests():
         id="MiniGrid-SpuriousFetch-8x8-N3-v3",
         entry_point="env.minigrid:SpuriousFetchEnv",
         kwargs={"size": 8, "numObjs": 3, "use_box": False},
+    )
+    register(
+        id="MiniGrid-SpuriousFetch-8x8-N3-v4",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "use_box": False, "purple_ball": True},
+    )
+    register(
+        id="MiniGrid-SpuriousFetch-8x8-N3-v5",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "use_box": False, "purple_ball": True, 'gray_ball': True},
     )

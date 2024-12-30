@@ -192,10 +192,11 @@ class FractionLinearEquationEnv(gym.Env):
             state[1] -= action_number + 1
             state[2] -= action_number + 1
         elif action_type == 2:
-            state[2] = state[2] / (action_number + 1)
+            state[:self.coef-1] = state[:self.coef-1] / (action_number + 1)
             state[3] *= (action_number + 1)
         else:
             state[:self.coef-1] = state[:self.coef-1] * (action_number + 1)
+            state[3] = state[3] / (action_number + 1)
         
         if self.with_history:
             if self.is_mixed: 
