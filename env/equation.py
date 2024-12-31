@@ -124,25 +124,24 @@ class LinearEquationEnv(gym.Env):
             truncated = True
         return state, reward, terminated, truncated, info
 
-    
-class FractionLinearEquationEnv(gym.Env):
+class BalancedTwoVariableLinearEquationEnv(gym.Env):
     """
-    Custom Gym Environment for isolating a linear equation: start with: (ax + b)/d = c
-    Goal: Isolate x
+    Custom Gym Environment for isolating a linear equation: start with: ax + b = cy + d
+    Goal: isolate y to the form = y = (d - b - ax) / c
     """
     
     def __init__(self, is_mixed: bool = False):
-        super(FractionLinearEquationEnv, self).__init__()
+        super(BalancedTwoVariableLinearEquationEnv, self).__init__()
 
-        # actions are add/ subtract/ divide/ multiply and multiply by -1
-        
+        # actions are add/ subtract/ divide/ multiply /add x / subtract x /add y /subtract y and multiply by -1
+        self.indices = {'a': 0, 'b': 1, 'y': 2, 'c': 3, 'd': 4, 'x': 5, 'x_pos': 6, 'y_pos': 7}
         self.n_action_types = 4
         self.digits = 9
-        self.inverse = 2
-
-        self.coef = 4
-        shape = self.coef
-        self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.inverse])
+        self.additional = 6
+        self.coef = 6
+        shape = self.coef + 2
+        
+        self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.additional])
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
         self.step_count = 0
         self.max_steps = 50
@@ -151,74 +150,165 @@ class FractionLinearEquationEnv(gym.Env):
     def reset(self, seed=None, options=None):
         """Reset the environment to the initial state."""
         nums = [] 
-        for i in range(4):
+        for i in range(6):
             digit = np.random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
             sign = np.random.choice([-1, 1])
-            if i == 3:
-                sign = 1
-            nums.append(digit*sign)
+            if i == 2 or i == 5:
+                nums.append(0)
+            else:
+                nums.append(digit*sign)
+        
+        nums.extend([
+                     'True'.encode('utf-8') if self.is_mixed else 1,
+                     'False'.encode('utf-8') if self.is_mixed else 1,
+                     ])
+
         self.step_count = 0
         self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
-        self.frac_value = self.state[3]
-        self.bonus_given = False
+        self.prev_x_pos = True
+        self.prev_y_pos = True
+        self.x_bonus_given = False
+        self.y_bonus_given = False
         return self.state, {}
     
     def _gen_state(self, action):
+        # ax + b + y_place_holder = cy + d + x_place_holder
+        indices = self.indices
         state = self.state
-        action_type, action_number, minus_1 = action
-        # action_type = action // 9
-        # action_number = action % 9
-        if minus_1:
-            state[0] *= -1
-            state[1] *= -1
-            state[2] *= -1 
-        elif action_type == 0:
-            state[1] += (action_number + 1) * state[3]
-            state[2] += action_number + 1
-        elif action_type == 1:
-            state[1] -= (action_number + 1) * state[3]
-            state[2] -= action_number + 1
-        elif action_type == 2:
-            state[2] = state[2] / (action_number + 1) 
-            state[3] = state[3] * (action_number + 1)
+        x_on_left = state[indices['x_pos']]
+        if self.is_mixed:
+            x_on_left = True if x_on_left == 'True' else False 
         else:
-            state[2] = state[2] * (action_number + 1)
-            state[3] = state[3] / (action_number + 1)
+            x_on_left = bool(x_on_left)
+        y_on_right = state[indices['y_pos']]
+        if self.is_mixed:
+            y_on_right = True if y_on_right == 'True' else False 
+        else:
+            y_on_right = bool(y_on_right)
+        action_type, action_number, additional = action
+        if additional == 0:
+            if action_type == 0:
+                state[indices['b']] += action_number + 1
+                state[indices['d']] += action_number + 1
+            elif action_type == 1:
+                state[indices['b']] -= action_number + 1
+                state[indices['d']] -= action_number + 1
+            elif action_type == 2:
+                state[:self.coef] = state[:self.coef] / (action_number + 1)
+            else:
+                state[:self.coef] = state[:self.coef] * (action_number + 1)
+        elif additional == 1:
+            state[:self.coef] = -state[:self.coef] 
+        elif additional == 2: # subtract ax 
+            if x_on_left:
+                state[indices['x']] -= state[indices['a']]
+                state[indices['a']] = 0
+                if self.is_mixed:
+                    state[indices['x_pos']] = 'False'
+                else:
+                    state[indices['x_pos']] = 0
+            else:
+                state[indices['a']] -= state[indices['x']]
+                state[indices['x']] = 0
+                if self.is_mixed:
+                    state[indices['x_pos']] = 'True'
+                else:
+                    state[indices['x_pos']] = 1
+        elif additional == 3: # add ax 
+            if x_on_left:
+                state[indices['x']] += state[indices['a']]
+                state[indices['a']] = 0
+                if self.is_mixed:
+                    state[indices['x_pos']] = 'False'
+                else:
+                    state[indices['x_pos']] = 0
+            else:
+                state[indices['a']] += state[indices['x']]
+                state[indices['x']] = 0
+                if self.is_mixed:
+                    state[indices['x_pos']] = 'True'
+                else:
+                    state[indices['x_pos']] = 1
+        elif additional == 4: # subtract cy
+            # ax + b + y_place_holder = cy + d + x_place_holder
+            if y_on_right:
+                state[indices['y']] -= state[indices['c']]
+                state[indices['c']] = 0
+                if self.is_mixed:
+                    state[indices['y_pos']] = 'False'
+                else:
+                    state[indices['y_pos']] = 0
+            else:
+                state[indices['c']] -= state[indices['y']]
+                state[indices['y']] = 0
+                if self.is_mixed:
+                    state[indices['y_pos']] = 'True'
+                else:
+                    state[indices['y_pos']] = 1
+        else: # add cy
+            if y_on_right:
+                state[indices['y']] += state[indices['c']]
+                state[indices['c']] = 0
+                if self.is_mixed:
+                    state[indices['y_pos']] = 'False'
+                else:
+                    state[indices['y_pos']] = 0
+            else:
+                state[indices['c']] += state[indices['y']]
+                state[indices['y']] = 0
+                if self.is_mixed:
+                    state[indices['y_pos']] = 'True'
+                else:
+                    state[indices['y_pos']] = 1
         self.state = state
         return state
     
     def step(self, action):
         """Take an action and return the next state, reward, and done flag."""
-
+        indices = self.indices
         reward = 0
         terminated = False 
         truncated = False
         info = {}
         state = self._gen_state(action)
-        if state[0] == 1 and state[1] == 0 and state[3] == 1:  # Isolating x condition
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 # remove bonus
+        x_on_left = state[indices['x_pos']]
+        if self.is_mixed:
+            x_on_left = True if x_on_left == 'True' else False 
+        else:
+            x_on_left = bool(x_on_left)
+        y_on_right = state[indices['y_pos']]
+        if self.is_mixed:
+            y_on_right = True if y_on_right == 'True' else False 
+        else:
+            y_on_right = bool(y_on_right)
+        # ax + b + y_place_holder = cy + d + x_place_holder
+        if state[indices['a']] == 0 and state[indices['b']] == 0 and state[indices['y']] == 1 and not x_on_left:  # Isolating x condition
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1*2 # remove bonuses
             terminated = True
+
+        if self.prev_x_pos and not x_on_left and not self.x_bonus_given:
+            reward += 0.1
+            self.x_bonus_given = True
+        if not self.prev_x_pos and x_on_left:
+            reward += -0.5
+        if self.prev_y_pos and not y_on_right and not self.y_bonus_given:
+            reward += 0.1
+            self.y_bonus_given = True
+        if not self.prev_y_pos and y_on_right:
+            reward += -0.5
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
             reward = -1
             terminated = True
-
-        if self.frac_value != 1 and state[3] == 1 and not self.bonus_given:
-            reward += 0.1
-            self.bonus_given = True
-        if self.frac_value == 1 and state[3] != 1:
-            reward += -0.5
             
-        if state[0] == 0:
-            terminated = True
 
-        self.frac_value = state[3]
+        self.prev_x_pos = x_on_left
+        self.prev_y_pos = y_on_right
 
         self.step_count += 1
         if self.step_count >= self.max_steps:
             truncated = True
         return state, reward, terminated, truncated, info
-
 
 class TwoVariableLinearEquationEnv(gym.Env):
     """
@@ -373,7 +463,7 @@ def register_equation_tests():
         kwargs={},
     )
     register(
-        id="FractionLinearEquation-v0",
-        entry_point="env.equation:FractionLinearEquationEnv",
+        id="BalancedTwoVariableLinearEquation-v0",
+        entry_point="env.equation:BalancedTwoVariableLinearEquationEnv",
         kwargs={},
     )
