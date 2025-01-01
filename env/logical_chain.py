@@ -63,7 +63,7 @@ class CompareWithEnv(gym.Env):
                 current_cell['state_value'],
                 logical_category,
                 f"cell_{current_cell['target_cell']}".encode('utf-8'),
-                target_cell['state_value' ]if current_cell['visible'] else -1 ,
+                target_cell['state_value' ] if current_cell['visible'] else -1 ,
             ], dtype=object)
         else:
             logical_category_map = {
@@ -93,10 +93,12 @@ class CompareWithEnv(gym.Env):
             # Target Cell Selection
             selected_target = action
             current_cell = self.state[self.current_step]
-            
-            if selected_target == current_cell['target_cell']:
+            if self.state[self.current_step]['visible']:
+                reward = -1.0 / self.n_cells
+            elif selected_target == current_cell['target_cell']:
                 # Reveal target state value if correct cell selected
                 target_cell = self.state[selected_target]
+                # print('got correct cell')
                 self.state[self.current_step]['visible'] = True
             else:
                 reward = -1.0 / self.n_cells
@@ -117,18 +119,24 @@ class CompareWithEnv(gym.Env):
                 
                 elif correct:
                     reward = 1 / self.n_cells
+                    print('got correct prediction')
                     self.current_step += 1
                 else:
+                    print(f"incorrect prediciton predicted")
+                    reward = -1.0 / self.n_cells
                     self.current_step += 2
             else:
                  reward = -1.0 / self.n_cells
+        
+        
         
         if self.current_step >= self.n_cells:
             self.terminated = True
             self.current_step = self.n_cells - 1
         if self.step_count >= self.max_steps: 
             truncated = True
-        return self._get_observation(), reward, terminated, truncated, info
+        obs = self._get_observation()
+        return obs, reward, terminated, truncated, info
     
     def render(self, mode='human'):
         """Render the current state of the environment."""
