@@ -63,7 +63,7 @@ class CompareWithEnv(gym.Env):
                 current_cell['state_value'],
                 logical_category,
                 f"cell_{current_cell['target_cell']}".encode('utf-8'),
-                target_cell['state_value' ] if current_cell['visible'] else -1 ,
+                current_cell['state_value'] - target_cell['state_value' ] if current_cell['visible'] else -1 ,
             ], dtype=object)
         else:
             logical_category_map = {
@@ -79,7 +79,7 @@ class CompareWithEnv(gym.Env):
             target_cell_encoding[current_cell['target_cell']] = 1
             obs.extend(logical_cat)
             obs.extend(target_cell_encoding)
-            obs.append(target_cell['state_value' ]if current_cell['visible'] else -1)
+            obs.append(current_cell['state_value'] - target_cell['state_value' ]  if current_cell['visible'] else -1)
             return np.array(obs, dtype=np.single)
 
     def step(self, action):
@@ -111,11 +111,11 @@ class CompareWithEnv(gym.Env):
                 
                 correct = False
                 if current_cell['logical_category'] == 'IS_GREATER':
-                    correct = (current_cell['state_value'] > target_cell['state_value']) == bool(value_to_set)
+                    correct = (target_cell['state_value'] > 0) == bool(value_to_set)
                 elif current_cell['logical_category'] == 'IS_EQUAL':
-                    correct = (current_cell['state_value'] == target_cell['state_value']) == bool(value_to_set)
+                    correct = (target_cell['state_value'] == 0 ) == bool(value_to_set)
                 elif current_cell['logical_category'] == 'IS_LESS':
-                    correct = (current_cell['state_value'] < target_cell['state_value']) == bool(value_to_set)
+                    correct = (target_cell['state_value'] < 0) == bool(value_to_set)
                 
                 elif correct:
                     reward = 1 / self.n_cells
