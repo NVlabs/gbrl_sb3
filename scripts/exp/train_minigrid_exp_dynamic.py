@@ -57,14 +57,14 @@ CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 
-def change_target(env, n_steps):
-    if n_steps < 2500000:
+def change_target(env, n_steps, warmup = 0):
+    if n_steps < 2500000 + warmup:
         env.env.env.env.env.probs = np.array([1, 1, 1])
         print(f"Uniform sampling")
-    elif 2500000 <= n_steps < 7500000:
+    elif 2500000 + warmup <= n_steps < 7500000 + warmup:
         env.env.env.env.env.probs = np.array([0.5, 0.5, 0.0])
         print(f"No Blue Ball")
-    elif n_steps >= 7500000:
+    elif n_steps >= 7500000 + warmup:
         env.env.env.env.env.test_box_idx = 2
         env.env.env.env.env.probs = np.array([1, 1, 1])
         print(f"Uniform sampling")
