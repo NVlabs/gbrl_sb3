@@ -364,20 +364,23 @@ class ChangeEnvCallback(BaseCallback):
     :param verbose: Verbosity level: 0 for no output, 1 for info messages.
     """
     def __init__(self, change_freq: int, change_function: callable, change_function_args: tuple = (), 
-                 change_function_kwargs: dict = None, warmup_time: int = 0, verbose: int = 1):
+                 change_function_kwargs: dict = None, warmup_time: int = 0, n_envs: int = 1, verbose: int = 1):
         super().__init__(verbose=verbose)
         self.change_freq = change_freq
         self.change_function = change_function
         self.change_function_args = change_function_args
         self.change_function_kwargs = change_function_kwargs or {}
         self.warmup_time = warmup_time
+        self.n_envs = n_envs
 
     def _on_step(self) -> bool:
         # Check if the current step matches the change frequency
-        if self.n_calls % self.change_freq == 0 and self.n_calls > self.warmup_time:
+        if (self.n_calls * self.n_envs) % self.change_freq == 0 and (self.n_calls * self.n_envs) > self.warmup_time:
             if self.verbose >= 1:
                 print(f"Step {self.n_calls}: Changing environment configuration.")
             # Apply the change function to the environment
+            if 'n_steps' in self.change_function_kwargs.keys(): 
+                self.change_function_kwargs['n_steps'] = self.n_calls * self.n_envs
             if self.training_env is not None:
                 if isinstance(self.training_env, VecEnv):
                     for env_idx in range(self.training_env.num_envs):

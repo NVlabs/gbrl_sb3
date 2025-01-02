@@ -57,23 +57,17 @@ CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 
-def change_target(env):
-    if env.env.env.env.env.test_box_idx is None:
-        env.env.env.env.env.test_box_idx = 0 
-        env.env.env.env.env.probs = np.array([0.7, 0.15, 0.15])
-        print(f"Changed test_box_idx from None to Red ball")
-    elif env.env.env.env.env.test_box_idx == 0:
-        env.env.env.env.env.test_box_idx = 1
-        env.env.env.env.env.probs = np.array([0.15, 0.7, 0.15])
-        print(f"Changed test_box_idx from Red ball to Green ball")
-    elif env.env.env.env.env.test_box_idx == 1:
+def change_target(env, n_steps):
+    if n_steps < 2500000:
+        env.env.env.env.env.probs = np.array([1, 1, 1])
+        print(f"Uniform sampling")
+    elif 2500000 <= n_steps < 7500000:
+        env.env.env.env.env.probs = np.array([0.5, 0.5, 0.0])
+        print(f"No Blue Ball")
+    elif n_steps >= 7500000:
         env.env.env.env.env.test_box_idx = 2
-        env.env.env.env.env.probs = np.array([0.15, 0.15, 0.7])
-        print(f"Changed test_box_idx from Green ball to Blue ball")
-    else: 
-        env.env.env.env.env.test_box_idx = None
-        env.env.env.env.env.probs = np.array([1.0, 1.0, 1.0]) / 3.0
-        print(f"Changed test_box_idx from Blue Ball to None")
+        env.env.env.env.env.probs = np.array([1, 1, 1])
+        print(f"Uniform sampling")
 
 if __name__ == '__main__':
     args = parse_args()
@@ -101,9 +95,9 @@ if __name__ == '__main__':
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
     if args.callback_kwargs is None:
-        args.callback_kwargs = {}
+        args.callback_kwargs = {'n_steps': 0}
     warmup_time = args.callback_kwargs.get('warmup_time', 0)
-    callback_list.append(ChangeEnvCallback(int(2500000 / args.num_envs), change_target, warmup_time=int(warmup_time / args.num_envs)))
+    callback_list.append(ChangeEnvCallback(2500000, change_target, warmup_time=warmup_time))
     # callback_list.append(ChangeEnvCallback(int(1000 / args.num_envs), change_target, warmup_time=int(warmup_time / args.num_envs)))
 
     if args.wrapper == 'normalize':
