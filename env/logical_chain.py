@@ -63,7 +63,7 @@ class CompareWithEnv(gym.Env):
                 current_cell['state_value'],
                 logical_category,
                 f"cell_{current_cell['target_cell']}".encode('utf-8'),
-                current_cell['state_value'] - target_cell['state_value' ] if current_cell['visible'] else -1 ,
+                target_cell['state_value' ] if current_cell['visible'] else -1 ,
             ], dtype=object)
         else:
             logical_category_map = {
@@ -79,7 +79,7 @@ class CompareWithEnv(gym.Env):
             target_cell_encoding[current_cell['target_cell']] = 1
             obs.extend(logical_cat)
             obs.extend(target_cell_encoding)
-            obs.append(current_cell['state_value'] - target_cell['state_value' ]  if current_cell['visible'] else -1)
+            obs.append(target_cell['state_value'] if current_cell['visible'] else -1)
             return np.array(obs, dtype=np.single)
 
     def step(self, action):
@@ -96,9 +96,6 @@ class CompareWithEnv(gym.Env):
             if self.state[self.current_step]['visible']:
                 reward = -1.0 / self.n_cells
             elif selected_target == current_cell['target_cell']:
-                # Reveal target state value if correct cell selected
-                target_cell = self.state[selected_target]
-                # print('got correct cell')
                 self.state[self.current_step]['visible'] = True
             else:
                 reward = -1.0 / self.n_cells
@@ -107,31 +104,29 @@ class CompareWithEnv(gym.Env):
             if self.state[self.current_step]['visible']:
                 value_to_set = action - self.n_cells
                 current_cell = self.state[self.current_step]
-                target_cell = self.state[current_cell['target_cell']]
+                target_cell = self.state[current_cell['target_cell']] 
                 
                 correct = False
                 if current_cell['logical_category'] == 'IS_GREATER':
-                    correct = (target_cell['state_value'] > 0) == bool(value_to_set)
+                    correct = (current_cell['state_value'] > target_cell['state_value']) == bool(value_to_set)
                 elif current_cell['logical_category'] == 'IS_EQUAL':
-                    correct = (target_cell['state_value'] == 0 ) == bool(value_to_set)
+                    correct = (current_cell['state_value'] == target_cell['state_value'] ) == bool(value_to_set)
                 elif current_cell['logical_category'] == 'IS_LESS':
-                    correct = (target_cell['state_value'] < 0) == bool(value_to_set)
+                    correct = (current_cell['state_value'] < target_cell['state_value']) == bool(value_to_set)
                 
-                elif correct:
+                if correct:
                     reward = 1 / self.n_cells
-                    print('got correct prediction')
+                    # print('got correct prediction')
                     self.current_step += 1
                 else:
-                    print(f"incorrect prediciton predicted")
-                    reward = -1.0 / self.n_cells
+                    # print(f"incorrect prediciton predicted")
+                    # reward = -1.0 / self.n_cells
                     self.current_step += 2
-            else:
-                 reward = -1.0 / self.n_cells
-        
-        
+            # else:
+            #      reward = -1.0 / self.n_cells
         
         if self.current_step >= self.n_cells:
-            self.terminated = True
+            terminated = True
             self.current_step = self.n_cells - 1
         if self.step_count >= self.max_steps: 
             truncated = True
