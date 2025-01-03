@@ -375,7 +375,7 @@ class ChangeEnvCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         # Check if the current step matches the change frequency
-        if (self.n_calls * self.n_envs) % self.change_freq == 0 and (self.n_calls * self.n_envs) > self.warmup_time:
+        if (self.n_calls * self.n_envs) % self.change_freq == 0:
             if self.verbose >= 1:
                 print(f"Step {self.n_calls}: Changing environment configuration.")
             # Apply the change function to the environment

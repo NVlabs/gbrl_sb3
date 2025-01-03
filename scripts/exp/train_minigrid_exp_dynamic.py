@@ -57,7 +57,7 @@ CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 
-def change_target(env, n_steps, warmup = 0):
+def change_target(env, n_steps=1, warmup = 0):
     if n_steps < 2500000 + warmup:
         env.env.env.env.env.probs = np.array([1, 1, 1])
         print(f"Uniform sampling")
@@ -97,7 +97,7 @@ if __name__ == '__main__':
     if args.callback_kwargs is None:
         args.callback_kwargs = {'n_steps': 0}
     warmup_time = args.callback_kwargs.get('warmup_time', 0)
-    callback_list.append(ChangeEnvCallback(2500000, change_target, warmup_time=warmup_time))
+    callback_list.append(ChangeEnvCallback(2500000, change_target, warmup_time=warmup_time, n_envs=args.num_envs, change_function_kwargs=args.callback_kwargs))
     # callback_list.append(ChangeEnvCallback(int(1000 / args.num_envs), change_target, warmup_time=int(warmup_time / args.num_envs)))
 
     if args.wrapper == 'normalize':
