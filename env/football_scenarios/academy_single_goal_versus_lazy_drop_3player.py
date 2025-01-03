@@ -56,7 +56,7 @@ def build_scenario(builder):
     builder.AddPlayer(-0.500000, -0.06356, e_PlayerRole_CB, True)
   if 4 in random_drop:
     builder.AddPlayer(-0.500000, 0.063559, e_PlayerRole_CB, True)
-  if 5 in random_drop 5:
+  if 5 in random_drop:
     builder.AddPlayer(-0.422000, 0.195760, e_PlayerRole_RB, True)
   if 6 in random_drop:
     builder.AddPlayer(-0.184212, -0.10568, e_PlayerRole_CM, True)
