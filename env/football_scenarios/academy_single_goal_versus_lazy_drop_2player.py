@@ -16,7 +16,7 @@
 """Class responsible for generating scenarios."""
 import numpy as np
 from gfootball.scenarios import *
-
+episode = 0
 
 def build_scenario(builder):
   global episode
