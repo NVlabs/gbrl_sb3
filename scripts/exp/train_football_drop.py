@@ -105,7 +105,7 @@ if __name__ == '__main__':
                     eval_env = VecNormalize(eval_env, **normalize_kwargs)
                         # save_vec_normalize = SaveVecNormalizeCallback(save_freq=1, save_path=os.path.join(args.save_path, f'{args.env_type}/{args.env_name}/{args.algo_type}'))
                 callback_list.append(MultiEvalCallback(
-                                            eval_env_name.replace('academy_',"").replace('_hard', ""),
+                                            eval_env_name.replace('academy_',"").replace('_2player', "").replace('_3player', ""),
                                             eval_env,
                                             callback_on_new_best=None,
                                             callback_after_eval=None,
