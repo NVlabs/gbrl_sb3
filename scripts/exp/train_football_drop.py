@@ -91,10 +91,9 @@ if __name__ == '__main__':
             args.wrapper_kwargs['gamma'] = args.gamma
             env = VecNormalize(env, **args.wrapper_kwargs)
         if args.evaluate:
-            env_list = ["academy_counterattack_hard",
-              "academy_counterattack_hard_drop",
-              "academy_corner",
-              "academy_corner_drop"]
+            env_list = ["academy_single_goal_versus_lazy_drop_2player",
+              "academy_single_goal_versus_lazy_drop_3player",
+              "academy_single_goal_versus_lazy"]
             for eval_env_name in env_list:
                 eval_kwargs = args.env_kwargs.copy() 
                 eval_kwargs['env_name'] = eval_env_name
