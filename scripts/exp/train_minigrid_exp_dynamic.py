@@ -61,14 +61,17 @@ def change_target(env, n_steps=1, warmup = 0):
     if n_steps < 2500000 + warmup:
         prob = np.array([1, 1, 1])
         env.env.env.env.env.probs = prob / np.sum(prob)
+        env.env.env.env.env.replace_blue = False
         print(f"Uniform sampling")
     elif 2500000 + warmup <= n_steps < 7500000 + warmup:
         prob = np.array([0.5, 0.5, 0.0])
         env.env.env.env.env.probs = prob / np.sum(prob)
+        env.env.env.env.env.replace_blue = True
         print(f"No Blue Ball")
     elif n_steps >= 7500000 + warmup:
         prob = np.array([1, 1, 1])
         env.env.env.env.env.probs = prob / np.sum(prob)
+        env.env.env.env.env.replace_blue = False
         print(f"Uniform sampling")
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@ import pygame
 
 
 class OODFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, probs: List[float] = [1, 1, 1], train: bool = True, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, probs: List[float] = [1, 1, 1], train: bool = True, replace_blue: bool = False,test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -39,6 +39,7 @@ class OODFetchEnv(MiniGridEnv):
         self.probs = self.probs / np.sum(self.probs)
         self.color_names = sorted(list(self.colors.keys()))
         self.train = train
+        self.replace_blue = replace_blue
 
         MISSION_SYNTAX = [
             "get a"
@@ -80,7 +81,7 @@ class OODFetchEnv(MiniGridEnv):
         objs = []
         obs_red = Ball('red')
         obs_green = Ball('green')
-        obs_blue = Ball('blue')
+        obs_blue = Ball('blue') if not self.replace_blue else Ball('grey')
         objs = [obs_red, obs_green, obs_blue]
         self.place_obj(obs_red)
         self.place_obj(obs_green)
