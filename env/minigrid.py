@@ -81,16 +81,21 @@ class OODFetchEnv(MiniGridEnv):
         objs = []
         obs_red = Ball('red')
         obs_green = Ball('green')
-        obs_blue = Ball('blue') if not self.replace_blue else Ball('grey')
+        obs_blue = Ball('blue')
         objs = [obs_red, obs_green, obs_blue]
         self.place_obj(obs_red)
         self.place_obj(obs_green)
-        self.place_obj(obs_blue)
+        if not self.replace_blue:
+            self.place_obj(obs_blue)
         # Randomize the player start position and orientation
         self.place_agent()
         # Choose a random object to be picked up
         if self.test_box_idx is None or self.train:
-            target = objs[self._rand_obj()]
+            if not self.replace_blue:
+                target = objs[self._rand_obj()]
+            else:
+                idx = np.random.choice([0, 1])
+                target = objs[idx]
         else:
             target = objs[self.test_box_idx]
         self.targetType = target.type
