@@ -428,6 +428,11 @@ def register_minigrid_tests():
         entry_point="env.minigrid:OODFetchEnv",
         kwargs={"size": 8, "numObjs": 3},
     )
+    register(
+        id="MiniGrid-OODFetch-8x8-N3-NB-v0",
+        entry_point="env.minigrid:OODFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "replace_blue": True},
+    )
 
     register(
         id="MiniGrid-DistanceFetch-8x8-N3-v0",
