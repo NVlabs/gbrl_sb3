@@ -822,19 +822,30 @@ class SepsisObservationWrapper(ObservationWrapper):
         super().__init__(env)
 
         self.flattened_shape = 716 if one_hot else 1
+        self.info_shape = 48 
         self.one_hot = one_hot
-        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.single)
+        self.is_mixed = not one_hot
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape + self.info_shape, ), dtype=np.single)
         
          
-    def observation(self, observation):
+    def observation(self, observation, state_vector, sofa_score):
         # Transform the observation in some way
+
         if self.one_hot:
             obs = np.zeros(self.flattened_shape, dtype=np.single)
             obs[observation] = 1
         else:
-            obs = np.array([str(observation).encode('utf-8')], dtype=categorical_dtype)
+            obs = np.array([str(observation).encode('utf-8')], dtype=object)
+        obs = np.concatenate([obs, state_vector, np.array([sofa_score])], axis=0, dtype=np.single if self.one_hot else object)
         return np.ascontiguousarray(obs)
+    
+    def step(
+        self, action: ActType
+    ) -> tuple[WrapperObsType, SupportsFloat, bool, bool, dict[str, Any]]:
+        """Modifies the :attr:`env` after calling :meth:`step` using :meth:`self.observation` on the returned observations."""
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        return self.observation(observation, info['state_vector'], info['sofa_score'] ), reward, terminated, truncated, info
 
     def reset(self, seed: int = None):
         observation, info = self.env.reset(seed=seed)
-        return self.observation(observation), info
+        return self.observation(observation, info['state_vector'], info['sofa_score']), info
