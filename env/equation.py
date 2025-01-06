@@ -124,6 +124,391 @@ class LinearEquationEnv(gym.Env):
             truncated = True
         return state, reward, terminated, truncated, info
 
+# class StrLinearEquationEnv(gym.Env):
+#     """
+#     Custom Gym Environment for isolating a linear equation: start with: ax + b = c
+#     Goal: Isolate x
+#     """
+    
+#     def __init__(self, is_mixed: bool = False):
+#         super(StrLinearEquationEnv, self).__init__()
+
+#         # actions are add/ subtract/ divide/ multiply and multiply by -1
+        
+#         self.n_action_types = 4
+#         self.digits = 9
+#         self.inverse = 2
+#         self.max_length = 14
+#         self.vocabulary = list('0123456789+-=/x ')  # Added space for padding
+#         self.char_to_idx = {char: i for i, char in enumerate(self.vocabulary)}
+#         self.idx_to_char = {i: char for char, i in self.char_to_idx.items()}
+
+#         shape = self.max_length*len(self.vocabulary) if not is_mixed else self.max_length
+#         self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.inverse])
+#         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
+#         self.step_count = 0
+#         self.max_steps = 50
+#         self.is_mixed = is_mixed
+
+#     def _get_observation(self):
+#         if self.is_mixed:
+#            return np.array([s.encode('utf-8') for s in self.state], dtype=object)
+#         state = []
+#         for i in range(self.max_length):
+#             one_hot = [0] * len(self.vocabulary) 
+#             one_hot[self.char_to_idx[self.state[i]]] = 1
+#             state.extend(one_hot)
+#         return np.array(state, dtype=np.float32)
+    
+#     def reset(self, seed=None, options=None):
+#         """Reset the environment to the initial state."""
+#         state = [] 
+#         # Format: sign digit/digit x sign digit/digit = sign digit/digit
+#         # sign 0 float 1 x 2       
+#         # sign 3 float 4 = 5
+#         # sign 6 float 7    
+    
+#         for i in range(3):
+#             digit = np.random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
+#             sign = np.random.choice([-1, 1])
+#             sign_ = '-' if sign == -1 else ' '
+#             if sign == 1 and i == 1:
+#                 sign_ = '+'
+            
+#             state.extend([
+#                 sign_,
+#                 str(digit) ,
+#             ])
+#             if i == 0:
+#                 state.append('x')
+#             elif i == 1:
+#                 state.append('=') 
+
+#         self.step_count = 0
+#         self.state = state
+#         self.constant_on_left = True
+#         return self._get_observation(), {}
+    
+#     def _add_digit(self, sign_char, numerator, denominator, digit):
+#         sign = -1 if sign_char == '-' else 1
+#         numer = 1 if numerator == ' ' else int(numerator)
+#         res = sign*numer + digit if denominator == ' ' else sign*numer + digit*int(denominator)
+#         res_sign = '-' if res < 0 else ' '
+#         return str(abs(res)), res_sign
+    
+#     def _subtract_digit(self, sign_char, numerator, denominator, digit):
+#         sign = -1 if sign_char == '-' else 1
+#         numer = 1 if numerator == ' ' else int(numerator)
+#         res = sign*numer - digit if denominator == ' ' else sign*numer - digit*int(denominator)
+#         res_sign = '-' if res < 0 else ' '
+#         return str(abs(res)), res_sign
+#     def _divide_digit(self, numerator, divide_char, denominator, digit):
+#         if numerator == str(digit):
+#             return ' ', divide_char, denominator 
+#         if denominator == ' ':
+#             return numerator, '/', str(digit)
+#         numer = 1 if numerator == ' ' else int(numerator)
+#         if numer % digit == 0:
+#             return str(numer // digit), divide_char, denominator
+#         return numerator, '/', str(int(denominator)*digit)
+    
+#     def _multiply_digit(self, numerator, divide_char, denominator, digit):
+#         if denominator == str(digit):
+#             return numerator, ' ', ' ' 
+#         numer = 1 if numerator == ' ' else int(numerator)
+#         if denominator == ' ':
+#             return str(digit * numer), ' ', ' '
+#         denom = int(denominator)
+#         if digit % denom == 0:
+#             return numerator, divide_char, str(digit // denom)
+#         return str(digit * numer), divide_char, denominator
+        
+#     def _gen_state(self, action):
+#         state = self.state
+#         action_type, action_number, minus_1 = action
+#         # Format: sign digit/digit x sign digit/digit = sign digit/digit
+#         # sign 0 digit 1 / 2 digit 3 x 4       
+#         # sign 5 digit 6 / 7 digit 8 = 9
+#         # sign 10 digit 11 / 12 digit 13 
+#         if minus_1:
+#             state[0] = '-' if state[0] == ' ' else ' '
+#             state[5] = '-' if state[5] == '+' or state[5] == ' '  else '+'
+#             state[10] = '-' if state[10] == ' ' else ' '
+
+#         elif action_type == 0:
+#             state[6], state[5] = self._add_digit(state[5], state[6], state[8], action_number + 1)
+#             state[11], state[10] = self._add_digit(state[10], state[11], state[13], action_number + 1)
+#         elif action_type == 1:
+#             state[6], state[5] = self._subtract_digit(state[5], state[6], state[8], action_number + 1)
+#             state[11], state[10] = self._subtract_digit(state[10], state[11], state[13], action_number + 1)
+#         elif action_type == 2:
+#             state[1], state[2], state[3] = self._divide_digit(state[1], state[2], state[3], action_number + 1)
+#             state[6], state[7], state[8] = self._divide_digit(state[6], state[7], state[8], action_number + 1)
+#             state[11], state[12], state[13] = self._divide_digit(state[11], state[12], state[13], action_number + 1)
+#         else:
+#             state[1], state[2], state[3] = self._multiply_digit(state[1], state[2], state[3], action_number + 1)
+#             state[6], state[7], state[8] = self._multiply_digit(state[6], state[7], state[8], action_number + 1)
+#             state[11], state[12], state[13] = self._multiply_digit(state[11], state[12], state[13], action_number + 1)
+#         if state[6] == '0':
+#             state[5] = ' '
+#             state[6] = ' '
+#             state[7] = ' '
+#             state[8] = ' '
+#         elif state[6] == ' ':
+#             state[6] = '1'
+#         if state[5] == ' ' and state[6] != '0':
+#             state[5] = '+'
+#         if state[11] == '0':
+#             state[10] = ' '
+#             state[12] = ' '
+#             state[13] = ' '
+#         elif state[11] == ' ':
+#             state[11] = '1'
+        
+#         if state[1] == '1' and state[2] == ' ':
+#             state[1] = ' '
+#         elif state[1] == ' ' and state[2] == '/':
+#             state[1] = '1'
+        
+#         if state[3] == '1':
+#             state[2] = ' '
+#             state[3] = ' '
+#         if state[8] == '1':
+#             state[7] = ' '
+#             state[8] = ' '
+#         if state[13] == '1':
+#             state[12] = ' '
+#             state[13] = ' '
+        
+        
+#         self.state = state
+#         return self._get_observation()
+    
+#     def step(self, action):
+#         """Take an action and return the next state, reward, and done flag."""
+
+#         reward = 0
+#         terminated = False 
+#         truncated = False
+#         info = {}
+#         prev_state = self.state.copy()
+#         obs = self._gen_state(action)
+#         state = self.state
+#         # print(f"Current_state: {prev_state}, action: {action}, new_state: {state}")
+
+#         x_valid = state[0] == ' ' and state[1] == ' ' and state[2] == ' ' and state[3] == ' '
+#         constant_valid = state[5] == ' ' and state[6] == ' ' and state[7] == ' ' and state[8] == ' '
+#         if x_valid and constant_valid:  # Isolating x condition
+#             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1
+#             terminated = True
+#         if constant_valid and self.constant_on_left:
+#             self.constant_on_left = False 
+#             reward = 0.1
+
+#         for num in state:
+#             if num.isdigit() and int(num) > 100:
+#                 terminated = True 
+#                 reward = -0.1
+
+#         self.step_count += 1
+#         if self.step_count >= self.max_steps:
+#             truncated = True
+#         return obs, reward, terminated, truncated, info
+class StrLinearEquationEnv(gym.Env):
+    """
+    Custom Gym Environment for isolating a linear equation: start with: ax + b = c
+    Goal: Isolate x
+    """
+    
+    def __init__(self, is_mixed: bool = False):
+        super(StrLinearEquationEnv, self).__init__()
+
+        # actions are add/ subtract/ divide/ multiply and multiply by -1
+        
+        self.n_action_types = 4
+        self.digits = 9
+        self.inverse = 2
+        self.max_length = 14
+        self.vocabulary = list('0123456789+-=/x ')  # Added space for padding
+        self.char_to_idx = {char: i for i, char in enumerate(self.vocabulary)}
+        self.idx_to_char = {i: char for char, i in self.char_to_idx.items()}
+
+        shape = self.max_length*len(self.vocabulary) if not is_mixed else self.max_length
+        self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.inverse])
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
+        self.step_count = 0
+        self.max_steps = 50
+        self.is_mixed = is_mixed
+
+    def _get_observation(self):
+        if self.is_mixed:
+           return np.array([s.encode('utf-8') for s in self.state], dtype=object)
+        state = []
+        for i in range(self.max_length):
+            one_hot = [0] * len(self.vocabulary) 
+            one_hot[self.char_to_idx[self.state[i]]] = 1
+            state.extend(one_hot)
+        return np.array(state, dtype=np.float32)
+    
+    def reset(self, seed=None, options=None):
+        """Reset the environment to the initial state."""
+        state = [] 
+        # Format: sign digit/digit x sign digit/digit = sign digit/digit
+        # sign 0 digit 1 / 2 digit 3 x 4       
+        # sign 5 digit 6 / 7 digit 8 = 9
+        # sign 10 digit 11 / 12 digit 13        
+    
+        for i in range(3):
+            digit = np.random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
+            sign = np.random.choice([-1, 1])
+            sign_ = '-' if sign == -1 else ' '
+            if sign == 1 and i == 1:
+                sign_ = '+'
+            
+            dig = ' ' if digit == 1 and i == 0 else str(digit) 
+            
+            state.extend([
+                sign_,
+                dig,
+                ' ',
+                ' '
+            ])
+            if i == 0:
+                state.append('x')
+            elif i == 1:
+                state.append('=') 
+
+        self.step_count = 0
+        self.state = state
+        self.constant_on_left = True
+        return self._get_observation(), {}
+    
+    def _add_digit(self, sign_char, numerator, denominator, digit):
+        sign = -1 if sign_char == '-' else 1
+        numer = 1 if numerator == ' ' else int(numerator)
+        res = sign*numer + digit if denominator == ' ' else sign*numer + digit*int(denominator)
+        res_sign = '-' if res < 0 else ' '
+        return str(abs(res)), res_sign
+    
+    def _subtract_digit(self, sign_char, numerator, denominator, digit):
+        sign = -1 if sign_char == '-' else 1
+        numer = 1 if numerator == ' ' else int(numerator)
+        res = sign*numer - digit if denominator == ' ' else sign*numer - digit*int(denominator)
+        res_sign = '-' if res < 0 else ' '
+        return str(abs(res)), res_sign
+    def _divide_digit(self, numerator, divide_char, denominator, digit):
+        if numerator == str(digit):
+            return ' ', divide_char, denominator 
+        if denominator == ' ':
+            return numerator, '/', str(digit)
+        numer = 1 if numerator == ' ' else int(numerator)
+        if numer % digit == 0:
+            return str(numer // digit), divide_char, denominator
+        return numerator, '/', str(int(denominator)*digit)
+    
+    def _multiply_digit(self, numerator, divide_char, denominator, digit):
+        if denominator == str(digit):
+            return numerator, ' ', ' ' 
+        numer = 1 if numerator == ' ' else int(numerator)
+        if denominator == ' ':
+            return str(digit * numer), ' ', ' '
+        denom = int(denominator)
+        if digit % denom == 0:
+            return numerator, divide_char, str(digit // denom)
+        return str(digit * numer), divide_char, denominator
+        
+    def _gen_state(self, action):
+        state = self.state
+        action_type, action_number, minus_1 = action
+        # Format: sign digit/digit x sign digit/digit = sign digit/digit
+        # sign 0 digit 1 / 2 digit 3 x 4       
+        # sign 5 digit 6 / 7 digit 8 = 9
+        # sign 10 digit 11 / 12 digit 13 
+        if minus_1:
+            state[0] = '-' if state[0] == ' ' else ' '
+            state[5] = '-' if state[5] == '+' or state[5] == ' '  else '+'
+            state[10] = '-' if state[10] == ' ' else ' '
+
+        elif action_type == 0:
+            state[6], state[5] = self._add_digit(state[5], state[6], state[8], action_number + 1)
+            state[11], state[10] = self._add_digit(state[10], state[11], state[13], action_number + 1)
+        elif action_type == 1:
+            state[6], state[5] = self._subtract_digit(state[5], state[6], state[8], action_number + 1)
+            state[11], state[10] = self._subtract_digit(state[10], state[11], state[13], action_number + 1)
+        elif action_type == 2:
+            state[1], state[2], state[3] = self._divide_digit(state[1], state[2], state[3], action_number + 1)
+            state[6], state[7], state[8] = self._divide_digit(state[6], state[7], state[8], action_number + 1)
+            state[11], state[12], state[13] = self._divide_digit(state[11], state[12], state[13], action_number + 1)
+        else:
+            state[1], state[2], state[3] = self._multiply_digit(state[1], state[2], state[3], action_number + 1)
+            state[6], state[7], state[8] = self._multiply_digit(state[6], state[7], state[8], action_number + 1)
+            state[11], state[12], state[13] = self._multiply_digit(state[11], state[12], state[13], action_number + 1)
+        if state[6] == '0':
+            state[5] = ' '
+            state[6] = ' '
+            state[7] = ' '
+            state[8] = ' '
+        elif state[6] == ' ':
+            state[6] = '1'
+        if state[5] == ' ' and state[6] != '0':
+            state[5] = '+'
+        if state[11] == '0':
+            state[10] = ' '
+            state[12] = ' '
+            state[13] = ' '
+        elif state[11] == ' ':
+            state[11] = '1'
+        
+        if state[1] == '1' and state[2] == ' ':
+            state[1] = ' '
+        elif state[1] == ' ' and state[2] == '/':
+            state[1] = '1'
+        
+        if state[3] == '1':
+            state[2] = ' '
+            state[3] = ' '
+        if state[8] == '1':
+            state[7] = ' '
+            state[8] = ' '
+        if state[13] == '1':
+            state[12] = ' '
+            state[13] = ' '
+        
+        
+        self.state = state
+        return self._get_observation()
+    
+    def step(self, action):
+        """Take an action and return the next state, reward, and done flag."""
+
+        reward = 0
+        terminated = False 
+        truncated = False
+        info = {}
+        prev_state = self.state.copy()
+        obs = self._gen_state(action)
+        state = self.state
+        # print(f"Current_state: {prev_state}, action: {action}, new_state: {state}")
+
+        x_valid = state[0] == ' ' and state[1] == ' ' and state[2] == ' ' and state[3] == ' '
+        constant_valid = state[5] == ' ' and state[6] == ' ' and state[7] == ' ' and state[8] == ' '
+        if x_valid and constant_valid:  # Isolating x condition
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1
+            terminated = True
+        if constant_valid and self.constant_on_left:
+            self.constant_on_left = False 
+            reward = 0.1
+
+        for num in state:
+            if num.isdigit() and int(num) > 100:
+                terminated = True 
+                reward = -0.1
+
+        self.step_count += 1
+        if self.step_count >= self.max_steps:
+            truncated = True
+        return obs, reward, terminated, truncated, info
+
 class BalancedTwoVariableLinearEquationEnv(gym.Env):
     """
     Custom Gym Environment for isolating a linear equation: start with: ax + b = cy + d
@@ -453,9 +838,9 @@ def register_equation_tests():
         kwargs={},
     )
     register(
-        id="LinearEquation-1",
-        entry_point="env.equation:LinearEquationEnv",
-        kwargs={'with_history': True},
+        id="StrLinearEquation-v0",
+        entry_point="env.equation:StrLinearEquationEnv",
+        kwargs={},
     )
     register(
         id="TwoVariableLinearEquation-v0",
