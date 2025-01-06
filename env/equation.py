@@ -365,7 +365,7 @@ class StrLinearEquationEnv(gym.Env):
             if sign == 1 and i == 1:
                 sign_ = '+'
             
-            dig = ' ' if digit == 1 and i == 0 else str(digit) 
+            dig = str(digit) 
             
             state.extend([
                 sign_,
@@ -381,35 +381,42 @@ class StrLinearEquationEnv(gym.Env):
         self.step_count = 0
         self.state = state
         self.constant_on_left = True
+        self.had_fraction = False
+        self.x_was_valid = state[1] == '1' and state[0] == ' '
         return self._get_observation(), {}
     
     def _add_digit(self, sign_char, numerator, denominator, digit):
         sign = -1 if sign_char == '-' else 1
-        numer = 1 if numerator == ' ' else int(numerator)
+        numer = int(numerator)
         res = sign*numer + digit if denominator == ' ' else sign*numer + digit*int(denominator)
         res_sign = '-' if res < 0 else ' '
         return str(abs(res)), res_sign
     
     def _subtract_digit(self, sign_char, numerator, denominator, digit):
         sign = -1 if sign_char == '-' else 1
-        numer = 1 if numerator == ' ' else int(numerator)
+        numer = int(numerator)
         res = sign*numer - digit if denominator == ' ' else sign*numer - digit*int(denominator)
         res_sign = '-' if res < 0 else ' '
         return str(abs(res)), res_sign
+
     def _divide_digit(self, numerator, divide_char, denominator, digit):
+        if numerator == ' ' or numerator == '0':
+            return '0', ' ', ' '
         if numerator == str(digit):
-            return ' ', divide_char, denominator 
+            return '1', divide_char, denominator 
         if denominator == ' ':
             return numerator, '/', str(digit)
-        numer = 1 if numerator == ' ' else int(numerator)
+        numer = int(numerator)
         if numer % digit == 0:
             return str(numer // digit), divide_char, denominator
         return numerator, '/', str(int(denominator)*digit)
     
     def _multiply_digit(self, numerator, divide_char, denominator, digit):
+        if numerator == ' ' or numerator == '0':
+            return '0', ' ', ' '
         if denominator == str(digit):
             return numerator, ' ', ' ' 
-        numer = 1 if numerator == ' ' else int(numerator)
+        numer = int(numerator)
         if denominator == ' ':
             return str(digit * numer), ' ', ' '
         denom = int(denominator)
@@ -445,24 +452,15 @@ class StrLinearEquationEnv(gym.Env):
             state[11], state[12], state[13] = self._multiply_digit(state[11], state[12], state[13], action_number + 1)
         if state[6] == '0':
             state[5] = ' '
-            state[6] = ' '
             state[7] = ' '
             state[8] = ' '
-        elif state[6] == ' ':
-            state[6] = '1'
+
         if state[5] == ' ' and state[6] != '0':
             state[5] = '+'
         if state[11] == '0':
             state[10] = ' '
             state[12] = ' '
             state[13] = ' '
-        elif state[11] == ' ':
-            state[11] = '1'
-        
-        if state[1] == '1' and state[2] == ' ':
-            state[1] = ' '
-        elif state[1] == ' ' and state[2] == '/':
-            state[1] = '1'
         
         if state[3] == '1':
             state[2] = ' '
@@ -473,7 +471,6 @@ class StrLinearEquationEnv(gym.Env):
         if state[13] == '1':
             state[12] = ' '
             state[13] = ' '
-        
         
         self.state = state
         return self._get_observation()
@@ -488,16 +485,23 @@ class StrLinearEquationEnv(gym.Env):
         prev_state = self.state.copy()
         obs = self._gen_state(action)
         state = self.state
-        # print(f"Current_state: {prev_state}, action: {action}, new_state: {state}")
+        
 
-        x_valid = state[0] == ' ' and state[1] == ' ' and state[2] == ' ' and state[3] == ' '
-        constant_valid = state[5] == ' ' and state[6] == ' ' and state[7] == ' ' and state[8] == ' '
+        x_valid = state[0] == ' ' and state[1] == '1' and state[2] == ' ' and state[3] == ' '
+        constant_valid = state[5] == ' ' and (state[6] == ' ' or state[6] == '0') and state[7] == ' ' and state[8] == ' '
+        
         if x_valid and constant_valid:  # Isolating x condition
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 - 0.1
             terminated = True
         if constant_valid and self.constant_on_left:
             self.constant_on_left = False 
             reward = 0.1
+        if x_valid and not self.x_was_valid:
+            reward = 0.1 
+            self.x_was_valid = True
+        elif not x_valid and self.x_was_valid:
+            reward = -0.1
+            
 
         for num in state:
             if num.isdigit() and int(num) > 100:
