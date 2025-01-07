@@ -350,7 +350,12 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         super().__init__(env)
         self.feature_labels = feature_labels
         self.height = 224
-        self.width = int(224*1.5)
+        # # self.width = int(224*1.5)
+        self.width = int(224)
+        # self.height = 7
+        # # self.width = int(224*1.5)
+        # self.width = 7
+        self.image_shape = np.zeros((7, 7))
         self.additional_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)  # To store the SHAP visualization
 
     def set_shap_values(self, shap_values, actions):
@@ -377,6 +382,7 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
             image_shap = shap_values[:49].reshape(7, 7)
             extra_shap = shap_values[49:]
         image_shap = image_shap.T 
+        self.image_shape = image_shap
         dpi = 100
         target_width = self.width
         target_height = self.height 
@@ -384,31 +390,29 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         # figsize = (target_width, target_height)
         width_ratios = [1, 1] 
         # Create the figure with two subplots
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios}, dpi=dpi)
+        fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
         
         # Plot the heatmap
-        im = ax1.imshow(image_shap, cmap='coolwarm', aspect='equal', vmin=-6, vmax=6)
-        ax1.set_title("Agent View SHAP Heatmap", fontsize=6)  # Reduced fontsize
-        ax1.axis('off')  # Hide axes
-        ax1.axis('off')  # Hide axes
-        cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
-        cbar.ax.tick_params(labelsize=6)
-        # cbar.set_ylim((-6, 6))
-        norm = plt.Normalize(vmin=-3, vmax=3)  # Replace with your heatmap's vmin and vmax
+        # im = ax1.imshow(image_shap, cmap='coolwarm', aspect='equal', vmin=-6, vmax=6)
+        # ax1.set_title("Agent View SHAP Heatmap", fontsize=6)  # Reduced fontsize
+        # ax1.axis('off')  # Hide axes
+        # ax1.axis('off')  # Hide axes
+        # cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
+        # cbar.ax.tick_params(labelsize=6)
+        # # cbar.set_ylim((-6, 6))
+        norm = plt.Normalize(vmin=-8, vmax=8)  # Replace with your heatmap's vmin and vmax
 
-        # Map SHAP values to colors using the same colormap
+        # # Map SHAP values to colors using the same colormap
         colors = plt.cm.coolwarm(norm(extra_shap))
         # Plot the bar chart
-        ax2.bar(self.feature_labels, extra_shap, color=colors)
-        ax2.set_title("Additional Features", fontsize=6)
-        ax2.set_ylabel("SHAP Value", fontsize=6)
-        ax2.set_xticks(range(len(self.feature_labels)))
-        ax2.set_xticklabels(self.feature_labels, rotation=0, ha='right', fontsize=6)
-        ax2.tick_params(axis='y', labelsize=6)
-        ax2.set_ylim((-6, 6))
+        ax.bar(self.feature_labels, extra_shap, color=colors)
+        ax.set_title("Additional Features", fontsize=6)
+        ax.set_ylabel("SHAP Value", fontsize=6)
+        ax.set_xticks(range(len(self.feature_labels)))
+        ax.set_xticklabels(self.feature_labels, rotation=0, ha='right', fontsize=6)
+        ax.tick_params(axis='y', labelsize=6)
+        ax.set_ylim((-6, 6))
         fig.suptitle(f"Mission: {self.env.envs[0].mission} \n Action: {actions}", fontsize=7)
-        
-        
         # Adjust layout
         plt.tight_layout()
         
@@ -428,6 +432,7 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
     ) -> tuple[ObsType, dict[str, Any]]:
         # self.additional_image = None
         self.additional_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.image_shape = np.zeros((7, 7))
         return self.env.reset()
 
 
@@ -436,8 +441,74 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         frame = self.env.render(mode=mode)
         
         if self.additional_image is not None:
+            # grid, vis_mask = self.env.envs[0].gen_obs_grid()
             # Optionally, resize additional_image to match frame height or other desired size
+            # frame_height, frame_width, _ = frame.shape
+            # plot_height, plot_width, _ = self.additional_image.shape
+            
+            # # Decide where to place the plot (e.g., side-by-side)
+            # # Resize plot to have the same height
+            # if plot_height != frame_height:
+            #     scaling_factor = frame_height / plot_height
+            #     new_width = int(plot_width * scaling_factor)
+            #     resized_plot = cv2.resize(self.additional_image, (new_width, frame_height), interpolation=cv2.INTER_LINEAR)
+            # else:
+            #     resized_plot = self.additional_image
+            
+            # # Concatenate horizontally
+            # combined_frame = np.concatenate((frame, resized_plot), axis=1)
+            # return combined_frame
             frame_height, frame_width, _ = frame.shape
+            
+            # Assuming a 7x7 grid corresponds to the frame view
+            grid_size_x = frame_width // 7
+            grid_size_y = frame_height // 7
+            
+            shap_values = self.image_shape  # SHAP values already passed
+            tile_size = 32  # Size of each grid cell
+            grid_size = 7  # 7x7 grid for SHAP values
+            start_x = (224 - (grid_size * tile_size)) // 2  # Center horizontally
+            start_y = 224 - (grid_size * tile_size)  # Start from the bottom
+            
+            for i in range(grid_size):  # Iterate over rows
+                for j in range(grid_size):  # Iterate over columns
+                    # Calculate the top-left corner of each grid cell
+                    x = start_x + (j * tile_size)
+                    y = start_y + (i * tile_size)
+                    
+                    # Calculate the center for text placement
+                    text_x = x + tile_size // 2
+                    text_y = y + tile_size // 2
+                    
+                    # Get the SHAP value for this cell
+                    shap_value = shap_values[i, j] if i < shap_values.shape[0] and j < shap_values.shape[1] else 0.0
+                    
+                    # Choose text color for better visibility
+                    text_color = (0, 0, 0) if abs(shap_value) < 3 else (255, 255, 255)
+
+                    text = f"{int(shap_value)}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.3
+                    thickness = 1
+                    (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+                
+                # Calculate the precise text position for centering
+                    text_x_centered = text_x - (text_width // 2)
+                    # text_x_centered = text_x
+                    text_y_centered = text_y + (text_height // 2)
+                    
+                    # Add SHAP value as text
+                    cv2.putText(
+                        frame,
+                        text,
+                        (text_x_centered, text_y_centered),
+                        font,
+                        font_scale,
+                        text_color,
+                        thickness,
+                        cv2.LINE_AA
+                    )
+            # Iterate over the 7x7 grid
             plot_height, plot_width, _ = self.additional_image.shape
             
             # Decide where to place the plot (e.g., side-by-side)
@@ -450,7 +521,10 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
                 resized_plot = self.additional_image
             
             # Concatenate horizontally
+            # return frame
             combined_frame = np.concatenate((frame, resized_plot), axis=1)
+            combined_frame = cv2.resize(combined_frame, (1024, 512), interpolation=cv2.INTER_LINEAR)
             return combined_frame
+            # return frame
         else:
             return frame
