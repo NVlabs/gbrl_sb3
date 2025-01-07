@@ -82,7 +82,7 @@ if __name__ == '__main__':
         eval_wrapper_kwargs['training'] = False 
         eval_wrapper_kwargs['norm_reward'] = False 
 
-    noise_levels = [0.01, 0.05, 0.1, 0.15, 0.2]
+    noise_levels = [0.0, 0.01, 0.05, 0.1, 0.15, 0.2]
     if args.evaluate:
         for noise_level in noise_levels:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
