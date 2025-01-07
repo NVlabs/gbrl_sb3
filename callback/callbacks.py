@@ -26,7 +26,7 @@ from stable_baselines3.common.distributions import (
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
 
-from utils.helpers import evaluate_policy_and_obs
+from utils.helpers import evaluate_policy_and_obs, evaluate_policy_with_noise
 
 
 class GradientHistogramCallback(BaseCallback):
