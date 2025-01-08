@@ -490,12 +490,12 @@ class StrLinearEquationEnv(gym.Env):
         x_valid = state[0] == ' ' and state[1] == '1' and state[2] == ' ' and state[3] == ' '
         constant_valid = state[5] == ' ' and (state[6] == ' ' or state[6] == '0') and state[7] == ' ' and state[8] == ' '
 
-        if constant_valid and self.constant_on_left:
-            self.constant_on_left = False 
-            reward += 0.1
-        if x_valid and not self.x_was_valid:
-            reward += 0.1 
-            self.x_was_valid = True
+        # if constant_valid and self.constant_on_left:
+        #     self.constant_on_left = False 
+        #     reward += 0.1
+        # if x_valid and not self.x_was_valid:
+        #     reward += 0.1 
+        #     self.x_was_valid = True
         if x_valid and constant_valid:  # Isolating x condition
             # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 - 0.1
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
@@ -503,7 +503,7 @@ class StrLinearEquationEnv(gym.Env):
             
 
         for num in state:
-            if num.isdigit() and int(num) > 10000:
+            if num.isdigit() and int(num) > 100:
                 terminated = True 
 
         self.step_count += 1
