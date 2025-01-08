@@ -500,6 +500,12 @@ class StrLinearEquationEnv(gym.Env):
             # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 - 0.1
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
+        if not constant_valid and self.constant_on_left:
+            reward -= 0.1
+            terminated = True
+        if not x_valid and self.x_was_valid:
+            reward -= 0.1
+            terminated = True
             
 
         for num in state:
