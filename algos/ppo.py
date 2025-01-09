@@ -30,7 +30,8 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
 from stable_baselines3.common.utils import (check_for_correct_spaces,
                                             explained_variance, get_linear_fn,
                                             get_schedule_fn, get_system_info,
-                                            obs_as_tensor, safe_mean)
+                                            obs_as_tensor, safe_mean,
+                                            update_learning_rate)
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
@@ -293,6 +294,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
             bound_max = np.inf * np.ones(1)
         return th.tensor(bound_max, device=self.device)
 
+
     def train(self) -> None:
         """
         Update policy using the currently gathered rollout buffer.
@@ -305,7 +307,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
 
         if isinstance(self.policy.action_dist, DiagGaussianDistribution):
-            self._update_learning_rate(self.policy.log_std_optimizer)
+            update_learning_rate(self.policy.log_std_optimizer, self.policy.log_std_schedule(self._current_progress_remaining))
         if self.policy.nn_critic:
             self._update_learning_rate(self.policy.value_optimizer)
             self.logger.record("train/nn_critic", "True")

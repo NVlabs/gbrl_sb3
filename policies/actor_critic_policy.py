@@ -135,6 +135,7 @@ class ActorCriticPolicy(BasePolicy):
         self.features_extractor = features_extractor_class(self.observation_space, **self.features_extractor_kwargs)
         self.features_dim = self.features_extractor.features_dim
         self.value_optimizer = None
+        self.log_std_schedule = log_std_schedule
 
         self.normalize_images = normalize_images
         self.log_std_init = log_std_init
