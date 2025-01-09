@@ -307,35 +307,24 @@ class StrLinearEquationEnv(gym.Env):
         # if constant_valid and self.constant_on_left:
         #     self.constant_on_left = False 
         #     reward += 0.1
-        # if x_valid and not self.x_was_valid:
-        has_fraction = state[2] == '/' or state[7] == '/'
-        # if not has_fraction and self.had_fraction:
-        if has_fraction:
-            self.had_fraction = True
-        #     reward += 0.1
+        # # if x_valid and not self.x_was_valid:
+        # has_fraction = state[2] == '/' or state[7] == '/'
+        # # if not has_fraction and self.had_fraction:
+        # if has_fraction:
+        #     self.had_fraction = True
+        # #     reward += 0.1
         
-        if self.had_fraction and not has_fraction and not self.fraction_bonus_given:
-            reward += 0.1 
-            self.fraction_bonus_given = True
+        # if self.had_fraction and not has_fraction and not self.fraction_bonus_given:
+        #     reward += 0.1 
+        #     self.fraction_bonus_given = True
             # self.x_was_valid = True
         if x_valid and constant_valid:  # Isolating x condition
             # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 - 0.1
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
         
-            if self.fraction_bonus_given:
-                reward -= 0.1
-        # if not constant_valid and self.constant_on_left:
-        #     reward -= 0.1
-        #     terminated = True
-        # if not x_valid and self.x_was_valid:
-        #     reward -= 0.1
-        #     terminated = True
-        
-
-        # if terminated:
-        
-            
+            # if self.fraction_bonus_given:
+            #     reward -= 0.1       
 
         for num in state:
             if num.isdigit() and int(num) > 100:
