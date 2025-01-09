@@ -3,18 +3,19 @@ env:
   env_kwargs: null
   verbose: 1
   seed: 0
-  num_envs: 8
+  num_envs: 1
   eval_kwargs:
-    eval_freq: 5000
+    eval_freq: 2000
     stop_train: False
     min_evals: 5
     record: False
     video_length: 2000
     max_no_improvement_evals: 10
-    n_eval_episodes: 5
+    n_eval_episodes: 100
   wrapper: null
   log_interval: 10
   total_n_steps: 1500000
+  # total_n_steps: 20000
   device: 'cuda'
   no_improvement_kwargs: null
 save:
@@ -37,10 +38,11 @@ gbrl_params:
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
+    # lr: 5.0e-2
     lr: 5.0e-2
   value_optimizer: # PPO / AWR
     algo: 'SGD'
-    lr: 0.01
+    lr: 0.001
   mu_optimizer: # SAC 
     algo: 'SGD'
     lr: 5.0e-4
@@ -74,7 +76,7 @@ ppo_gbrl:
   nn_critic: False
   gae_lambda: 0.95
   normalize_advantage: True
-  learning_rate: 3.0e-1
+  learning_rate: 3.0e-4
   target_kl: null
   normalize_value_grads: False
   batch_size: 128
@@ -97,7 +99,7 @@ ppo_nn:
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-  n_steps: 2048
+  n_steps: 128
   gamma: 0.99
   gae_lambda: 0.95
   normalize_advantage: True
