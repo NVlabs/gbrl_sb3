@@ -334,7 +334,7 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'extrapolation'
     # args.env_type = args.env_type if args.env_type else 'minigrid'
     # args.env_type = args.env_type if args.env_type else 'robotics'
-    args.env_type = args.env_type if args.env_type else 'chain'
+    # args.env_type = args.env_type if args.env_type else 'chain'
     # args.env_type = args.env_type if args.env_type else 'warehouse_sorting'
     # args.env_type = args.env_type if args.env_type else 'pipeline_opt'
     # args.env_type = args.env_type if args.env_type else 'bank'
@@ -344,14 +344,14 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'highway'
     # args.env_type = args.env_type if args.env_type else 'bsuite'
-    # args.env_type = args.env_type if args.env_type else 'mujoco'
-    # args.env_type = args.env_type if args.env_type else 'gym'
+    # args.env_type = args.env_type if args.env_type else 'equation'
+    args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'a2c_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
-    # args.algo_type = args.algo_type if args.algo_type else 'awr_nn'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'awr_gbrl'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
 
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
@@ -379,11 +379,13 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'BabyAI-OpenDoorsOrderN2-v0'
     # args.env_name = args.env_name if args.env_name else 'PointMaze_Medium_Diverse_GRDense-v3'
     # args.env_name = args.env_name if args.env_name else 'PointMaze_Large_Diverse_GRDense-v3'
-    # args.env_name = args.env_name if args.env_name else 'Equation-v0'
-    args.env_name = args.env_name if args.env_name else 'Compare-v0'
+    # args.env_name = args.env_name if args.env_name else 'StrLinearEquation-v0'
+    # args.env_name = args.env_name if args.env_name else 'Compare-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-NB-v0'
     # args.env_name = args.env_name if args.env_name else 'bank-v0'
     # args.env_name = args.env_name if args.env_name else 'pipeline-v1'
-    # args.env_name = args.env_name if args.env_name else 'mat_inv-2-v0'
+    args.env_name = args.env_name if args.env_name else 'Pendulum-v1'
     # args.env_name = args.env_name if args.env_name else 'academy_empty_goal'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
@@ -659,6 +661,7 @@ def process_policy_kwargs(args):
             "n_steps": args.n_steps,
             "vf_coef": args.vf_coef,
             "gae_lambda": args.gae_lambda,
+            "learning_rate": args.learning_rate,
             "gamma": args.gamma,
             "total_n_steps": args.total_n_steps,
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
@@ -793,6 +796,7 @@ def process_policy_kwargs(args):
             "reward_mode": args.reward_mode,
             "gradient_steps": args.gradient_steps,
             "learning_starts": args.learning_starts,
+            "learning_rate": args.learning_rate,
             "gae_lambda": args.gae_lambda,
             "gamma": args.gamma,
             "train_freq": args.train_freq,

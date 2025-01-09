@@ -23,7 +23,7 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
                                                    Schedule)
 from stable_baselines3.common.utils import (explained_variance, get_linear_fn,
-                                            obs_as_tensor, safe_mean)
+                                            obs_as_tensor, safe_mean, update_learning_rate, get_schedule_fn)
 from stable_baselines3.common.vec_env import VecEnv
 from torch.nn import functional as F
 
@@ -83,6 +83,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
         gae_lambda: float = 1.0,
         ent_coef: float = 0.0,
         vf_coef: float = 0.5,
+        learning_rate: float = 3e-4,
         normalize_advantage: bool = False,
         stats_window_size: int = 100,
         max_policy_grad_norm: float = None,
@@ -122,10 +123,11 @@ class A2C_GBRL(OnPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
             else:
                 log_std_lr = float(log_std_lr)
+        policy_kwargs['log_std_schedule'] = get_schedule_fn(log_std_lr)
         super().__init__(
             ActorCriticPolicy,
             env,
-            learning_rate=log_std_lr, #does nothing for categorical output spaces
+            learning_rate=learning_rate, #does nothing for categorical output spaces
             n_steps=n_steps,
             gamma=gamma,
             gae_lambda=gae_lambda,
@@ -193,6 +195,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
         self.policy.set_training_mode(True)
 
         # Update optimizer learning rate
+        if isinstance(self.policy.action_dist, DiagGaussianDistribution):
+            update_learning_rate(self.policy.log_std_optimizer, self.policy.log_std_schedule(self._current_progress_remaining))
 
         policy_losses, value_losses, entropy_losses = [], [], []
         log_std_s = []

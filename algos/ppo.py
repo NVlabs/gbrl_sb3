@@ -36,7 +36,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
-from buffers.rollout_buffer import CategoricalRolloutBuffer, MaskableCategoricalRolloutBuffer
+from buffers.rollout_buffer import CategoricalRolloutBuffer
 from policies.actor_critic_policy import ActorCriticPolicy
 from utils.io_util import load_from_zip_file, save_to_zip_file
 
