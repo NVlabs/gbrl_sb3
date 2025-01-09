@@ -504,12 +504,12 @@ class StrLinearEquationEnv(gym.Env):
             terminated = True
             # if self.had_fraction:
             #     reward -= 0.1
-        if not constant_valid and self.constant_on_left:
-            reward -= 0.1
-            terminated = True
-        if not x_valid and self.x_was_valid:
-            reward -= 0.1
-            terminated = True
+        # if not constant_valid and self.constant_on_left:
+        #     reward -= 0.1
+        #     terminated = True
+        # if not x_valid and self.x_was_valid:
+        #     reward -= 0.1
+        #     terminated = True
         
 
         # if terminated:
