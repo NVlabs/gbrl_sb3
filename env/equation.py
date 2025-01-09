@@ -402,27 +402,23 @@ class StrLinearEquationEnv(gym.Env):
     def _divide_digit(self, numerator, divide_char, denominator, digit):
         if numerator == ' ' or numerator == '0':
             return '0', ' ', ' '
-        if numerator == str(digit):
-            return '1', divide_char, denominator 
         if denominator == ' ':
             return numerator, '/', str(digit)
-        numer = int(numerator)
-        if numer % digit == 0:
-            return str(numer // digit), divide_char, denominator
-        return numerator, '/', str(int(denominator)*digit)
+        new_denomiator = str(int(denominator)*digit)
+        if new_denomiator == numerator:
+            return '1', ' ', ' '
+        return numerator, '/', new_denomiator
     
     def _multiply_digit(self, numerator, divide_char, denominator, digit):
         if numerator == ' ' or numerator == '0':
             return '0', ' ', ' '
-        if denominator == str(digit):
-            return numerator, ' ', ' ' 
         numer = int(numerator)
+        new_numerator = str(digit * numer)
         if denominator == ' ':
-            return str(digit * numer), ' ', ' '
-        denom = int(denominator)
-        if digit % denom == 0:
-            return numerator, divide_char, str(digit // denom)
-        return str(digit * numer), divide_char, denominator
+            return new_numerator, ' ', ' '
+        if new_numerator == denominator:
+            return '1', ' ', ' '
+        return new_numerator, divide_char, denominator
         
     def _gen_state(self, action):
         state = self.state
@@ -494,18 +490,30 @@ class StrLinearEquationEnv(gym.Env):
         #     self.constant_on_left = False 
         #     reward += 0.1
         # if x_valid and not self.x_was_valid:
+        # has_fraction = state[2] == '/' or state[7] == '/' or state[12] == '/'
+        # if not has_fraction and self.had_fraction:
+        #     reward += 0.1
+        
+        # if not self.had_fraction and has_fraction:
+        #     self.had_fraction = True
         #     reward += 0.1 
         #     self.x_was_valid = True
         if x_valid and constant_valid:  # Isolating x condition
             # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 - 0.1
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
+            # if self.had_fraction:
+            #     reward -= 0.1
         if not constant_valid and self.constant_on_left:
             reward -= 0.1
             terminated = True
         if not x_valid and self.x_was_valid:
             reward -= 0.1
             terminated = True
+        
+
+        # if terminated:
+        #     print(f'state: {state}')
             
 
         for num in state:
