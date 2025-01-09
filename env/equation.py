@@ -197,6 +197,7 @@ class StrLinearEquationEnv(gym.Env):
         self.constant_on_left = True
         self.had_fraction = False
         self.x_was_valid = state[1] == '1' and state[0] == ' '
+        self.fraction_bonus_given = False
         return self._get_observation(), {}
     
     def _add_digit(self, sign_char, numerator, denominator, digit):
@@ -307,20 +308,22 @@ class StrLinearEquationEnv(gym.Env):
         #     self.constant_on_left = False 
         #     reward += 0.1
         # if x_valid and not self.x_was_valid:
-        has_fraction = state[2] == '/' or state[7] == '/' or state[12] == '/'
+        has_fraction = state[2] == '/' or state[7] == '/'
         # if not has_fraction and self.had_fraction:
+        if has_fraction:
+            self.had_fraction = True
         #     reward += 0.1
         
-        if not self.had_fraction and has_fraction:
-            self.had_fraction = True
+        if self.had_fraction and not has_fraction and not self.fraction_bonus_given:
             reward += 0.1 
+            self.fraction_bonus_given = True
             # self.x_was_valid = True
         if x_valid and constant_valid:  # Isolating x condition
             # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 - 0.1
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
         
-            if self.had_fraction:
+            if self.fraction_bonus_given:
                 reward -= 0.1
         # if not constant_valid and self.constant_on_left:
         #     reward -= 0.1
@@ -341,7 +344,7 @@ class StrLinearEquationEnv(gym.Env):
         self.step_count += 1
         if self.step_count >= self.max_steps:
             truncated = True
-        print(f'prev_state: {prev_state}, action: {action}, state: {state}, terminated:{terminated}, truncated: {truncated}')
+        # print(f'prev_state: {prev_state}, action: {action}, state: {state}, terminated:{terminated}, truncated: {truncated}')
         return obs, reward, terminated, truncated, info
 
 class BalancedTwoVariableLinearEquationEnv(gym.Env):
