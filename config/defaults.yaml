@@ -39,10 +39,10 @@ tree_optimizer:
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
     # lr: 5.0e-2
-    lr: 5.0e-2
+    lr: 1.0e-3
   value_optimizer: # PPO / AWR
     algo: 'SGD'
-    lr: 0.001
+    lr: 0.0005
   mu_optimizer: # SAC 
     algo: 'SGD'
     lr: 5.0e-4
@@ -128,6 +128,7 @@ a2c_gbrl:
   normalize_advantage: True
   normalize_policy_grads: False
   log_std_lr: lin_0.0017
+  learning_rate: 3.0e-4
   min_log_std_lr: 0.000475
   ent_coef: 0.0580
   vf_coef: 0.871923
@@ -190,6 +191,7 @@ awr_gbrl:
   ent_coef: 0.0
   beta: 0.05
   gae_lambda: 0.95
+  learning_rate: 3.0e-4
   normalize_advantage: False
   log_std_lr: lin_0.0017
   min_log_std_lr: 0.000475
