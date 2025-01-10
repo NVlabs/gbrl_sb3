@@ -152,6 +152,7 @@ class StrLinearEquationEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
         self.step_count = 0
         self.max_steps = 50
+        self.max_num = 100
         self.is_mixed = is_mixed
 
     def _get_observation(self):
@@ -205,44 +206,55 @@ class StrLinearEquationEnv(gym.Env):
         numer = int(numerator)
         res = sign*numer + digit if denominator == ' ' else sign*numer + digit*int(denominator)
         res_sign = '-' if res < 0 else ' '
-        return str(abs(res)), res_sign
+        res = abs(res)
+        res = min(res, self.max_num)
+        return str(res), res_sign
     
     def _subtract_digit(self, sign_char, numerator, denominator, digit):
         sign = -1 if sign_char == '-' else 1
         numer = int(numerator)
         res = sign*numer - digit if denominator == ' ' else sign*numer - digit*int(denominator)
         res_sign = '-' if res < 0 else ' '
-        return str(abs(res)), res_sign
+        res = abs(res)
+        res = min(res, self.max_num)
+        return str(res), res_sign
 
     def _divide_digit(self, numerator, denominator, digit):
         if numerator == '0':
             return '0', ' ', ' '
-
         if denominator == ' ':
             return numerator, '/', str(digit)
-        return numerator, '/', str(int(denominator)*digit)
+        res = int(denominator)*digit
+        res = min(res, self.max_num)
+        if res < 0:
+            print(f"res: {res} of {denominator}*{digit} < 0")
+        return numerator, '/', str(res)
 
     def _multiply_digit(self, numerator, digit):
         if numerator == '0':
             return '0'
 
         numer = int(numerator)
-        return str(numer * digit)
+        res = numer * digit
+        res = min(res, self.max_num)
+        return str(res)
         
     def _set_gcd(self, numerator, divide_char, denominator):
+        numer = abs(int(numerator))
         if divide_char == ' ':
-            return numerator, ' ', ' '
+            return numerator, ' ', ' ', numer > self.max_num
         elif denominator == '1' or denominator == ' ':
-            return numerator, ' ', ' '
-        numer = int (numerator)
-        denom = int(denominator)
-        assert denom > 0, "Denominator must be greater than 0"
+            return numerator, ' ', ' ', numer > self.max_num
+        denom = abs(int(denominator))
         gcd = math.gcd(numer, denom)
+        if gcd == 0:
+            print(f"GCD failure: numerator={numer}, denominator={denom}")
         numer = numer // gcd
         denom = denom // gcd 
+        large_res = numer >= self.max_num or denom >= self.max_num
         if denom == 1:
-            return str(numer), ' ', ' '
-        return str(numer), '/', str(denom)
+            return str(numer), ' ', ' ', large_res
+        return str(numer), '/', str(denom), large_res
 
     def _gen_state(self, action):
         state = self.state
@@ -251,6 +263,7 @@ class StrLinearEquationEnv(gym.Env):
         # sign 0 digit 1 / 2 digit 3 x 4       
         # sign 5 digit 6 / 7 digit 8 = 9
         # sign 10 digit 11 / 12 digit 13 
+        large_res = False
         if minus_1:
             state[0] = '-' if state[0] == ' ' else ' '
             state[5] = '-' if state[5] == '+' or state[5] == ' '  else '+'
@@ -263,6 +276,8 @@ class StrLinearEquationEnv(gym.Env):
             state[6], state[5] = self._subtract_digit(state[5], state[6], state[8], action_number + 1)
             state[11], state[10] = self._subtract_digit(state[10], state[11], state[13], action_number + 1)
         elif action_type == 2:
+            # if state[3] > self.max_num * 10 or state[8] > self.max_num * 10 or state[13] > self.max_num *:
+            #     print(f'state: {state}')
             state[1], state[2], state[3] = self._divide_digit(state[1], state[3], action_number + 1)
             state[6], state[7], state[8] = self._divide_digit(state[6], state[8], action_number + 1)
             state[11], state[12], state[13] = self._divide_digit(state[11], state[13], action_number + 1)
@@ -275,19 +290,19 @@ class StrLinearEquationEnv(gym.Env):
             state[7] = ' '
             state[8] = ' '
 
-        if state[5] == ' ' and state[6] != '0':
+        if state[5] == ' ':
             state[5] = '+'
         if state[11] == '0':
             state[10] = ' '
             state[12] = ' '
             state[13] = ' '
         
-        state[1], state[2], state[3] = self._set_gcd(state[1], state[2], state[3])
-        state[6], state[7], state[8] = self._set_gcd(state[6], state[7], state[8])
-        state[11], state[12], state[13] = self._set_gcd(state[11], state[12], state[13])
+        state[1], state[2], state[3], large_res = self._set_gcd(state[1], state[2], state[3])
+        state[6], state[7], state[8], large_res = self._set_gcd(state[6], state[7], state[8])
+        state[11], state[12], state[13], large_res = self._set_gcd(state[11], state[12], state[13])
         
         self.state = state
-        return self._get_observation()
+        return self._get_observation(), large_res
     
     def step(self, action):
         """Take an action and return the next state, reward, and done flag."""
@@ -297,17 +312,18 @@ class StrLinearEquationEnv(gym.Env):
         truncated = False
         info = {}
         prev_state = self.state.copy()
-        obs = self._gen_state(action)
+        obs, large_res = self._gen_state(action)
         state = self.state
         
+        x_positive = state[0] == ' '
+        x_valid = x_positive and state[1] == '1' and state[2] == ' ' and state[3] == ' '
+        constant_valid = state[6] == '0'
 
-        x_valid = state[0] == ' ' and state[1] == '1' and state[2] == ' ' and state[3] == ' '
-        constant_valid = state[5] == ' ' and (state[6] == ' ' or state[6] == '0') and state[7] == ' ' and state[8] == ' '
-
-        # if constant_valid and self.constant_on_left:
-        #     self.constant_on_left = False 
+        if constant_valid and self.constant_on_left:
+            self.constant_on_left = False 
+            reward += 0.1
+        # if x_valid and not self.x_was_valid:
         #     reward += 0.1
-        # # if x_valid and not self.x_was_valid:
         # has_fraction = state[2] == '/' or state[7] == '/'
         # # if not has_fraction and self.had_fraction:
         # if has_fraction:
@@ -317,23 +333,37 @@ class StrLinearEquationEnv(gym.Env):
         # if self.had_fraction and not has_fraction and not self.fraction_bonus_given:
         #     reward += 0.1 
         #     self.fraction_bonus_given = True
+        action_type, action_number, minus_1 = action
             # self.x_was_valid = True
         if x_valid and constant_valid:  # Isolating x condition
-            # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 - 0.1
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1
+            # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
+        else:
+            if not minus_1:
+                # if constant_valid and action_type in [0, 1]:
+                # #     # reward -= 0.1
+                #     terminated = True
+                if not constant_valid and state[7] == ' ' and action_type in [2, 3]:
+                    # reward -= 0.1
+                    terminated = True
+        #     # elif x_positive and minus_1:
+        #     #     reward -= 0.1
+
+
         
             # if self.fraction_bonus_given:
             #     reward -= 0.1       
-
-        for num in state:
-            if num.isdigit() and int(num) > 100:
-                terminated = True 
+        if large_res:
+            terminated = True
 
         self.step_count += 1
         if self.step_count >= self.max_steps:
             truncated = True
-        # print(f'prev_state: {prev_state}, action: {action}, state: {state}, terminated:{terminated}, truncated: {truncated}')
+        # if terminated or truncated:
+        #     action_type, action_number, minus_1 = action
+        #     cats = {0: 'add', 1: 'subtract', 2: 'divide', 3: 'mult'}
+        #     print(f' reward: {reward}, prev_state: {prev_state}, action_type: {cats[action_type]} action_number: {action_number + 1}, minus-1: {bool(minus_1)}, state: {state}, terminated:{terminated}, truncated: {truncated}')
         return obs, reward, terminated, truncated, info
 
 class BalancedTwoVariableLinearEquationEnv(gym.Env):
