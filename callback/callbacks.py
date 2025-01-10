@@ -157,7 +157,7 @@ class StopTrainingOnNoImprovementInTraining(BaseCallback):
                     print(f"Current mean reward: {current_mean_reward}, Best mean reward: {self.best_mean_reward}")
 
                 # Check for improvement
-                if current_mean_reward <= self.best_mean_reward + self.improvement_threshold:
+                if current_mean_reward < self.best_mean_reward + self.improvement_threshold:
                     if self.verbose > 0:
                         print("No improvement in training reward. Stopping training.")
                     return False  # Stop training
