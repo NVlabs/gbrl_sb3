@@ -48,7 +48,7 @@ from env.warehouse_sorting import register_warehouse_sorting_tests
 from env.matrix_inversion import register_mat_inv_tests
 from env.pipeline_opt import register_pipeline_opt_tests
 from env.bank_validation import register_bank_validation_tests
-from env.logical_chain import register_logical_tests
+from env.block_stacking import register_blocks_tests
 
 warnings.filterwarnings("ignore")
 
@@ -139,8 +139,8 @@ if __name__ == '__main__':
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
-    elif args.env_type == 'chain':
-        register_logical_tests()
+    elif args.env_type == 'blocks':
+        register_blocks_tests()
         args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS  else False
         vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
