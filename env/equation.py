@@ -137,9 +137,9 @@ class StrLinearEquationEnv(gym.Env):
     def __init__(self, is_mixed: bool = False):
         super(StrLinearEquationEnv, self).__init__()
 
-        # actions are add/ subtract/ divide/ multiply and multiply by -1
+        # actions are add/ subtract/ divide/ multiply
         
-        self.n_action_types = 4
+        self.n_action_types = 3
         self.digits = 9
         self.inverse = 2
         self.max_length = 14
@@ -196,9 +196,9 @@ class StrLinearEquationEnv(gym.Env):
         self.step_count = 0
         self.state = state
         self.constant_on_left = True
-        self.had_fraction = False
         self.x_was_valid = state[1] == '1' and state[0] == ' '
-        self.fraction_bonus_given = False
+        self.progress_reward = 0.0
+        self.past_b = abs(int(state[6]))
         return self._get_observation(), {}
     
     def _add_digit(self, sign_char, numerator, denominator, digit):
@@ -258,26 +258,22 @@ class StrLinearEquationEnv(gym.Env):
 
     def _gen_state(self, action):
         state = self.state
-        action_type, action_number, minus_1 = action
+        action_type, action_number, action_sign = action
         # Format: sign digit/digit x sign digit/digit = sign digit/digit
         # sign 0 digit 1 / 2 digit 3 x 4       
         # sign 5 digit 6 / 7 digit 8 = 9
+        action_sign = bool(action_sign)
         # sign 10 digit 11 / 12 digit 13 
         large_res = False
-        if minus_1:
-            state[0] = '-' if state[0] == ' ' else ' '
-            state[5] = '-' if state[5] == '+' or state[5] == ' '  else '+'
-            state[10] = '-' if state[10] == ' ' else ' '
 
-        elif action_type == 0:
-            state[6], state[5] = self._add_digit(state[5], state[6], state[8], action_number + 1)
-            state[11], state[10] = self._add_digit(state[10], state[11], state[13], action_number + 1)
+        if action_type == 0:
+            if action_sign:
+                state[6], state[5] = self._add_digit(state[5], state[6], state[8], action_number + 1)
+                state[11], state[10] = self._add_digit(state[10], state[11], state[13], action_number + 1)
+            else:
+                state[6], state[5] = self._subtract_digit(state[5], state[6], state[8], action_number + 1)
+                state[11], state[10] = self._subtract_digit(state[10], state[11], state[13], action_number + 1)
         elif action_type == 1:
-            state[6], state[5] = self._subtract_digit(state[5], state[6], state[8], action_number + 1)
-            state[11], state[10] = self._subtract_digit(state[10], state[11], state[13], action_number + 1)
-        elif action_type == 2:
-            # if state[3] > self.max_num * 10 or state[8] > self.max_num * 10 or state[13] > self.max_num *:
-            #     print(f'state: {state}')
             state[1], state[2], state[3] = self._divide_digit(state[1], state[3], action_number + 1)
             state[6], state[7], state[8] = self._divide_digit(state[6], state[8], action_number + 1)
             state[11], state[12], state[13] = self._divide_digit(state[11], state[13], action_number + 1)
@@ -285,6 +281,11 @@ class StrLinearEquationEnv(gym.Env):
             state[1] = self._multiply_digit(state[1], action_number + 1)
             state[6] = self._multiply_digit(state[6], action_number + 1)
             state[11] = self._multiply_digit(state[11], action_number + 1)
+        if action_type in [1, 2] and not action_sign:
+            state[0] = '-' if state[0] == ' ' else ' '
+            state[5] = '-' if state[5] == '+' or state[5] == ' '  else '+'
+            state[10] = '-' if state[10] == ' ' else ' '
+
         if state[6] == '0':
             state[5] = ' '
             state[7] = ' '
@@ -319,36 +320,34 @@ class StrLinearEquationEnv(gym.Env):
         x_valid = x_positive and state[1] == '1' and state[2] == ' ' and state[3] == ' '
         constant_valid = state[6] == '0'
 
-        if constant_valid and self.constant_on_left:
-            self.constant_on_left = False 
-            reward += 0.1
+        # if constant_valid and self.constant_on_left:
+        #     self.constant_on_left = False 
+        #     reward += 0.1
+        #     self.progress_reward += 0.1
         # if x_valid and not self.x_was_valid:
         #     reward += 0.1
-        # has_fraction = state[2] == '/' or state[7] == '/'
-        # # if not has_fraction and self.had_fraction:
-        # if has_fraction:
-        #     self.had_fraction = True
-        # #     reward += 0.1
+        #     self.progress_reward += 0.1
+        #     self.x_was_valid = True
+
+        # if state[7] == ' ' and abs(int(state[6])) < self.past_b:
+        #     reward = 0.05 / self.max_steps
+        #     self.progress_reward += reward
+        #     self.past_b = abs(int(state[6]))
         
-        # if self.had_fraction and not has_fraction and not self.fraction_bonus_given:
-        #     reward += 0.1 
-        #     self.fraction_bonus_given = True
-        action_type, action_number, minus_1 = action
+        action_type, action_number, action_sign = action
             # self.x_was_valid = True
         if x_valid and constant_valid:  # Isolating x condition
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps)
             # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
-        else:
-            if not minus_1:
-                # if constant_valid and action_type in [0, 1]:
-                # #     # reward -= 0.1
-                #     terminated = True
-                if not constant_valid and state[7] == ' ' and action_type in [2, 3]:
-                    # reward -= 0.1
-                    terminated = True
-        #     # elif x_positive and minus_1:
-        #     #     reward -= 0.1
+        # else:
+        #     if constant_valid and action_type in [0]:
+        #         reward -= 0.05
+        #     if not constant_valid and state[7] == ' ' and action_type in [1, 2]:
+        #         reward -= 0.05
+                # terminated = True
+            # elif x_positive and minus_1:
+            #     reward -= 0.1
 
 
         
@@ -361,9 +360,11 @@ class StrLinearEquationEnv(gym.Env):
         if self.step_count >= self.max_steps:
             truncated = True
         # if terminated or truncated:
-        #     action_type, action_number, minus_1 = action
-        #     cats = {0: 'add', 1: 'subtract', 2: 'divide', 3: 'mult'}
-        #     print(f' reward: {reward}, prev_state: {prev_state}, action_type: {cats[action_type]} action_number: {action_number + 1}, minus-1: {bool(minus_1)}, state: {state}, terminated:{terminated}, truncated: {truncated}')
+        #     reward -= self.progress_reward
+        # if terminated or truncated:
+            # action_type, action_number, action_sign = action
+            # cats = {0: 'add', 1: 'subtract', 2: 'divide', 3: 'mult'}
+            # print(f' reward: {reward}, prev_state: {prev_state}, action_type: {cats[action_type]} action_number: {action_number + 1}, minus-1: {bool(minus_1)}, state: {state}, terminated:{terminated}, truncated: {truncated}')
         return obs, reward, terminated, truncated, info
 
 class BalancedTwoVariableLinearEquationEnv(gym.Env):
