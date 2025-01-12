@@ -28,7 +28,7 @@ class SymbolicSwappingEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_shape,), dtype=np.single)
 
         self.is_mixed = is_mixed
-        self.max_steps = 50
+        self.max_steps = 30
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
