@@ -70,8 +70,6 @@ class SymbolicSwappingEnv(gym.Env):
         if action >= self.L - 1:
             if action == self.L_max - 1: # reverse list
                 self.state.reverse()
-            else: # invalid
-                terminated = True
         else: # swap elements
             tmp = self.state[action]
             self.state[action] = self.state[action + 1]
