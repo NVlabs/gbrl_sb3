@@ -26,7 +26,7 @@ class LinearEquationEnv(gym.Env):
 
         # actions are add/ subtract/ divide/ multiply and multiply by -1
         
-        self.n_action_types = 4
+        self.n_action_types = 3
         self.digits = 9
         self.inverse = 2
         self.with_history = with_history
@@ -69,32 +69,30 @@ class LinearEquationEnv(gym.Env):
     
     def _gen_state(self, action):
         state = self.state
-        action_type, action_number, minus_1 = action
+        action_type, action_number, sign_idx = action
         # action_type = action // 9
         # action_number = action % 9
-        if minus_1:
-            state[:self.coef] = -state[:self.coef] 
-        elif action_type == 0:
-            state[1] += action_number + 1
-            state[2] += action_number + 1
+        sign = 2*sign_idx - 1
+        # if minus_1:
+        #     state[:self.coef] = -state[:self.coef] 
+        if action_type == 0:
+            state[1] += sign*(action_number + 1)
+            state[2] += sign*(action_number + 1)
         elif action_type == 1:
-            state[1] -= action_number + 1
-            state[2] -= action_number + 1
-        elif action_type == 2:
-            state[:self.coef] = state[:self.coef] / (action_number + 1)
+            state[:self.coef] = sign*state[:self.coef] / (action_number + 1)
         else:
-            state[:self.coef] = state[:self.coef] * (action_number + 1)
+            state[:self.coef] = sign*state[:self.coef] * (action_number + 1)
         
         if self.with_history:
             if self.is_mixed: 
                 state[self.coef] = str(action_type).encode('utf-8')
                 state[self.coef + 1] = action_number + 1
-                state[self.coef + 2] = str(bool(minus_1)).encode('utf-8')
+                state[self.coef + 2] = str(bool(sign_idx)).encode('utf-8')
             else:
                 state[self.coef:] = 0
                 state[self.coef + action_type] = 1 
                 state[self.coef + self.n_action_types + action_number] = 1 
-                state[self.coef + self.n_action_types + self.digits + minus_1] = 1 
+                state[self.coef + self.n_action_types + self.digits + sign_idx] = 1 
 
         self.state = state
         return state
@@ -110,13 +108,8 @@ class LinearEquationEnv(gym.Env):
         if state[0] == 1 and state[1] == 0:  # Isolating x condition
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps)
             terminated = True
-        # elif state[1] == 0 and prev_state[1] != 0:  # First time isolating the constant
-        #     reward = 0.5
-        # elif prev_state[1] == 0 and state[1] == 0:  # Repeating an invalid step
-        #     terminated = True
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
-            reward = -1
             terminated = True
             
         if state[0] == 0:
@@ -403,7 +396,7 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
         
         nums.extend([
                      'True'.encode('utf-8') if self.is_mixed else 1,
-                     'False'.encode('utf-8') if self.is_mixed else 1,
+                     'False'.encode('utf-8') if self.is_mixed else 0,
                      ])
 
         self.step_count = 0
@@ -564,7 +557,7 @@ class TwoVariableLinearEquationEnv(gym.Env):
 
         # actions are add/ subtract/ divide/ multiply /add x / subtract x and multiply by -1
         
-        self.n_action_types = 4
+        self.n_action_types = 3
         self.digits = 9
         self.additional = 4
         self.coef = 5 
@@ -594,25 +587,23 @@ class TwoVariableLinearEquationEnv(gym.Env):
         return self.state, {}
     
     def _gen_state(self, action):
+        # ax + by + c = d
         state = self.state
         x_on_left = state[5]
         if self.is_mixed:
             x_on_left = True if x_on_left == 'True' else False 
         else:
             x_on_left = bool(x_on_left)
-        action_type, action_number, additional = action
-        if additional == 0:
-            if action_type == 0:
-                state[2] += action_number + 1
-                state[3] += action_number + 1
-            elif action_type == 1:
-                state[2] -= action_number + 1
-                state[3] -= action_number + 1
-            elif action_type == 2:
-                state[:self.coef] = state[:self.coef] / (action_number + 1)
-            else:
-                state[:self.coef] = state[:self.coef] * (action_number + 1)
-        elif additional == 1:
+        action_type, action_number, sign_type = action
+        sign = 2*sign_type - 1
+        if action_type == 0:
+            state[2] += sign*(action_number + 1)
+            state[3] += sign*(action_number + 1)
+        elif action_type == 1:
+            state[:self.coef] = sign*state[:self.coef] / (action_number + 1)
+        elif action_type == 2:
+            state[:self.coef] = sign*state[:self.coef] * (action_number + 1)
+        elif action_type == 3:
             state[:self.coef] = -state[:self.coef] 
         elif additional == 2:
             if x_on_left:
@@ -662,17 +653,18 @@ class TwoVariableLinearEquationEnv(gym.Env):
             x_on_left = bool(x_on_left)
 
         if state[0] == 0 and state[1] == 1 and state[2] == 0 and not x_on_left:  # Isolating x condition
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 # remove bonus
+            # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 # remove bonus
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
 
-        if self.prev_x_pos and not x_on_left and not self.bonus_given:
-            reward += 0.1
-            self.bonus_given = True
-        if not self.prev_x_pos and x_on_left:
-            reward += -0.5
+        # if self.prev_x_pos and not x_on_left and not self.bonus_given:
+        #     reward += 0.1
+        #     self.bonus_given = True
+        # if not self.prev_x_pos and x_on_left:
+        #     reward += -0.5
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
-            reward = -1
+            # reward = -1
             terminated = True
             
         if state[1] == 0:
