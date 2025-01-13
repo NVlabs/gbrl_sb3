@@ -128,6 +128,13 @@ if __name__ == '__main__':
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+    elif args.env_type == 'sepsis':
+        wrapper_class = SepsisObservationWrapper
+        vec_env_cls = CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
+        wrapper_kwargs = {'one_hot': args.algo_type not in CATEGORICAL_ALGOS}
+        env = make_sepsis_env(args.env_name, n_envs=args.num_envs, seed=args.seed, vec_env_cls=vec_env_cls, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, wrapper_kwargs=wrapper_kwargs)
+        if args.evaluate:
+            eval_env = make_sepsis_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls, wrapper_kwargs=wrapper_kwargs, wrapper_class=wrapper_class)
     elif args.env_type == 'equation':
         register_equation_tests()
         args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS and args.env_name == 'StrLinearEquation-v0' else False

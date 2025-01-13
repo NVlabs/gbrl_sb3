@@ -825,7 +825,9 @@ class SepsisObservationWrapper(ObservationWrapper):
         self.info_shape = 48 
         self.one_hot = one_hot
         self.is_mixed = not one_hot
+        self.n_actions = env.action_space.n
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape + self.info_shape, ), dtype=np.single)
+        self.action_mask = None
         
          
     def observation(self, observation, state_vector, sofa_score):
@@ -844,8 +846,17 @@ class SepsisObservationWrapper(ObservationWrapper):
     ) -> tuple[WrapperObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         """Modifies the :attr:`env` after calling :meth:`step` using :meth:`self.observation` on the returned observations."""
         observation, reward, terminated, truncated, info = self.env.step(action)
+        self.action_mask = info['admissible_actions']
         return self.observation(observation, info['state_vector'], info['sofa_score'] ), reward, terminated, truncated, info
 
     def reset(self, seed: int = None):
         observation, info = self.env.reset(seed=seed)
+        self.action_mask = info['admissible_actions']
         return self.observation(observation, info['state_vector'], info['sofa_score']), info
+
+    def action_masks(self):
+        """Separate function used in order to access the action mask."""
+        mask = np.zeros(self.n_actions, dtype=bool)
+        # Step 2: Set valid indices to True
+        mask[self.action_mask] = True
+        return mask

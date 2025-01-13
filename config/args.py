@@ -143,7 +143,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'robotics', 'gym', 'mujoco', 'football', 'symswap','openspiel', 'bsuite', 'highway', 'carl','equation']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'robotics', 'gym', 'mujoco', 'football', 'symswap','openspiel', 'bsuite', 'highway', 'carl','equation', 'sepsis']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -344,14 +344,14 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'openspiel'
     # args.env_type = args.env_type if args.env_type else 'highway'
     # args.env_type = args.env_type if args.env_type else 'bsuite'
-    args.env_type = args.env_type if args.env_type else 'symswap'
+    args.env_type = args.env_type if args.env_type else 'sepsis'
     # args.env_type = args.env_type if args.env_type else 'gym'
     # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.algo_type = args.algo_type if args.algo_type else 'a2c_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.algo_type = args.algo_type if args.algo_type else 'awr_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
 
     # args.env_name = args.env_name if args.env_name else 'Pong-v4'
     # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
@@ -369,7 +369,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'CARLMountainCar'
     # args.env_name = args.env_name if args.env_name else 'Extrapolation-Continuous-train'
     # args.env_name = args.env_name if args.env_name else 'Extrapolation-Continuous-train'
-    # args.env_name = args.env_name if args.env_name else 'Sepsis/ICU-Sepsis-v2'
+    args.env_name = args.env_name if args.env_name else 'Sepsis/ICU-Sepsis-v2'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-rank-v3'
@@ -384,7 +384,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-NB-v0'
     # args.env_name = args.env_name if args.env_name else 'bank-v0'
-    args.env_name = args.env_name if args.env_name else 'SymSwap-v0'
+    # args.env_name = args.env_name if args.env_name else 'SymSwap-v0'
     # args.env_name = args.env_name if args.env_name else 'Pendulum-v1'
     # args.env_name = args.env_name if args.env_name else 'academy_empty_goal'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
@@ -1008,6 +1008,9 @@ def process_policy_kwargs(args):
             del algo_kwargs['use_sde']
         if 'sde_sample_freq' in algo_kwargs:
             del algo_kwargs['sde_sample_freq']
+        if 'gbrl' in args.algo_type:
+            algo_kwargs['use_masking'] = True
+    elif args.env_type == 'sepsis':
         if 'gbrl' in args.algo_type:
             algo_kwargs['use_masking'] = True
     return algo_kwargs

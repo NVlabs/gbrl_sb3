@@ -16,8 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from sb3_contrib.common.maskable.buffers import (MaskableDictRolloutBuffer,
-                                                 MaskableRolloutBuffer)
+
 
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
@@ -32,11 +31,13 @@ from stable_baselines3.common.utils import (check_for_correct_spaces,
                                             get_schedule_fn, get_system_info,
                                             obs_as_tensor, safe_mean,
                                             update_learning_rate)
+from sb3_contrib.common.maskable.utils import (get_action_masks,
+                                               is_masking_supported)
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
-from buffers.rollout_buffer import CategoricalRolloutBuffer
+from buffers.rollout_buffer import CategoricalRolloutBuffer, MaskableCategoricalRolloutBuffer, MaskableRolloutBuffer
 from policies.actor_critic_policy import ActorCriticPolicy
 from utils.io_util import load_from_zip_file, save_to_zip_file
 
@@ -147,6 +148,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  seed: Optional[int] = None,
                  verbose: int = 1,
                  tensorboard_log: str = None,
+                 use_masking: bool = False,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -166,6 +168,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         policy_kwargs['tree_optimizer']['policy_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
+        policy_kwargs['use_masking'] = use_masking
         self.fixed_std = fixed_std
         is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'is_categorical') and env.is_categorical) 
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
@@ -242,11 +245,13 @@ class PPO_GBRL(OnPolicyAlgorithm):
         self.bound_min = self.get_action_bound_min()
         self.bound_max = self.get_action_bound_max()
 
-        self.rollout_buffer_class =RolloutBuffer
+        self.rollout_buffer_class = MaskableRolloutBuffer if use_masking else RolloutBuffer
         self.rollout_buffer_kwargs = {}
-        if is_categorical or is_mixed:
-            self.rollout_buffer_class = CategoricalRolloutBuffer 
-            self.rollout_buffer_kwargs['is_mixed'] = is_mixed
+
+        self.use_masking = use_masking
+        if self.is_categorical or self.is_mixed:
+            self.rollout_buffer_class = MaskableCategoricalRolloutBuffer if use_masking else CategoricalRolloutBuffer 
+            self.rollout_buffer_kwargs['is_mixed'] = self.is_mixed
         
         if _init_setup_model:
             self.ppo_setup_model()
@@ -333,12 +338,12 @@ class PPO_GBRL(OnPolicyAlgorithm):
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
-
+                action_masks = None if not self.use_masking else rollout_data.action_masks
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
                     actions = actions.long().flatten()
 
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions,  action_masks=action_masks)
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
@@ -486,7 +491,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         self,
         env: VecEnv,
         callback: BaseCallback,
-        rollout_buffer: Union[RolloutBuffer, CategoricalRolloutBuffer, MaskableRolloutBuffer, MaskableDictRolloutBuffer],
+        rollout_buffer: Union[RolloutBuffer, CategoricalRolloutBuffer, MaskableRolloutBuffer],
         n_rollout_steps: int,
     ) -> bool:
         """
@@ -502,7 +507,11 @@ class PPO_GBRL(OnPolicyAlgorithm):
         :return: True if function returned with at least `n_rollout_steps`
             collected, False if callback terminated rollout prematurely.
         """
-
+        if self.use_masking:
+            assert isinstance(
+            rollout_buffer, (MaskableRolloutBuffer, 
+                            MaskableCategoricalRolloutBuffer)
+        ), "RolloutBuffer doesn't support action masking"
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -523,7 +532,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = self._last_obs if self.is_categorical else obs_as_tensor(self._last_obs, self.device)
-                actions, values, log_probs = self.policy(obs_tensor, requires_grad=False)
+                action_masks = get_action_masks(env) if self.use_masking else None
+                actions, values, log_probs = self.policy(obs_tensor, action_masks=action_masks, requires_grad=False)
 
             actions = actions.cpu().numpy()
 
@@ -564,7 +574,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     rewards[idx] += self.gamma * terminal_value
 
             kwargs = {}
-
+            if self.use_masking:
+                kwargs['action_masks'] = action_masks
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,
