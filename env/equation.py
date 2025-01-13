@@ -559,7 +559,7 @@ class TwoVariableLinearEquationEnv(gym.Env):
         
         self.n_action_types = 3
         self.digits = 9
-        self.additional = 4
+        self.additional = 2
         self.coef = 5 
         shape = self.coef + 1
         
@@ -604,37 +604,12 @@ class TwoVariableLinearEquationEnv(gym.Env):
         elif action_type == 2:
             state[:self.coef] = sign*state[:self.coef] * (action_number + 1)
         elif action_type == 3:
-            state[:self.coef] = -state[:self.coef] 
-        elif additional == 2:
-            if x_on_left:
-                state[4] -= state[0]
-                state[0] = 0
-                if self.is_mixed:
-                    state[5] = 'False'
-                else:
-                    state[5] = 0
-            else:
-                state[0] -= state[4]
-                state[4] = 0
-                if self.is_mixed:
-                    state[5] = 'True'
-                else:
-                    state[5] = 1
+            state[0] += sign*(action_number + 1)
+            state[4] += sign*(action_number + 1)
+        if state[0] == 0:
+            state[5] = 'False' if self.is_mixed else 0
         else:
-            if x_on_left:
-                state[4] += state[0]
-                state[0] = 0
-                if self.is_mixed:
-                    state[5] = 'False'
-                else:
-                    state[5] = 0
-            else:
-                state[0] += state[4]
-                state[4] = 0
-                if self.is_mixed:
-                    state[5] = 'True'
-                else:
-                    state[5] = 1
+            state[5] = 'True' if self.is_mixed else 1
         self.state = state
         return state
     
@@ -657,11 +632,11 @@ class TwoVariableLinearEquationEnv(gym.Env):
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
 
-        # if self.prev_x_pos and not x_on_left and not self.bonus_given:
-        #     reward += 0.1
-        #     self.bonus_given = True
-        # if not self.prev_x_pos and x_on_left:
-        #     reward += -0.5
+        if self.prev_x_pos and not x_on_left and not self.bonus_given:
+            reward += 0.1
+            self.bonus_given = True
+        if not self.prev_x_pos and x_on_left:
+            reward += -0.5
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
             # reward = -1
