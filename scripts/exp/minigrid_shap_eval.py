@@ -159,6 +159,8 @@ def shap_evaluate_policy(
     current_rewards = np.zeros(n_envs)
     current_lengths = np.zeros(n_envs, dtype="int")
     observations = env.reset()
+    if isinstance(observations, tuple):
+        observations = observations[0]
     states = None
     n_episode = 0
     episode_starts = np.ones((env.num_envs,), dtype=bool)
@@ -258,6 +260,7 @@ if __name__ == '__main__':
     parser.add_argument('--render', action="store_true")
     parser.add_argument('--use_box', action="store_true")
     parser.add_argument('--eval_env', type=str)
+    parser.add_argument('--plot_path', type=str)
     parser.add_argument('--deterministic', action="store_true")
     args = parser.parse_args()
 
@@ -294,7 +297,7 @@ if __name__ == '__main__':
     eval_kwargs = {} if args.env_kwargs is None else args.env_kwargs.copy()
     eval_env = make_vec_env(args.eval_env, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
 
-    eval_env = MiniGridShapVisualizationWrapper(eval_env)
+    eval_env = MiniGridShapVisualizationWrapper(eval_env, plot_path=args.plot_path, algo_type=args.algo_type)
     if os.path.exists(vecnormalize_path):
         eval_env = VecNormalize.load(vecnormalize_path, eval_env)
         eval_env.training = False

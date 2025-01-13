@@ -52,14 +52,20 @@ from stable_baselines3.a2c.a2c import A2C
 from stable_baselines3.dqn.dqn import DQN
 from stable_baselines3.ppo.ppo import PPO
 
+import stable_baselines3 as sb3
+
+from stable_baselines3.dqn.policies import DQNPolicy
+
 from algos.a2c import A2C_GBRL
 from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
 from algos.ppo_selfplay import PPO_GBRL_SelfPlay, PPO_SelfPlay
+from sb3_contrib.ppo_mask.ppo_mask import MaskablePPO
 from algos.sac import SAC_GBRL
 from config.args import parse_args, process_logging, process_policy_kwargs
+
 
 NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
@@ -149,6 +155,9 @@ if __name__ == '__main__':
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
+        if args.algo_type == 'ppo_nn':
+            NAME_TO_ALGO['ppo_nn'] = MaskablePPO
+            learn_kwargs['use_masking'] = True
     elif args.env_type == 'bsuite':
         env = make_bsuite_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
         if args.evaluate:
@@ -179,7 +188,6 @@ if __name__ == '__main__':
         NAME_TO_ALGO['ppo_gbrl'] = PPO_GBRL_SelfPlay
     else:
         print("Invalid env_type!")
-
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
         env = VecNormalize(env, **args.wrapper_kwargs)

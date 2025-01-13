@@ -3,7 +3,7 @@ env:
   env_kwargs: null
   verbose: 1
   seed: 0
-  num_envs: 1
+  num_envs: 16
   eval_kwargs:
     eval_freq: 2000
     stop_train: False
@@ -38,11 +38,11 @@ gbrl_params:
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
-    # lr: 5.0e-2
-    lr: 1.0e-3
+    lr: 5.0e-2
+    # lr: 1.0e-3
   value_optimizer: # PPO / AWR
     algo: 'SGD'
-    lr: 0.0005
+    lr: 0.005
   mu_optimizer: # SAC 
     algo: 'SGD'
     lr: 5.0e-4

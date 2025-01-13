@@ -23,7 +23,7 @@ class SymbolicSwappingEnv(gym.Env):
         self.action_space = spaces.Discrete(self.L_max)
 
         # Observation space: color, size, placed_order for each block
-        obs_shape = self.L_max if is_mixed else self.L_max*self.L_max
+        obs_shape = self.L_max if is_mixed else self.L_max*(self.L_max + 1)
 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_shape,), dtype=np.single)
 
@@ -54,12 +54,21 @@ class SymbolicSwappingEnv(gym.Env):
         else:
             obs = []
             for l in range(self.L_max):
-                one_hot = [0] * self.L_max
+                one_hot = [0] * (self.L_max + 1)
                 if l < self.L:
                     one_hot[self.state[l] - 1] = 1
+                else:
+                    one_hot[-1] = 1
                 obs.extend(one_hot)
             obs = np.array(obs, dtype=np.single)
         return obs
+
+    def action_masks(self):
+        """Separate function used in order to access the action mask."""
+        mask = np.ones(self.L_max, dtype=bool)
+        # Step 2: Set valid indices to True
+        mask[self.L-1:-1] = False
+        return mask
 
     def step(self, action):
         self.step_count += 1
@@ -74,7 +83,6 @@ class SymbolicSwappingEnv(gym.Env):
             tmp = self.state[action]
             self.state[action] = self.state[action + 1]
             self.state[action + 1] = tmp
-
 
         if np.array_equal(self.correct_state, self.state):
             terminated = True 

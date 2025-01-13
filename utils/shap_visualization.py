@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 import torch as th
 from PIL import Image
+from pathlib import Path
 import cv2
 from gym.core import ObsType
 from typing import Any, Union
@@ -346,7 +347,7 @@ class PolicyDeepExplainer(Explainer):
     
 
 class MiniGridShapVisualizationWrapper(gym.Wrapper):
-    def __init__(self, env, feature_labels=['Agent Direction', 'Mission']):
+    def __init__(self, env, feature_labels=['Agent Direction', 'Mission'], plot_path='', algo_type=''):
         super().__init__(env)
         self.feature_labels = feature_labels
         self.height = 224
@@ -355,7 +356,13 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         # self.height = 7
         # # self.width = int(224*1.5)
         # self.width = 7
+        self.mission = None
+        self.extra_shap = None
         self.image_shape = np.zeros((7, 7))
+        self.algo_type=algo_type
+        self.save_idx = 0
+        self.go_forward_idx = 0
+        self.plot_path = Path(plot_path)
         self.additional_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)  # To store the SHAP visualization
 
     def set_shap_values(self, shap_values, actions):
@@ -368,6 +375,10 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         """
         Generates a combined heatmap and bar plot image from SHAP values.
         """
+        # max_shap = np.max(shap_values)
+        # shap_values = shap_values / max_shap
+        self.max_shap = np.max(shap_values)
+        self.min_shap = np.min(shap_values)
         # Ensure shap_values has 51 elements (49 for heatmap, 2 for bar plot)
         if shap_values.shape[0] != 51 and len(shap_values) != 2836:
             raise ValueError("Expected 51 SHAP values or 2836 or flat vector.")
@@ -393,14 +404,9 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi)
         
         # Plot the heatmap
-        # im = ax1.imshow(image_shap, cmap='coolwarm', aspect='equal', vmin=-6, vmax=6)
-        # ax1.set_title("Agent View SHAP Heatmap", fontsize=6)  # Reduced fontsize
-        # ax1.axis('off')  # Hide axes
-        # ax1.axis('off')  # Hide axes
-        # cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
-        # cbar.ax.tick_params(labelsize=6)
-        # # cbar.set_ylim((-6, 6))
         norm = plt.Normalize(vmin=-8, vmax=8)  # Replace with your heatmap's vmin and vmax
+        self.mission = self.env.envs[0].mission
+        self.extra_shap = extra_shap
 
         # # Map SHAP values to colors using the same colormap
         colors = plt.cm.coolwarm(norm(extra_shap))
@@ -421,8 +427,106 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         image = np.array(fig.canvas.buffer_rgba())
         plot_img = image[:, :, :3]  # Discard alpha channel
         plt.close(fig)
+
+        if actions == 'pickup object' or actions == 'go forward':
+            self.save_shap_image(actions)
         
         return plot_img
+    
+    def save_shap_image(self, action):
+        # from pathlib import Path
+
+        frame = self.env.render(mode='rgb_array')
+        from matplotlib import rc
+
+        # Enable LaTeX rendering
+        rc('text', usetex=True)
+
+        # Set the font family to serif
+        rc('font', family='serif')
+        fig, ax = plt.subplots(nrows=1, ncols=2)
+        
+        # Plot the heatmap
+        norm = plt.Normalize(vmin=self.min_shap, vmax=self.max_shap)  # Replace with your heatmap's vmin and vmax
+        # # Map SHAP values to colors using the same colormap
+        colors = plt.cm.coolwarm(norm(self.extra_shap))
+        # Plot the bar chart
+        ax[1].bar(self.feature_labels, self.extra_shap, color=colors)
+#         axes.labelsize: 12.0
+# axes.titlesize: 14.0
+# xtick.labelsize: 10.0
+# ytick.labelsize: 10.0
+# legend.fontsize: 10.0
+# figure.titlesize: 16.0
+# font.size: 10.0
+        ax[1].set_title("Additional Features", fontsize=18)
+        ax[1].set_ylabel("SHAP Value", fontsize=16)
+        ax[1].set_xticks(range(len(self.feature_labels)))
+        ax[1].set_xticklabels(self.feature_labels, rotation=0, ha='right', fontsize=14)
+        ax[1].tick_params(axis='y')
+        # ax[1].set_ylim((-7, 7) if 'nn' in self.algo_type else ('-36, 36'))
+        # ax[1].set_ylim((-36, 36))
+        fig.suptitle(f"Mission: {self.mission} \n Action: {action}", fontsize=18)
+
+        shap_values = self.image_shape  # SHAP values already passed
+        tile_size = 32  # Size of each grid cell
+        grid_size = 7  # 7x7 grid for SHAP values
+        start_x = (224 - (grid_size * tile_size)) // 2  # Center horizontally
+        start_y = 224 - (grid_size * tile_size)  # Start from the bottom
+        
+        for i in range(grid_size):  # Iterate over rows
+            for j in range(grid_size):  # Iterate over columns
+                # Calculate the top-left corner of each grid cell
+                x = start_x + (j * tile_size)
+                y = start_y + (i * tile_size)
+                
+                # Calculate the center for text placement
+                text_x = x + tile_size // 2
+                text_y = y + tile_size // 2
+                
+                # Get the SHAP value for this cell
+                shap_value = shap_values[i, j] if i < shap_values.shape[0] and j < shap_values.shape[1] else 0.0
+                
+                # Choose text color for better visibility
+                text_color = (0, 0, 0) if abs(shap_value) < 3 else (255, 255, 255)
+
+                text = f"{int(shap_value)}"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.3
+                thickness = 1
+                (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+            
+            # Calculate the precise text position for centering
+                text_x_centered = text_x - (text_width // 2)
+                # text_x_centered = text_x
+                text_y_centered = text_y + (text_height // 2)
+                
+                # Add SHAP value as text
+                cv2.putText(
+                    frame,
+                    text,
+                    (text_x_centered, text_y_centered),
+                    font,
+                    font_scale,
+                    text_color,
+                    thickness,
+                    cv2.LINE_AA
+                )
+        ax[0].imshow(frame)
+        ax[0].set_xticklabels([])  # Hide x-axis tick labels
+        ax[0].set_yticklabels([])  # Hide y-axis tick labels
+        # Adjust layout
+        idx = self.go_forward_idx if action == 'go forward' else self.save_idx
+        action = action.replace(' ', '_')
+        plt.tight_layout()
+        fig.savefig(self.plot_path / f'shap_{self.algo_type}_{idx}_{action}.png')
+        fig.savefig(self.plot_path / f'shap_{self.algo_type}_{idx}_{action}.pdf')
+        
+        if action == 'go_forward':
+            self.go_forward_idx += 1
+        else:
+            self.save_idx += 1
+        plt.close(fig)
     
     def reset(
         self,
