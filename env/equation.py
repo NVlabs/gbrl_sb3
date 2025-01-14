@@ -557,7 +557,7 @@ class TwoVariableLinearEquationEnv(gym.Env):
 
         # actions are add/ subtract/ divide/ multiply /add x / subtract x and multiply by -1
         
-        self.n_action_types = 3
+        self.n_action_types = 4
         self.digits = 9
         self.additional = 2
         self.coef = 5 
@@ -628,15 +628,15 @@ class TwoVariableLinearEquationEnv(gym.Env):
             x_on_left = bool(x_on_left)
 
         if state[0] == 0 and state[1] == 1 and state[2] == 0 and not x_on_left:  # Isolating x condition
-            # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 # remove bonus
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 # remove bonus
+            # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
 
         if self.prev_x_pos and not x_on_left and not self.bonus_given:
             reward += 0.1
             self.bonus_given = True
-        if not self.prev_x_pos and x_on_left:
-            reward += -0.5
+        # if not self.prev_x_pos and x_on_left:
+        #     reward += -0.5
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
             # reward = -1
