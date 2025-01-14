@@ -37,6 +37,7 @@ from utils.helpers import (make_ram_atari_env,
                            make_highway_env)
 from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper,
+                          MiniGridIndexCategoricalObservationWrapper,
                           PointMazeObservationWrapper,
                           FlatObsWrapperWithDirection,
                           MiniGridOneHotObservationWrapper,
@@ -110,6 +111,7 @@ if __name__ == '__main__':
         register_minigrid_tests()
         from minigrid.wrappers import FlatObsWrapper
         wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
+        # wrapper_class = MiniGridIndexCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
         # wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else MiniGridOneHotObservationWrapper
         vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
         # vec_env_kwargs = {'is_mixed': True}

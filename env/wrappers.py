@@ -352,9 +352,34 @@ class MiniGridCategoricalObservationWrapper(ObservationWrapper):
                 else:
                     category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
                 categorical_array[i*self.image_shape[1] + j] = category.encode('utf-8')
-        else:
-            categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
-            categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
+        categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
+        categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
+        return np.ascontiguousarray(categorical_array)
+
+    def reset(self, seed: int = None):
+        observation, info = self.env.reset(seed=seed)
+        return self.observation(observation), info
+class MiniGridIndexCategoricalObservationWrapper(ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+        self.image_shape = self.observation_space['image'].shape
+        self.flattened_shape = self.image_shape[0]*self.image_shape[1]*3 + 2
+        env.is_categorical = True
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
+          
+    def observation(self, observation):
+        # Transform the observation in some way
+        n_categories = 3
+        categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype)
+        for i in range(self.image_shape[0]):
+            for j in range(self.image_shape[1]): 
+                categorical_array[(i*self.image_shape[1] + j)*n_categories] = str(IDX_TO_OBJECT[observation['image'][i, j, 0]]).encode('utf-8')
+                categorical_array[(i*self.image_shape[1] + j)*n_categories + 1] = str(IDX_TO_COLOR[observation['image'][i, j, 1]]).encode('utf-8')
+                categorical_array[(i*self.image_shape[1] + j)*n_categories + 2] = str(IDX_TO_STATE[observation['image'][i, j, 2]]).encode('utf-8')
+
+        categorical_array[-2] = str(observation['direction']).encode('utf-8')
+        categorical_array[-1] = observation['mission'].encode('utf-8')
         return np.ascontiguousarray(categorical_array)
 
     def reset(self, seed: int = None):
