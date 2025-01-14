@@ -370,12 +370,12 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
         super(BalancedTwoVariableLinearEquationEnv, self).__init__()
 
         # actions are add/ subtract/ divide/ multiply /add x / subtract x /add y /subtract y and multiply by -1
-        self.indices = {'a': 0, 'b': 1, 'y': 2, 'c': 3, 'd': 4, 'x': 5, 'x_pos': 6, 'y_pos': 7}
+        self.indices = {'a': 0, 'b': 1, 'y': 2, 'c': 3, 'd': 4, 'x': 5}
         self.n_action_types = 5
         self.digits = 9
         self.sign_type = 2
         self.coef = 6
-        shape = self.coef + 2
+        shape = self.coef
         
         self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.sign_type])
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
@@ -394,17 +394,12 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
             else:
                 nums.append(digit*sign)
         
-        nums.extend([
-                     'True'.encode('utf-8') if self.is_mixed else 1,
-                     'False'.encode('utf-8') if self.is_mixed else 0,
-                     ])
 
         self.step_count = 0
         self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
-        self.prev_x_pos = True
-        self.prev_y_pos = True
         self.x_bonus_given = False
         self.y_bonus_given = False
+        self.moved_b = False
         return self.state, {}
 
     def _get_bool(self, value):
@@ -436,14 +431,7 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
             state[indices['y']] += sign*(action_number + 1)
             state[indices['c']] += sign*(action_number + 1)
         
-        if state[indices['a']] == 0:
-            state[indices['x_pos']] = 'False' if self.is_mixed else 0
-        else:
-            state[indices['x_pos']] = 'True' if self.is_mixed else 1
-        if state[indices['c']] == 0:
-            state[indices['y_pos']] = 'True' if self.is_mixed else 1
-        else:
-            state[indices['y_pos']] = 'False' if self.is_mixed else 0
+
         self.state = state
         return state
     
@@ -455,32 +443,28 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
         truncated = False
         info = {}
         state = self._gen_state(action)
-        x_on_left = self._get_bool(state[indices['x_pos']])
-        y_on_left = self._get_bool(state[indices['y_pos']])
-
         # ax + b + y_place_holder = cy + d + x_place_holder
-        if state[indices['a']] == 0 and state[indices['b']] == 0 and state[indices['y']] == 1 and not x_on_left:  # Isolating x condition
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1*2 # remove bonuses
+        if state[indices['a']] == 0 and state[indices['b']] == 0 and state[indices['y']] == 1 and state[indices['c']] == 0:  # Isolating x condition
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1*3 # remove bonuses
             terminated = True
 
-        if self.prev_x_pos and not x_on_left and not self.x_bonus_given:
+        if state[indices['a']] == 0 and not self.x_bonus_given:
             reward += 0.1
             self.x_bonus_given = True
         # if not self.prev_x_pos and x_on_left:
         #     reward += -0.5
-        if self.prev_y_pos and y_on_left and not self.y_bonus_given:
+        if state[indices['c']] == 0 and not self.y_bonus_given:
             reward += 0.1
             self.y_bonus_given = True
+        if state[indices['b']] == 0 and not self.moved_b:
+            reward += 0.1
+            self.moved_b = True
         # if not self.prev_y_pos and y_on_left:
         #     reward += -0.5
 
         if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
             # reward = -1
             terminated = True
-            
-
-        self.prev_x_pos = x_on_left
-        self.prev_y_pos = y_on_left
 
         self.step_count += 1
         if self.step_count >= self.max_steps:
@@ -502,7 +486,7 @@ class TwoVariableLinearEquationEnv(gym.Env):
         self.digits = 9
         self.sign_type = 2
         self.coef = 5 
-        shape = self.coef + 1
+        shape = self.coef
         
         self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.sign_type])
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
@@ -518,23 +502,18 @@ class TwoVariableLinearEquationEnv(gym.Env):
             sign = np.random.choice([-1, 1])
             nums.append(digit*sign)
         
-        nums.extend([0,
-                     'True'.encode('utf-8') if self.is_mixed else 1])
+        nums.append(0)
 
         self.step_count = 0
         self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
         self.prev_x_pos = True
         self.bonus_given = False
+        self.moved_b = False
         return self.state, {}
     
     def _gen_state(self, action):
-        # ax + by + c = d
+        # ax + by + c = d + place_holder_x
         state = self.state
-        x_on_left = state[5]
-        if self.is_mixed:
-            x_on_left = True if x_on_left == 'True' else False 
-        else:
-            x_on_left = bool(x_on_left)
         action_type, action_number, sign_type = action
         sign = 2*sign_type - 1
         if action_type == 0:
@@ -547,10 +526,6 @@ class TwoVariableLinearEquationEnv(gym.Env):
         elif action_type == 3:
             state[0] += sign*(action_number + 1)
             state[4] += sign*(action_number + 1)
-        if state[0] == 0:
-            state[5] = 'False' if self.is_mixed else 0
-        else:
-            state[5] = 'True' if self.is_mixed else 1
         self.state = state
         return state
     
@@ -562,20 +537,18 @@ class TwoVariableLinearEquationEnv(gym.Env):
         truncated = False
         info = {}
         state = self._gen_state(action)
-        x_on_left = state[5]
-        if self.is_mixed:
-            x_on_left = True if x_on_left == 'True' else False 
-        else:
-            x_on_left = bool(x_on_left)
-
-        if state[0] == 0 and state[1] == 1 and state[2] == 0 and not x_on_left:  # Isolating x condition
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1 # remove bonus
+        if state[0] == 0 and state[1] == 1 and state[2] == 0:  # Isolating x condition
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.2 # remove bonus
             # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
 
-        if self.prev_x_pos and not x_on_left and not self.bonus_given:
+        if state[0] == 0 and not self.bonus_given:
             reward += 0.1
             self.bonus_given = True
+
+        if state[2] == 0 and not self.moved_b:
+            reward += 0.1
+            self.moved_b = True
         # if not self.prev_x_pos and x_on_left:
         #     reward += -0.5
 
@@ -585,8 +558,6 @@ class TwoVariableLinearEquationEnv(gym.Env):
             
         if state[1] == 0:
             terminated = True
-
-        self.prev_x_pos = x_on_left
 
         self.step_count += 1
         if self.step_count >= self.max_steps:
