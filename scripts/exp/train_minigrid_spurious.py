@@ -36,7 +36,8 @@ from utils.helpers import (make_ram_atari_env,
                            make_carl_env,
                            make_highway_env)
 from env.wrappers import (CategoricalDummyVecEnv,
-                          CategoricalObservationWrapper,
+                          MiniGridCategoricalObservationWrapper,
+                          MiniGridOneHotObservationWrapper,
                           FlatObsWrapperWithDirection)
 from env.ocatari import MIXED_ATARI_ENVS
 from env.minigrid import register_minigrid_tests
@@ -84,7 +85,7 @@ if __name__ == '__main__':
     scenario_name = 'MiniGrid-SpuriousFetch-8x8-N3-v'
 
     register_minigrid_tests()
-    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
+    wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else MiniGridOneHotObservationWrapper
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     # vec_env_kwargs = {'is_mixed': True}
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)

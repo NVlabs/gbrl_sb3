@@ -222,27 +222,100 @@ class FlatObsWrapperWithDirection(ObservationWrapper):
 
         return obs
     
-class CategoricalObservationWrapper(ObservationWrapper):
-    def __init__(self, env):
+class FlatObsWrapperWithDirectionCategoricalInfo(ObservationWrapper):
+    """
+    Encode mission strings using a one-hot scheme,
+    and combine these with observed images into one flat array.
+
+    This wrapper is not applicable to BabyAI environments, given that these have their own language component.
+
+    Example:
+        >>> import gymnasium as gym
+        >>> import matplotlib.pyplot as plt
+        >>> from minigrid.wrappers import FlatObsWrapper
+        >>> env = gym.make("MiniGrid-LavaCrossingS11N5-v0")
+        >>> env_obs = FlatObsWrapper(env)
+        >>> obs, _ = env_obs.reset()
+        >>> obs.shape
+        (2835,)
+    """
+
+    def __init__(self, env, maxStrLen=96):
         super().__init__(env)
 
-        self.image_shape = self.observation_space['image'].shape
+        self.maxStrLen = maxStrLen
+        self.numCharCodes = 28
+
+        imgSpace = env.observation_space.spaces["image"]
+        imgSize = reduce(operator.mul, imgSpace.shape, 1)
+
+        self.observation_space = spaces.Box(
+            low=0,
+            high=255,
+            shape=(imgSize + self.numCharCodes * self.maxStrLen + 1,),
+            dtype="uint8",
+        )
+
+        self.cachedStr: str = None
+
+        self.image_shape = imgSpace.shape
         self.flattened_shape = self.image_shape[0]*self.image_shape[1] + 1
+
         if not isinstance(env, FullyObsWrapper):
             self.flattened_shape += 1
-        self.is_mixed = False
-        self.closest = False
-        if 'distances' in self.observation_space.keys():
-            self.flattened_shape += self.observation_space['distances'].shape[0]
-            env.is_mixed = True
-            self.is_mixed = True
-        else:
-            env.is_categorical = True
-        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
-          
-    def observation(self, observation):
-        # Transform the observation in some way
-        categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype if not self.is_mixed else object)
+
+    def observation(self, obs):
+        image = obs["image"]
+        mission = obs["mission"]
+        direction = obs["direction"]
+
+        # Cache the last-encoded mission string
+        if mission != self.cachedStr:
+            assert (
+                len(mission) <= self.maxStrLen
+            ), f"mission string too long ({len(mission)} chars)"
+            mission = mission.lower()
+
+            strArray = np.zeros(
+                shape=(self.maxStrLen, self.numCharCodes), dtype="float32"
+            )
+
+            for idx, ch in enumerate(mission):
+                if ch >= "a" and ch <= "z":
+                    chNo = ord(ch) - ord("a")
+                elif ch == " ":
+                    chNo = ord("z") - ord("a") + 1
+                elif ch == ",":
+                    chNo = ord("z") - ord("a") + 2
+                else:
+                    raise ValueError(
+                        f"Character {ch} is not available in mission string."
+                    )
+                assert chNo < self.numCharCodes, "%s : %d" % (ch, chNo)
+                strArray[idx, chNo] = 1
+
+            self.cachedStr = mission
+            self.cachedArray = strArray
+
+        obs = np.concatenate((image.flatten(), self.cachedArray.flatten(), np.array([direction])))
+        return obs
+
+    def step(
+        self, action: ActType
+    ) -> tuple[WrapperObsType, SupportsFloat, bool, bool, dict[str, Any]]:
+        """Modifies the :attr:`env` after calling :meth:`step` using :meth:`self.observation` on the returned observations."""
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        info['cat_obs'] = self._cat_obs(observation)
+        return self.observation(observation), reward, terminated, truncated, info
+    
+    def reset(self, seed: int = None):
+        observation, info = self.env.reset(seed=seed)
+        info['cat_obs'] = self._cat_obs(observation)
+        return self.observation(observation), info
+    
+    def _cat_obs(self, observation):
+                # Transform the observation in some way
+        categorical_array = np.empty(self.flattened_shape, dtype= object)
         for i in range(self.image_shape[0]):
             for j in range(self.image_shape[1]):
                 if isinstance(self.env, FullyObsWrapper) and str(IDX_TO_OBJECT[observation['image'][i, j, 0]]) == 'agent':
@@ -255,13 +328,73 @@ class CategoricalObservationWrapper(ObservationWrapper):
         else:
             categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
             categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
-        if self.is_mixed:
-            categorical_array[-3:] = observation['distances']
+        return np.ascontiguousarray(categorical_array)
+    
+class MiniGridCategoricalObservationWrapper(ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+        self.image_shape = self.observation_space['image'].shape
+        self.flattened_shape = self.image_shape[0]*self.image_shape[1] + 1
+        if not isinstance(env, FullyObsWrapper):
+            self.flattened_shape += 1
+        self.is_mixed = False
+        env.is_categorical = True
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
+          
+    def observation(self, observation):
+        # Transform the observation in some way
+        categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype if not self.is_mixed else object)
+        for i in range(self.image_shape[0]):
+            for j in range(self.image_shape[1]):
+                if isinstance(self.env, FullyObsWrapper) and str(IDX_TO_OBJECT[observation['image'][i, j, 0]]) == 'agent':
+                   category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(observation['image'][i, j, 2])}"   
+                else:
+                    category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
+                categorical_array[i*self.image_shape[1] + j] = category.encode('utf-8')
+        else:
+            categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
+            categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
         return np.ascontiguousarray(categorical_array)
 
     def reset(self, seed: int = None):
         observation, info = self.env.reset(seed=seed)
         return self.observation(observation), info
+    
+class MiniGridOneHotObservationWrapper(ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.n_colors = len(IDX_TO_COLOR)
+        self.n_objects = len(IDX_TO_OBJECT)
+        self.n_states = len(IDX_TO_STATE)
+
+        self.image_shape = self.observation_space['image'].shape
+        self.flattened_shape = self.image_shape[0]*self.image_shape[1]*self.n_colors*self.n_objects*self.n_states
+        self.flattened_shape += 4 + 3 # assuming 4 directions and 3 missions
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
+          
+    def observation(self, observation):
+        # Transform the observation in some way
+        categorical_array = np.zeros((self.image_shape[0], self.image_shape[1], self.n_objects, self.n_colors, self.n_states), dtype=np.single)
+        extra_array = np.zeros(4 + 3, dtype=np.single)
+        missions = {'get a red ball': 0, 'get a green ball': 1, 'get a blue ball': 2}
+        for i in range(self.image_shape[0]):
+            for j in range(self.image_shape[1]):
+                color_ = observation['image'][i, j, 1]
+                object_ = observation['image'][i, j, 0]
+                state_ = observation['image'][i, j, 2]
+                categorical_array[i, j, object_, color_, state_] = 1
+        extra_array[-3 + missions[observation['mission']]] = 1
+        extra_array[observation['direction']] = 1
+        # categorical_array[-1 - 3 - directions[observation['direction']]] = 1
+            # categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
+            # categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
+        return np.ascontiguousarray(np.concatenate([categorical_array.flatten(), extra_array]))
+
+    def reset(self, seed: int = None):
+        observation, info = self.env.reset(seed=seed)
+        return self.observation(observation), info
+    
     
 class PointMazeObservationWrapper(ObservationWrapper):
     def __init__(self, env):
