@@ -366,7 +366,7 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
     Goal: isolate y to the form = y = (d - b - ax) / c
     """
     
-    def __init__(self, is_mixed: bool = False):
+    def __init__(self):
         super(BalancedTwoVariableLinearEquationEnv, self).__init__()
 
         # actions are add/ subtract/ divide/ multiply /add x / subtract x /add y /subtract y and multiply by -1
@@ -381,7 +381,6 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
         self.step_count = 0
         self.max_steps = 50
-        self.is_mixed = is_mixed
 
     def reset(self, seed=None, options=None):
         """Reset the environment to the initial state."""
@@ -445,24 +444,23 @@ class BalancedTwoVariableLinearEquationEnv(gym.Env):
         state = self._gen_state(action)
         # ax + b + y_place_holder = cy + d + x_place_holder
         if state[indices['a']] == 0 and state[indices['b']] == 0 and state[indices['y']] == 1 and state[indices['c']] == 0:  # Isolating x condition
-            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.1*3 # remove bonuses
+            reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.3  # remove bonuses
             terminated = True
 
         if state[indices['a']] == 0 and not self.x_bonus_given:
             reward += 0.1
             self.x_bonus_given = True
-        # if not self.prev_x_pos and x_on_left:
-        #     reward += -0.5
+
         if state[indices['c']] == 0 and not self.y_bonus_given:
             reward += 0.1
             self.y_bonus_given = True
+
         if state[indices['b']] == 0 and not self.moved_b:
             reward += 0.1
             self.moved_b = True
-        # if not self.prev_y_pos and y_on_left:
-        #     reward += -0.5
 
-        if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
+
+        if (np.isnan(state).any() or np.isinf(state).any()):
             # reward = -1
             terminated = True
 
@@ -477,7 +475,7 @@ class TwoVariableLinearEquationEnv(gym.Env):
     Goal: Isolate x
     """
     
-    def __init__(self, is_mixed: bool = False):
+    def __init__(self):
         super(TwoVariableLinearEquationEnv, self).__init__()
 
         # actions are add/ subtract/ divide/ multiply /add x / subtract x and multiply by -1
@@ -487,12 +485,12 @@ class TwoVariableLinearEquationEnv(gym.Env):
         self.sign_type = 2
         self.coef = 5 
         shape = self.coef
+        self.indices = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'x': 4}
         
         self.action_space = spaces.MultiDiscrete([self.n_action_types, self.digits, self.sign_type])
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(shape, ), dtype=float)
         self.step_count = 0
         self.max_steps = 50
-        self.is_mixed = is_mixed
 
     def reset(self, seed=None, options=None):
         """Reset the environment to the initial state."""
@@ -505,28 +503,27 @@ class TwoVariableLinearEquationEnv(gym.Env):
         nums.append(0)
 
         self.step_count = 0
-        self.state = np.array(nums, dtype=object if self.is_mixed else np.single)
-        self.prev_x_pos = True
-        self.bonus_given = False
-        self.moved_b = False
+        self.state = np.array(nums, dtype=np.single)
+        self.moved_x = False
+        self.moved_c = False
         return self.state, {}
     
     def _gen_state(self, action):
         # ax + by + c = d + place_holder_x
-        state = self.state
+        state = self.state.copy()
         action_type, action_number, sign_type = action
         sign = 2*sign_type - 1
         if action_type == 0:
-            state[2] += sign*(action_number + 1)
-            state[3] += sign*(action_number + 1)
+            state[self.indices['c']] += sign*(action_number + 1)
+            state[self.indices['d']] += sign*(action_number + 1)
         elif action_type == 1:
-            state[:self.coef] = sign*state[:self.coef] / (action_number + 1)
+            state = sign*state / (action_number + 1)
         elif action_type == 2:
-            state[:self.coef] = sign*state[:self.coef] * (action_number + 1)
+            state = sign*state * (action_number + 1)
         elif action_type == 3:
-            state[0] += sign*(action_number + 1)
-            state[4] += sign*(action_number + 1)
-        self.state = state
+            state[self.indices['a']] += sign*(action_number + 1)
+            state[self.indices['x']] += sign*(action_number + 1)
+        self.state = state.copy()
         return state
     
     def step(self, action):
@@ -537,26 +534,22 @@ class TwoVariableLinearEquationEnv(gym.Env):
         truncated = False
         info = {}
         state = self._gen_state(action)
-        if state[0] == 0 and state[1] == 1 and state[2] == 0:  # Isolating x condition
+
+        if state[self.indices['a']] == 0 and not self.moved_x:
+            reward += 0.1
+            self.moved_x = True
+        if state[self.indices['c']] == 0 and not self.moved_c:
+            reward += 0.1
+            self.moved_c = True
+
+        if state[self.indices['a']] == 0 and state[self.indices['b']] == 1 and state[self.indices['c']] == 0:  # Isolating x condition
             reward = 1.0 - 0.9 * (self.step_count / self.max_steps) - 0.2 # remove bonus
-            # reward = 1.0 - 0.9 * (self.step_count / self.max_steps) 
             terminated = True
 
-        if state[0] == 0 and not self.bonus_given:
-            reward += 0.1
-            self.bonus_given = True
-
-        if state[2] == 0 and not self.moved_b:
-            reward += 0.1
-            self.moved_b = True
-        # if not self.prev_x_pos and x_on_left:
-        #     reward += -0.5
-
-        if not self.is_mixed and (np.isnan(state).any() or np.isinf(state).any()):
-            # reward = -1
+        if (np.isnan(state).any() or np.isinf(state).any()):
             terminated = True
             
-        if state[1] == 0:
+        if state[self.indices['b']] == 0:
             terminated = True
 
         self.step_count += 1
