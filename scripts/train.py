@@ -147,8 +147,9 @@ if __name__ == '__main__':
             eval_env = make_sepsis_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls, wrapper_kwargs=wrapper_kwargs, wrapper_class=wrapper_class)
     elif args.env_type == 'equation':
         register_equation_tests()
-        args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS and args.env_name == 'StrLinearEquation-v0' else False
-        vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS and args.env_name == 'StrLinearEquation-v0' else DummyVecEnv
+        # args.env_kwargs['is_mixed'] = True if args.algo_type in CATEGORICAL_ALGOS and args.env_name == 'StrLinearEquation-v0' else False
+        # vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS and args.env_name == 'StrLinearEquation-v0' else DummyVecEnv
+        vec_env_cls=  DummyVecEnv
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
