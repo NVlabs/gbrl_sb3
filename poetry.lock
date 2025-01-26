@@ -435,7 +435,7 @@ description = "Cross-platform colored terminal text."
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
 groups = ["main"]
-markers = "(sys_platform == \"win32\" or platform_system == \"Windows\") and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "(platform_system == \"Windows\" or sys_platform == \"win32\") and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
@@ -971,7 +971,7 @@ description = "Lightweight in-process concurrent programming"
 optional = false
 python-versions = ">=3.7"
 groups = ["main"]
-markers = "(platform_machine == \"aarch64\" or platform_machine == \"ppc64le\" or platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"win32\" or platform_machine == \"WIN32\") and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "(python_version <= \"3.11\" or python_version >= \"3.12\") and (platform_machine == \"aarch64\" or platform_machine == \"ppc64le\" or platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"win32\" or platform_machine == \"WIN32\")"
 files = [
     {file = "greenlet-3.1.1-cp310-cp310-macosx_11_0_universal2.whl", hash = "sha256:0bbae94a29c9e5c7e4a2b7f0aae5c17e8e90acbfd3bf6270eeba60c39fce3563"},
     {file = "greenlet-3.1.1-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0fde093fb93f35ca72a556cf72c92ea3ebfda3d79fc35bb19fbe685853869a83"},
@@ -1951,7 +1951,7 @@ description = "CUBLAS native runtime libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0f8aa1706812e00b9f19dfe0cdb3999b092ccb8ca168c0db5b8ea712456fd9b3"},
     {file = "nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_x86_64.whl", hash = "sha256:2fc8da60df463fdefa81e323eef2e36489e1c94335b5358bcb38360adf75ac9b"},
@@ -1965,7 +1965,7 @@ description = "CUDA profiling tools runtime libs."
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:79279b35cf6f91da114182a5ce1864997fd52294a87a16179ce275773799458a"},
     {file = "nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:9dec60f5ac126f7bb551c055072b69d85392b13311fcc1bcda2202d172df30fb"},
@@ -1979,7 +1979,7 @@ description = "NVRTC native runtime libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0eedf14185e04b76aa05b1fea04133e59f465b6f960c0cbf4e37c3cb6b0ea198"},
     {file = "nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:a178759ebb095827bd30ef56598ec182b85547f1508941a3d560eb7ea1fbf338"},
@@ -1993,7 +1993,7 @@ description = "CUDA Runtime native Libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:961fe0e2e716a2a1d967aab7caee97512f71767f852f67432d572e36cb3a11f3"},
     {file = "nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:64403288fa2136ee8e467cdc9c9427e0434110899d07c779f25b5c068934faa5"},
@@ -2007,7 +2007,7 @@ description = "cuDNN runtime libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl", hash = "sha256:165764f44ef8c61fcdfdfdbe769d687e06374059fbb388b6c89ecb0e28793a6f"},
     {file = "nvidia_cudnn_cu12-9.1.0.70-py3-none-win_amd64.whl", hash = "sha256:6278562929433d68365a07a4a1546c237ba2849852c0d4b2262a486e805b977a"},
@@ -2023,7 +2023,7 @@ description = "CUFFT native runtime libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:5dad8008fc7f92f5ddfa2101430917ce2ffacd86824914c82e28990ad7f00399"},
     {file = "nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:f083fc24912aa410be21fa16d157fed2055dab1cc4b6934a0e03cba69eb242b9"},
@@ -2040,7 +2040,7 @@ description = "CURAND native runtime libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_aarch64.whl", hash = "sha256:1f173f09e3e3c76ab084aba0de819c49e56614feae5c12f69883f4ae9bb5fad9"},
     {file = "nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_x86_64.whl", hash = "sha256:a88f583d4e0bb643c49743469964103aa59f7f708d862c3ddb0fc07f851e3b8b"},
@@ -2054,7 +2054,7 @@ description = "CUDA solver native runtime libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_aarch64.whl", hash = "sha256:d338f155f174f90724bbde3758b7ac375a70ce8e706d70b018dd3375545fc84e"},
     {file = "nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_x86_64.whl", hash = "sha256:19e33fa442bcfd085b3086c4ebf7e8debc07cfe01e11513cc6d332fd918ac260"},
@@ -2073,7 +2073,7 @@ description = "CUSPARSE native runtime libraries"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_aarch64.whl", hash = "sha256:9d32f62896231ebe0480efd8a7f702e143c98cfaa0e8a76df3386c1ba2b54df3"},
     {file = "nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_x86_64.whl", hash = "sha256:ea4f11a2904e2a8dc4b1833cc1b5181cde564edd0d5cd33e3c168eff2d1863f1"},
@@ -2090,7 +2090,7 @@ description = "NVIDIA Collective Communication Library (NCCL) Runtime"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_nccl_cu12-2.21.5-py3-none-manylinux2014_x86_64.whl", hash = "sha256:8579076d30a8c24988834445f8d633c697d42397e92ffc3f63fa26766d25e0a0"},
 ]
@@ -2102,7 +2102,7 @@ description = "Nvidia JIT LTO Library"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4abe7fef64914ccfa909bc2ba39739670ecc9e820c83ccc7a6ed414122599b83"},
     {file = "nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:06b3b9b25bf3f8af351d664978ca26a16d2c5127dbd53c0497e28d1fb9611d57"},
@@ -2116,7 +2116,7 @@ description = "NVIDIA Tools Extension"
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:7959ad635db13edf4fc65c06a6e9f9e55fc2f92596db928d169c0bb031e88ef3"},
     {file = "nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:781e950d9b9f60d8241ccea575b32f5105a5baf4c2351cab5256a24869f12a1a"},
@@ -2143,29 +2143,50 @@ signedtoken = ["cryptography (>=3.0.0)", "pyjwt (>=2.0.0,<3)"]
 
 [[package]]
 name = "opencv-python"
-version = "4.7.0.72"
+version = "4.8.1.78"
 description = "Wrapper package for OpenCV python bindings."
 optional = false
 python-versions = ">=3.6"
 groups = ["main"]
-markers = "python_version <= \"3.11\" or python_version >= \"3.12\""
+markers = "python_version >= \"3.12\""
 files = [
-    {file = "opencv-python-4.7.0.72.tar.gz", hash = "sha256:3424794a711f33284581f3c1e4b071cfc827d02b99d6fd9a35391f517c453306"},
-    {file = "opencv_python-4.7.0.72-cp37-abi3-macosx_10_16_x86_64.whl", hash = "sha256:d4f8880440c433a0025d78804dda6901d1e8e541a561dda66892d90290aef881"},
-    {file = "opencv_python-4.7.0.72-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:7a297e7651e22eb17c265ddbbc80e2ba2a8ff4f4a1696a67c45e5f5798245842"},
-    {file = "opencv_python-4.7.0.72-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:cd08343654c6b88c5a8c25bf425f8025aed2e3189b4d7306b5861d32affaf737"},
-    {file = "opencv_python-4.7.0.72-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ebfc0a3a2f57716e709028b992e4de7fd8752105d7a768531c4f434043c6f9ff"},
-    {file = "opencv_python-4.7.0.72-cp37-abi3-win32.whl", hash = "sha256:eda115797b114fc16ca6f182b91c5d984f0015c19bec3145e55d33d708e9bae1"},
-    {file = "opencv_python-4.7.0.72-cp37-abi3-win_amd64.whl", hash = "sha256:812af57553ec1c6709060c63f6b7e9ad07ddc0f592f3ccc6d00c71e0fe0e6376"},
+    {file = "opencv-python-4.8.1.78.tar.gz", hash = "sha256:cc7adbbcd1112877a39274106cb2752e04984bc01a031162952e97450d6117f6"},
+    {file = "opencv_python-4.8.1.78-cp37-abi3-macosx_10_16_x86_64.whl", hash = "sha256:91d5f6f5209dc2635d496f6b8ca6573ecdad051a09e6b5de4c399b8e673c60da"},
+    {file = "opencv_python-4.8.1.78-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:bc31f47e05447da8b3089faa0a07ffe80e114c91ce0b171e6424f9badbd1c5cd"},
+    {file = "opencv_python-4.8.1.78-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9814beca408d3a0eca1bae7e3e5be68b07c17ecceb392b94170881216e09b319"},
+    {file = "opencv_python-4.8.1.78-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c4c406bdb41eb21ea51b4e90dfbc989c002786c3f601c236a99c59a54670a394"},
+    {file = "opencv_python-4.8.1.78-cp37-abi3-win32.whl", hash = "sha256:a7aac3900fbacf55b551e7b53626c3dad4c71ce85643645c43e91fcb19045e47"},
+    {file = "opencv_python-4.8.1.78-cp37-abi3-win_amd64.whl", hash = "sha256:b983197f97cfa6fcb74e1da1802c7497a6f94ed561aba6980f1f33123f904956"},
+]
+
+[package.dependencies]
+numpy = {version = ">=1.23.5", markers = "python_version >= \"3.11\""}
+
+[[package]]
+name = "opencv-python"
+version = "4.11.0.86"
+description = "Wrapper package for OpenCV python bindings."
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+markers = "python_version <= \"3.11\""
+files = [
+    {file = "opencv-python-4.11.0.86.tar.gz", hash = "sha256:03d60ccae62304860d232272e4a4fda93c39d595780cb40b161b310244b736a4"},
+    {file = "opencv_python-4.11.0.86-cp37-abi3-macosx_13_0_arm64.whl", hash = "sha256:432f67c223f1dc2824f5e73cdfcd9db0efc8710647d4e813012195dc9122a52a"},
+    {file = "opencv_python-4.11.0.86-cp37-abi3-macosx_13_0_x86_64.whl", hash = "sha256:9d05ef13d23fe97f575153558653e2d6e87103995d54e6a35db3f282fe1f9c66"},
+    {file = "opencv_python-4.11.0.86-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1b92ae2c8852208817e6776ba1ea0d6b1e0a1b5431e971a2a0ddd2a8cc398202"},
+    {file = "opencv_python-4.11.0.86-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6b02611523803495003bd87362db3e1d2a0454a6a63025dc6658a9830570aa0d"},
+    {file = "opencv_python-4.11.0.86-cp37-abi3-win32.whl", hash = "sha256:810549cb2a4aedaa84ad9a1c92fbfdfc14090e2749cedf2c1589ad8359aa169b"},
+    {file = "opencv_python-4.11.0.86-cp37-abi3-win_amd64.whl", hash = "sha256:085ad9b77c18853ea66283e98affefe2de8cc4c1f43eda4c100cf9b2721142ec"},
 ]
 
 [package.dependencies]
 numpy = [
     {version = ">=1.21.0", markers = "python_version == \"3.9\" and platform_system == \"Darwin\" and platform_machine == \"arm64\""},
-    {version = ">=1.22.0", markers = "python_version >= \"3.11\""},
+    {version = ">=1.19.3", markers = "platform_system == \"Linux\" and platform_machine == \"aarch64\" and python_version >= \"3.8\" and python_version < \"3.10\" or python_version > \"3.9\" and python_version < \"3.10\" or python_version >= \"3.9\" and platform_system != \"Darwin\" and python_version < \"3.10\" or python_version >= \"3.9\" and platform_machine != \"arm64\" and python_version < \"3.10\""},
     {version = ">=1.21.4", markers = "python_version >= \"3.10\" and platform_system == \"Darwin\" and python_version < \"3.11\""},
     {version = ">=1.21.2", markers = "platform_system != \"Darwin\" and python_version >= \"3.10\" and python_version < \"3.11\""},
-    {version = ">=1.19.3", markers = "platform_system == \"Linux\" and platform_machine == \"aarch64\" and python_version >= \"3.8\" and python_version < \"3.10\" or python_version > \"3.9\" and python_version < \"3.10\" or python_version >= \"3.9\" and platform_system != \"Darwin\" and python_version < \"3.10\" or python_version >= \"3.9\" and platform_machine != \"arm64\" and python_version < \"3.10\""},
+    {version = ">=1.23.5", markers = "python_version >= \"3.11\" and python_version < \"3.12\""},
 ]
 
 [[package]]
@@ -3688,7 +3709,7 @@ description = "A language and compiler for custom Deep Learning operations"
 optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
+markers = "platform_machine == \"x86_64\" and platform_system == \"Linux\" and (python_version <= \"3.11\" or python_version >= \"3.12\")"
 files = [
     {file = "triton-3.1.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6b0dd10a925263abbe9fa37dcde67a5e9b2383fc269fdf59f5657cac38c5d1d8"},
     {file = "triton-3.1.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0f34f6e7885d1bf0eaaf7ba875a5f0ce6f3c13ba98f9503651c1e6dc6757ed5c"},
@@ -3875,4 +3896,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.9,<3.13"
-content-hash = "2ecab1e6e298b1e74c11a2470a118d0b061526f8a7decd58540270c016ab19e5"
+content-hash = "3012ff3b802f1c7827646f46026c5e8790ebbe302a7073e4b2258ae3d9958c73"
