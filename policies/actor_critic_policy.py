@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import gymnasium as gym
 import numpy as np
 import torch as th
-from gbrl import ActorCritic, ParametricActor
+from gbrl.ac_gbrl import ActorCritic, ParametricActor
 from gymnasium import spaces
 from sb3_contrib.common.maskable.distributions import (
     MaskableCategoricalDistribution, make_masked_proba_distribution)
@@ -365,6 +365,9 @@ class ActorCriticPolicy(BasePolicy):
 
     def critic(self, obs: Union[th.Tensor, np.ndarray]) -> th.Tensor:
         return self.predict_values(obs)
+
+    def get_params(self):
+        return self.model.get_params()
     
     def step(self, observations: Union[np.array, th.Tensor], policy_grad_clip: float=None, value_grad_clip: float=None) -> None:
         if self.nn_critic:

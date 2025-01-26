@@ -17,7 +17,7 @@ from stable_baselines3.common.torch_layers import (BaseFeaturesExtractor,
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import is_vectorized_observation
 
-from gbrl import DiscreteCritic
+from gbrl.ac_gbrl import DiscreteCritic
 
 
 class DQNPolicy(BasePolicy):

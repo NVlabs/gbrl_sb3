@@ -392,8 +392,26 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
             # Split the SHAP values
             image_shap = shap_values[:49].reshape(7, 7)
             extra_shap = shap_values[49:]
+        max_positive = np.max(image_shap[image_shap > 0]) if np.any(image_shap > 0) else 0
+        max_extra = np.max(extra_shap[extra_shap > 0]) if np.any(extra_shap > 0) else 0
+        self.max_shap = max(max_extra,  max_positive)
+        min_positive = np.min(image_shap[image_shap < 0]) if np.any(image_shap < 0) else 0
+        min_extra = np.min(extra_shap[extra_shap < 0]) if np.any(extra_shap < 0) else 0
+        self.min_shap = min(min_extra,  min_positive)
+        image_shap = np.where(
+            image_shap > 0,
+            image_shap / self.max_shap if self.max_shap != 0 else 0,
+            image_shap / -self.min_shap if self.min_shap != 0 else 0
+        )
+        extra_shap = np.where(
+            extra_shap > 0,
+            extra_shap / self.max_shap if self.max_shap != 0 else 0,
+            extra_shap / -self.min_shap if self.min_shap != 0 else 0
+            )
+        # extra_shap = extra_shap / self.max_shap
         image_shap = image_shap.T 
         self.image_shape = image_shap
+
         dpi = 100
         target_width = self.width
         target_height = self.height 
@@ -409,7 +427,7 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         self.extra_shap = extra_shap
 
         # # Map SHAP values to colors using the same colormap
-        colors = plt.cm.coolwarm(norm(extra_shap))
+        colors = plt.cm.coolwarm(extra_shap)
         # Plot the bar chart
         ax.bar(self.feature_labels, extra_shap, color=colors)
         ax.set_title("Additional Features", fontsize=6)
@@ -444,28 +462,30 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
 
         # Set the font family to serif
         rc('font', family='serif')
-        fig, ax = plt.subplots(nrows=1, ncols=2)
+        fig, ax = plt.subplots(nrows=1, ncols=2, gridspec_kw={'width_ratios': [4, 1]} )
         
         # Plot the heatmap
-        norm = plt.Normalize(vmin=self.min_shap, vmax=self.max_shap)  # Replace with your heatmap's vmin and vmax
+        norm = plt.Normalize(vmin=-1, vmax=1)  # Replace with your heatmap's vmin and vmax
         # # Map SHAP values to colors using the same colormap
-        colors = plt.cm.coolwarm(norm(self.extra_shap))
+        # colors = plt.cm.coolwarm(norm(self.extra_shap))
+        colors = plt.cm.coolwarm(norm(self.extra_shap[1]))
         # Plot the bar chart
-        ax[1].bar(self.feature_labels, self.extra_shap, color=colors)
-#         axes.labelsize: 12.0
-# axes.titlesize: 14.0
-# xtick.labelsize: 10.0
-# ytick.labelsize: 10.0
-# legend.fontsize: 10.0
-# figure.titlesize: 16.0
-# font.size: 10.0
-        ax[1].set_title("Additional Features", fontsize=18)
+        
+        # sm = plt.cm.ScalarMappable(cmap='coolwarm', norm=norm)
+        sm = plt.cm.ScalarMappable(cmap='coolwarm', norm=norm)
+        # sm.set_array([])  # Required for adding a colorbar
+        sm.set_array([-1, 1]) 
+        ax[1].bar(self.feature_labels[1], self.extra_shap[1], color=colors)
+        cb  = fig.colorbar(sm, ax=ax[1], orientation='vertical')
+        
+
+        # ax[1].set_title("Additional Features", fontsize=14)
         ax[1].set_ylabel("SHAP Value", fontsize=16)
-        ax[1].set_xticks(range(len(self.feature_labels)))
-        ax[1].set_xticklabels(self.feature_labels, rotation=0, ha='right', fontsize=14)
-        ax[1].tick_params(axis='y')
-        # ax[1].set_ylim((-7, 7) if 'nn' in self.algo_type else ('-36, 36'))
-        # ax[1].set_ylim((-36, 36))
+        ax[1].set_xticks(range(len(self.feature_labels) - 1 ))
+        ax[1].set_xticklabels(['Mission'], rotation=0, ha='center', fontsize=16)
+        cb.ax.tick_params(labelsize=14)
+        ax[1].tick_params(axis='y', labelsize=14)
+        ax[1].set_ylim((-1, 1))
         fig.suptitle(f"Mission: {self.mission} \n Action: {action}", fontsize=18)
 
         shap_values = self.image_shape  # SHAP values already passed
@@ -473,58 +493,39 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         grid_size = 7  # 7x7 grid for SHAP values
         start_x = (224 - (grid_size * tile_size)) // 2  # Center horizontally
         start_y = 224 - (grid_size * tile_size)  # Start from the bottom
-        
+        margin = 2
+
         for i in range(grid_size):  # Iterate over rows
             for j in range(grid_size):  # Iterate over columns
                 # Calculate the top-left corner of each grid cell
-                x = start_x + (j * tile_size)
-                y = start_y + (i * tile_size)
-                
-                # Calculate the center for text placement
-                text_x = x + tile_size // 2
-                text_y = y + tile_size // 2
+                x = start_x + (j * tile_size) + margin
+                y = start_y + (i * tile_size) + margin
+                bottom_right = (x + tile_size - 2 * margin, y + tile_size - 2 * margin) 
                 
                 # Get the SHAP value for this cell
                 shap_value = shap_values[i, j] if i < shap_values.shape[0] and j < shap_values.shape[1] else 0.0
-                
-                # Choose text color for better visibility
-                text_color = (0, 0, 0) if abs(shap_value) < 3 else (255, 255, 255)
-
-                text = f"{int(shap_value)}"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.3
-                thickness = 1
-                (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+                # Map the SHAP value directly to a color using a colormap
+                color = plt.cm.coolwarm((shap_value + 1) / 2) 
+                # Rescale [-1, 1] to [0, 1]
+                color_bgr = tuple(int(c * 255) for c in color[:3])  # Convert RGBA to BGR for OpenCV
             
-            # Calculate the precise text position for centering
-                text_x_centered = text_x - (text_width // 2)
-                # text_x_centered = text_x
-                text_y_centered = text_y + (text_height // 2)
-                
-                # Add SHAP value as text
-                cv2.putText(
-                    frame,
-                    text,
-                    (text_x_centered, text_y_centered),
-                    font,
-                    font_scale,
-                    text_color,
-                    thickness,
-                    cv2.LINE_AA
-                )
+            # Draw the rectangle (box frame)
+                cv2.rectangle(frame, (x, y), bottom_right, color_bgr, thickness=2)  # Adjust thickness as needed
+
         ax[0].imshow(frame)
         ax[0].set_xticklabels([])  # Hide x-axis tick labels
         ax[0].set_yticklabels([])  # Hide y-axis tick labels
         # Adjust layout
-        idx = self.go_forward_idx if action == 'go forward' else self.save_idx
         action = action.replace(' ', '_')
         plt.tight_layout()
-        fig.savefig(self.plot_path / f'shap_{self.algo_type}_{idx}_{action}.png')
-        fig.savefig(self.plot_path / f'shap_{self.algo_type}_{idx}_{action}.pdf')
-        
+
         if action == 'go_forward':
+            fig.savefig(self.plot_path / f'shap_{self.algo_type}_ep_{self.save_idx}_{self.go_forward_idx}_{action}.png')
+            fig.savefig(self.plot_path / f'shap_{self.algo_type}_ep_{self.save_idx}_{self.go_forward_idx}_{action}.pdf')
             self.go_forward_idx += 1
         else:
+            fig.savefig(self.plot_path / f'shap_{self.algo_type}_ep_{self.save_idx}_{action}.png')
+            fig.savefig(self.plot_path / f'shap_{self.algo_type}_ep_{self.save_idx}_{action}.pdf')
             self.save_idx += 1
         plt.close(fig)
     

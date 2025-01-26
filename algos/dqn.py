@@ -23,7 +23,7 @@ from stable_baselines3.common.utils import get_linear_fn
 from torch.nn import functional as F
 
 from buffers.replay_buffer import CategoricalReplayBuffer
-from gbrl import DiscreteCritic
+from gbrl.ac_gbrl import DiscreteCritic
 from policies.dqn_policy import DQNPolicy
 
 SelfDQN = TypeVar("SelfDQN", bound="DQN_GBRL")

@@ -19,7 +19,7 @@ import torch as th
 from stable_baselines3.common.save_util import data_to_json, json_to_data, open_path
 from stable_baselines3.common.utils import get_device, get_system_info
 from stable_baselines3.common.type_aliases import TensorDict
-from gbrl import ActorCritic, ParametricActor
+from gbrl.ac_gbrl import ActorCritic, ParametricActor
 
 
 def save_to_zip_file(
