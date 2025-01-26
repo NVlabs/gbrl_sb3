@@ -6,19 +6,16 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from typing import (Any, Callable, Dict, Generator, List, NamedTuple, Optional,
-                    OrderedDict, Type, Union)
+from typing import Generator, NamedTuple, Optional, Union
 
-import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.buffers import BaseBuffer, RolloutBuffer
-from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
-                                                   Schedule)
 from stable_baselines3.common.vec_env import VecNormalize
 
 from env.wrappers import categorical_dtype
+
 
 class CategoricalRolloutBufferSamples(NamedTuple):
     observations: np.ndarray

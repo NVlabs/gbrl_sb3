@@ -287,20 +287,4 @@ distillation:
     max_depth: 4
     lr: 1.0
     capacity: 20000
-compression: 
-  compress: False
-  compress_kwargs:
-    max_steps: 1000
-    trees_to_keep: 100
-    gradient_steps: 100
-    method: 'first_k'
-    policy_only: False
-    least_squares_W: True
-    use_W: False
-    temperature: 0.1
-    lambda_reg: 0.001
-    optimizer_kwargs:
-      lr: 0.1
-    capacity: 20000
-self_play:
-  rollouts_player: 5
+

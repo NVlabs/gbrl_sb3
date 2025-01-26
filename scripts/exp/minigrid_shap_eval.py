@@ -30,9 +30,7 @@ from stable_baselines3.common.save_util import load_from_pkl
 from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
                                               VecNormalize)
 
-from env.ocatari import MIXED_ATARI_ENVS
-from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper, FlatObsWrapperWithDirection, FlatObsWrapperWithDirectionCategoricalInfo
-from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, make_carl_env
+from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper, FlatObsWrapperWithDirectionCategoricalInfo
 from utils.shap_visualization import MiniGridShapVisualizationWrapper, PolicyDeepExplainer, ShapVecVideoRecorder
 from env.minigrid import register_minigrid_tests
 warnings.filterwarnings("ignore")

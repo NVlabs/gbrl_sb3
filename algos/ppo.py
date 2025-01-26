@@ -31,8 +31,7 @@ from stable_baselines3.common.utils import (check_for_correct_spaces,
                                             get_schedule_fn, get_system_info,
                                             obs_as_tensor, safe_mean,
                                             update_learning_rate)
-from sb3_contrib.common.maskable.utils import (get_action_masks,
-                                               is_masking_supported)
+from sb3_contrib.common.maskable.utils import (get_action_masks)
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F

@@ -6,19 +6,13 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from typing import (Any, Callable, Dict, Generator, List, NamedTuple, Optional,
-                    OrderedDict, Type, Union)
+from typing import Any, Dict, List, NamedTuple, Optional, Union
 
-import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from stable_baselines3.common.buffers import BaseBuffer, ReplayBuffer
-from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
-                                                   Schedule)
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.vec_env.patch_gym import _patch_env
-from stable_baselines3.common.vec_env.util import obs_space_info
+from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.vec_env import VecNormalize
 
 from env.wrappers import categorical_dtype
 

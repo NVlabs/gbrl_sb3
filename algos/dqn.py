@@ -9,7 +9,7 @@
 import io
 import pathlib
 import warnings
-from typing import (Any, ClassVar, Dict, Iterable, List, Optional, Tuple, Type,
+from typing import (Any, Dict, Iterable, Optional, Tuple,
                     TypeVar, Union)
 
 import numpy as np

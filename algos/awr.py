@@ -8,7 +8,7 @@
 ##############################################################################
 import io
 import pathlib
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Type, Union
+from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
 import torch as th

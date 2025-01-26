@@ -7,7 +7,6 @@
 #
 ##############################################################################
 import os
-import warnings
 from collections import deque
 
 try:
@@ -15,16 +14,13 @@ try:
 except ImportError:
     SummaryWriter = None  # type: ignore[misc, assignment]
 
-from typing import Any, Dict, Union, Optional
+from typing import Any, Dict, Optional, Union
 
 import gymnasium as gym
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
-from stable_baselines3.common.distributions import (
-    CategoricalDistribution, DiagGaussianDistribution,
-    SquashedDiagGaussianDistribution)
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
+from stable_baselines3.common.vec_env import (VecEnv, sync_envs_normalization)
 
 from utils.helpers import evaluate_policy_and_obs, evaluate_policy_with_noise
 
@@ -168,55 +164,6 @@ class StopTrainingOnNoImprovementInTraining(BaseCallback):
 
         return True  # Continue training
 
-
-class ActorCriticCompressionCallback(BaseCallback):
-    def __init__(self, params: Dict, verbose: int = 1):
-        super().__init__(verbose=verbose)
-        self.max_steps = params['max_steps']
-        self.capacity = params['capacity']
-        del params['max_steps']
-        del params['capacity']
-        self.params = params
-        self.dist_type = None 
-        self.reset()
-        
-    def reset(self):
-        self.compression_data = deque(maxlen=self.capacity)
-
-    def update_locals(self, locals_: Dict[str, Any]) -> None:
-        obs = locals_.get('obs_tensor')
-        if obs is not None:
-            if not isinstance(obs, np.ndarray):
-                obs = obs.detach().cpu().numpy()
-            self.compression_data.append(obs)
-        super().update_locals(locals_)
-
-    def _on_rollout_start(self) -> None:
-        if self.dist_type is None:
-            self.dist_type = 'deterministic'
-            if isinstance(self.model.policy.action_dist, DiagGaussianDistribution) or isinstance(self.model.policy.action_dist, SquashedDiagGaussianDistribution):
-                self.dist_type = 'gaussain'
-            elif isinstance(self.model.policy.action_dist, CategoricalDistribution):
-                self.dist_type = 'categorical'
-        num_trees = self.model.policy.model.get_num_trees()
-        if not self.model.policy.model.shared_tree_struct:
-            num_trees = num_trees[0]
-        if num_trees >= self.max_steps:
-            obs = np.concatenate(list(self.compression_data), axis=0)
-            print(f"Compressing with: {len(obs)}")
-            self.logger.record("compression/num_samples", len(obs))
-            actions = self.model.policy._predict(obs, deterministic=False)
-            log_std = None if self.dist_type != 'gaussian' else self.model.policy.log_std.detach().cpu().numpy()
-            compression_params = {**self.params, 'features': obs, 'actions': actions.detach().cpu(), 'log_std': log_std, 'dist_type': self.dist_type}
-            loss = self.model.policy.model.compress(**compression_params)
-            if isinstance(loss, tuple):
-                self.logger.record("compression/policy_loss", loss[0])
-                self.logger.record("compression/value_loss", loss[1])
-            else:
-                self.logger.record("compression/loss", loss)
-
-    def _on_step(self) -> bool:
-        return True
     
 class MultiEvalCallback(EvalCallback):
     """

@@ -143,7 +143,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'robotics', 'gym', 'mujoco', 'football', 'symswap','openspiel', 'bsuite', 'highway', 'carl','equation', 'sepsis']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco', 'football', 'equation']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -328,67 +328,9 @@ def parse_args():
 
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    # args.env_type = args.env_type if args.env_type else 'ocatari'
-    # args.env_type = args.env_type if args.env_type else 'carl'
-    # args.env_type = args.env_type if args.env_type else 'sepsis'
-    # args.env_type = args.env_type if args.env_type else 'extrapolation'
-    # args.env_type = args.env_type if args.env_type else 'minigrid'
-    # args.env_type = args.env_type if args.env_type else 'robotics'
-    # args.env_type = args.env_type if args.env_type else 'chain'
-    # args.env_type = args.env_type if args.env_type else 'warehouse_sorting'
-    # args.env_type = args.env_type if args.env_type else 'pipeline_opt'
-    # args.env_type = args.env_type if args.env_type else 'bank'
-    # args.env_type = args.env_type if args.env_type else 'matrix_inv'
-    # args.env_type = args.env_type if args.env_type else 'football'
-    # args.env_type = args.env_type if args.env_type else 'openspiel'
-    # args.env_type = args.env_type if args.env_type else 'openspiel'
-    # args.env_type = args.env_type if args.env_type else 'highway'
-    # args.env_type = args.env_type if args.env_type else 'bsuite'
-    args.env_type = args.env_type if args.env_type else 'equation'
-    # args.env_type = args.env_type if args.env_type else 'gym'
-    # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'a2c_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
-    # args.algo_type = args.algo_type if args.algo_type else 'awr_gbrl'
+    args.env_type = args.env_type if args.env_type else 'gym'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-
-    # args.env_name = args.env_name if args.env_name else 'Pong-v4'
-    # args.env_name = args.env_name if args.env_name else 'HalfCheetah-v4'
-    # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
-    # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'highway-v0'
-    # args.env_name = args.env_name if args.env_name else 'discounting_chain'
-    # args.env_name = args.env_name if args.env_name else 'connect_four'
-    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'CARLCartPole'
-    # args.env_name = args.env_name if args.env_name else 'CARLMountainCar'
-    # args.env_name = args.env_name if args.env_name else 'Extrapolation-Continuous-train'
-    # args.env_name = args.env_name if args.env_name else 'Extrapolation-Continuous-train'
-    # args.env_name = args.env_name if args.env_name else 'Sepsis/ICU-Sepsis-v2'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-rank-v3'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-RedBlueDoors-6x6-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-SpuriousFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'academy_single_goal_versus_lazy'
-    # args.env_name = args.env_name if args.env_name else 'BabyAI-OpenDoorsOrderN2-v0'
-    # args.env_name = args.env_name if args.env_name else 'PointMaze_Medium_Diverse_GRDense-v3'
-    # args.env_name = args.env_name if args.env_name else 'PointMaze_Large_Diverse_GRDense-v3'
-    # args.env_name = args.env_name if args.env_name else 'StrLinearEquation-v0'
-    # args.env_name = args.env_name if args.env_name else 'Compare-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-SpuriousFetch-8x8-N3-v3'
-    args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v0'
-    # args.env_name = args.env_name if args.env_name else 'SymSwap-v0'
-    # args.env_name = args.env_name if args.env_name else 'Pendulum-v1'
-    # args.env_name = args.env_name if args.env_name else 'academy_empty_goal'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
+    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -530,34 +472,6 @@ def get_defaults(args, defaults):
     args.distil = args.distil if args.distil is not None else defaults['distillation']['distil']
     args.distil_kwargs = args.distil_kwargs if args.distil_kwargs is not None else defaults['distillation']['distil_kwargs']
     # Distillation/Compression Params
-    args.compress = args.compress if args.compress is not None else defaults['compression']['compress']
-    args.compress_kwargs = args.compress_kwargs if args.compress_kwargs is not None else defaults['compression']['compress_kwargs']
-    if args.compress_max_steps:
-        args.compress_kwargs['max_steps'] = args.compress_max_steps
-    if args.compress_trees_to_keep:
-        args.compress_kwargs['trees_to_keep'] = args.compress_trees_to_keep
-    if args.compress_method:
-        args.compress_kwargs['method'] = args.compress_method
-    if args.compress_gradient_steps:
-        args.compress_kwargs['gradient_steps'] = args.compress_gradient_steps
-    if args.compress_policy_only:
-        args.compress_kwargs['policy_only'] = args.compress_policy_only
-    if args.compress_least_squares_W:
-        args.compress_kwargs['least_squares_W'] = args.compress_least_squares_W
-    if args.compress_use_W:
-        args.compress_kwargs['use_W'] = args.compress_use_W
-    if args.compress_temperature:
-        args.compress_kwargs['temperature'] = args.compress_temperature
-    if args.compress_lambda_reg:
-        args.compress_kwargs['lambda_reg'] = args.compress_lambda_reg
-    if args.compress_capacity:
-        args.compress_kwargs['capacity'] = args.compress_capacity
-    if args.compress_optimizer_kwargs:
-        args.compress_kwargs['optimizer_kwargs'] = args.compress_optimizer_kwargs
-        if args.compress_optimizer_lr:
-            args.compress_kwargs['optimizer_kwargs']['lr'] = args.compress_optimizer_lr
-    # self play parameters
-    args.rollouts_player = args.rollouts_player if args.rollouts_player is not None else defaults['self_play']['rollouts_player']
     return args
 
 def process_logging(args, callback_list):
@@ -890,19 +804,8 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'ppo_nn':
-        from sb3_contrib.ppo_mask import MlpPolicy, CnnPolicy
         from stable_baselines3.common.policies import ActorCriticPolicy
         policy = ActorCriticPolicy
-        if args.env_type in ['openspiel', 'symswap', 'sepsis']:
-            if args.env_name in ['connect_four']: # CNN envs
-                policy = CnnPolicy
-                if args.policy_kwargs is None:
-                    args.policy_kwargs = {} 
-                from env.openspiel import ConnectFourCNN
-                args.policy_kwargs["normalize_images"] = False
-                args.policy_kwargs["features_extractor_class"] = ConnectFourCNN
-            else:
-                policy = MlpPolicy
         algo_kwargs = {
             "policy": policy,
             "learning_rate": args.learning_rate,

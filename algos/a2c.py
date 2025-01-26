@@ -10,7 +10,7 @@ import io
 import pathlib
 import sys
 import time
-from typing import (Any, ClassVar, Dict, Iterable, Optional, Type, TypeVar,
+from typing import (Any, Dict, Iterable, Optional, TypeVar,
                     Union)
 
 import numpy as np
