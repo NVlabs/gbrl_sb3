@@ -29,9 +29,6 @@ from callback.callbacks import (ActorCriticCompressionCallback,
                                 MultiEvalWithObsCallback,
                                 NoisyEvalCallback)
 from utils.helpers import set_seed
-from env.wrappers import (CategoricalDummyVecEnv,
-                          CategoricalObservationWrapper,
-                          FlatObsWrapperWithDirection)
 
 from utils.helpers import make_eval_carl_env
 
