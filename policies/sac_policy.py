@@ -125,7 +125,7 @@ class ContinuousCritic(BaseModel):
                                             )
                 self.q_models.append(q_model)
 
-    def forward(self, obs: th.Tensor, actions: th.Tensor, target: bool, requires_grad: bool = False) -> Tuple[th.Tensor, ...]:
+    def forward(self, obs: th.Tensor, actions: th.Tensor, target: bool, requires_grad: bool = False, tensor: bool = True) -> Tuple[th.Tensor, ...]:
         if self.optimizer:
             self.optimizer.zero_grad()
         if self.q_func_type == 'nn':
@@ -136,6 +136,7 @@ class ContinuousCritic(BaseModel):
         q_s = []
         for q_net in self.q_models:
             weights, bias = q_net(obs, requires_grad, target, tensor=True) 
+
             dot = (weights * actions).sum(dim=1)
             if self.q_func_type == 'linear':
                 q = (dot + bias.squeeze())
@@ -485,6 +486,7 @@ class SACPolicy(BasePolicy):
 
     def predict_critic(self,  obs: th.Tensor, actions: th.Tensor, target: bool = False, requires_grad: bool = False):
         if self.critic_target is not None and target:
+            kwargs = {}
             return self.critic_target(obs, actions, target)
         return self.critic(obs, actions, target, requires_grad=requires_grad)
 

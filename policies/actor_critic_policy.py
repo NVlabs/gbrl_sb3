@@ -363,6 +363,7 @@ class ActorCriticPolicy(BasePolicy):
             return self.value_net(obs)
         return self.model.predict_values(obs, requires_grad, tensor=True, stop_idx=stop_idx)
 
+
     def critic(self, obs: Union[th.Tensor, np.ndarray]) -> th.Tensor:
         return self.predict_values(obs)
 

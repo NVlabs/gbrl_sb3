@@ -87,7 +87,7 @@ class DQNPolicy(BasePolicy):
         return action
 
     def predict_target(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
-        return self.q_model.predict_target(obs)
+        return self.q_model.predict_target(obs, tensor=True)
 
     def set_training_mode(self, mode: bool) -> None:
         """
