@@ -8,7 +8,7 @@
 ##############################################################################
 import io
 import pathlib
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Type, Union
+from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
 import torch as th
@@ -16,11 +16,9 @@ import torch.nn as nn
 from gymnasium import spaces
 from stable_baselines3.common.distributions import DiagGaussianDistribution
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
-from stable_baselines3.common.policies import BasePolicy
-from stable_baselines3.common.type_aliases import (GymEnv, TrainFreq,
-                                                   TrainFrequencyUnit)
-from stable_baselines3.common.utils import (explained_variance, get_linear_fn,
-                                            get_schedule_fn, safe_mean)
+from stable_baselines3.common.type_aliases import GymEnv
+from stable_baselines3.common.utils import (get_linear_fn,
+                                            get_schedule_fn, update_learning_rate)
 from stable_baselines3.common.vec_env import VecNormalize
 from torch.nn import functional as F
 
@@ -38,6 +36,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
                  weights_max: float = 20,
                  policy_gradient_steps: int = 1000,
                  value_gradient_steps: int = 200,
+                 learning_rate: float = 3e-4,
                  gradient_steps: int = 1,
                  normalize_advantage: bool = True,
                  policy_bound_loss_weight: float = None,
@@ -54,10 +53,11 @@ class AWR_GBRL(OffPolicyAlgorithm):
                  policy_kwargs: Dict = None,
                  seed: int = 0,
                  verbose: int = 1,
-                 is_categorical: bool = False,
                  reward_mode: str = 'gae',
                  device: str = 'cpu',
-                 tensorboard_log: str = None):
+                 tensorboard_log: str = None,
+                 _init_setup_model: bool = True,
+                 ):
 
         assert policy_kwargs is not None, "Policy kwargs cannot be none!"
         self.shared_tree_struct = policy_kwargs.get("shared_tree_struct", True)
@@ -66,6 +66,10 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
             else:
                 log_std_lr = float(log_std_lr)
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
+        self.is_categorical = is_categorical
+        self.is_mixed = is_mixed
         if is_categorical:
             policy_kwargs['is_categorical'] = True
         print("is_Categorical: ", is_categorical)
@@ -85,9 +89,17 @@ class AWR_GBRL(OffPolicyAlgorithm):
         buffer_kwargs = {'gae_lambda': gae_lambda, 'gamma': gamma, 'return_type': reward_mode}
         if not is_categorical:
             buffer_kwargs['env'] = env
+        if is_mixed:
+            buffer_kwargs['is_mixed'] = True
         
         tr_freq = train_freq // env.num_envs
         policy_kwargs['tree_optimizer']['device'] = device
+        if isinstance(log_std_lr, str):
+            if 'lin_' in log_std_lr:
+                log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
+            else:
+                log_std_lr = float(log_std_lr)
+        policy_kwargs['log_std_schedule'] = get_schedule_fn(log_std_lr)
         super().__init__(policy=ActorCriticPolicy,
         env=env,
         replay_buffer_class=CategoricalAWRReplayBuffer if is_categorical else AWRReplayBuffer,
@@ -98,7 +110,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
         verbose=verbose,
         device=device,
         learning_starts=learning_starts,
-        learning_rate=log_std_lr,
+        learning_rate=learning_rate,
         batch_size=batch_size,
         gradient_steps=gradient_steps,
         buffer_size=buffer_size,
@@ -156,6 +168,10 @@ class AWR_GBRL(OffPolicyAlgorithm):
         """
          # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
+
+        if isinstance(self.policy.action_dist, DiagGaussianDistribution):
+            update_learning_rate(self.policy.log_std_optimizer, self.policy.log_std_schedule(self._current_progress_remaining))
+
         if self.shared_tree_struct:
             policy_losses, value_losses, entropy_losses = self.shared_models_train(gradient_steps, batch_size)
         else: 

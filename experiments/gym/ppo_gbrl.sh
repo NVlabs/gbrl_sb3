@@ -132,6 +132,7 @@ elif [ "$ENV_NAME" == "Pendulum-v1" ]; then
         --gamma=0.9147245889494424 \
         --max_policy_grad_norm=100 \
         --max_value_grad_norm=10 \
+        --wrapper=normalize \
         --n_epochs=20 \
         --n_steps=256 \
         --num_envs=16 \

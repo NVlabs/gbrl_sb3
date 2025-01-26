@@ -9,7 +9,7 @@
 import io
 import pathlib
 import warnings
-from typing import (Any, ClassVar, Dict, Iterable, List, Optional, Tuple, Type,
+from typing import (Any, Dict, Iterable, Optional, Tuple,
                     TypeVar, Union)
 
 import numpy as np
@@ -23,7 +23,7 @@ from stable_baselines3.common.utils import get_linear_fn
 from torch.nn import functional as F
 
 from buffers.replay_buffer import CategoricalReplayBuffer
-from gbrl import DiscreteCritic
+from gbrl.ac_gbrl import DiscreteCritic
 from policies.dqn_policy import DQNPolicy
 
 SelfDQN = TypeVar("SelfDQN", bound="DQN_GBRL")
@@ -92,7 +92,6 @@ class DQN_GBRL(OffPolicyAlgorithm):
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         target_update_interval: int = 10000,
-        is_categorical: bool = False,
         max_q_grad_norm: int = None,
         normalize_q_grads: bool = False,
         exploration_fraction: float = 0.1,
@@ -109,8 +108,16 @@ class DQN_GBRL(OffPolicyAlgorithm):
         tau = 1.0
         stats_window_size = 100
         policy_kwargs['tree_optimizer']['device'] = device
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
+        self.is_categorical = is_categorical
+        self.is_mixed = is_mixed
         if is_categorical:
             policy_kwargs['is_categorical'] = True
+            if is_mixed:
+                if replay_buffer_kwargs is None: 
+                    replay_buffer_kwargs = {}
+                replay_buffer_kwargs['is_mixed'] = True
 
         super().__init__(
             DQNPolicy,

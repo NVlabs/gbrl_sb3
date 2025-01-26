@@ -10,7 +10,7 @@ import io
 import pathlib
 import sys
 import time
-from typing import (Any, ClassVar, Dict, Iterable, Optional, Type, TypeVar,
+from typing import (Any, Dict, Iterable, Optional, TypeVar,
                     Union)
 
 import numpy as np
@@ -23,7 +23,7 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
                                                    Schedule)
 from stable_baselines3.common.utils import (explained_variance, get_linear_fn,
-                                            obs_as_tensor, safe_mean)
+                                            obs_as_tensor, safe_mean, update_learning_rate, get_schedule_fn)
 from stable_baselines3.common.vec_env import VecEnv
 from torch.nn import functional as F
 
@@ -83,6 +83,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
         gae_lambda: float = 1.0,
         ent_coef: float = 0.0,
         vf_coef: float = 0.5,
+        learning_rate: float = 3e-4,
         normalize_advantage: bool = False,
         stats_window_size: int = 100,
         max_policy_grad_norm: float = None,
@@ -93,7 +94,6 @@ class A2C_GBRL(OnPolicyAlgorithm):
         log_std_lr: float = 3e-4,
         min_log_std_lr: float = 3e-45,
         verbose: int = 0,
-        is_categorical: bool = False,
         seed: Optional[int] = None,
         total_n_steps: int = 1e6,
         device: str = "cpu",
@@ -111,20 +111,23 @@ class A2C_GBRL(OnPolicyAlgorithm):
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
-        self.is_categorical = is_categorical
-
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'is_categorical') and env.is_categorical) 
+        is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         if is_categorical:
             policy_kwargs['is_categorical'] = True
+        self.is_categorical = is_categorical
+        self.is_mixed = is_mixed
 
         if isinstance(log_std_lr, str):
             if 'lin_' in log_std_lr:
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
             else:
                 log_std_lr = float(log_std_lr)
+        policy_kwargs['log_std_schedule'] = get_schedule_fn(log_std_lr)
         super().__init__(
             ActorCriticPolicy,
             env,
-            learning_rate=log_std_lr, #does nothing for categorical output spaces
+            learning_rate=learning_rate, #does nothing for categorical output spaces
             n_steps=n_steps,
             gamma=gamma,
             gae_lambda=gae_lambda,
@@ -139,7 +142,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
             verbose=verbose,
             device=device,
             seed=seed,
-            _init_setup_model=not is_categorical,
+            _init_setup_model=False,
             supported_action_spaces=(
                 spaces.Box,
                 spaces.Discrete,
@@ -150,29 +153,37 @@ class A2C_GBRL(OnPolicyAlgorithm):
         # Update optimizer inside the policy if we want to use RMSProp
         # (original implementation) rather than Adam
 
-        if is_categorical:
-            self._categorical_setup_model()
+        self.rollout_buffer_class =RolloutBuffer
+        self.rollout_buffer_kwargs = {}
+        if is_categorical or is_mixed:
+            self.rollout_buffer_class = CategoricalRolloutBuffer 
+            self.rollout_buffer_kwargs['is_mixed'] = is_mixed
+        
+        if _init_setup_model:
+            self.a2c_setup_model()
     
-    def _categorical_setup_model(self) -> None:
+    def a2c_setup_model(self) -> None:
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
-        self.rollout_buffer = CategoricalRolloutBuffer(
+        self.rollout_buffer = self.rollout_buffer_class(  # type: ignore[assignment]
             self.n_steps,
             self.observation_space,
             self.action_space,
-            device=self.device,
+            self.device,
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
-            n_envs=self.env.num_envs,
+            n_envs=self.n_envs,
+            **self.rollout_buffer_kwargs,
         )
+
         # pytype:disable=not-instantiable
         self.policy = self.policy_class(  # type: ignore[assignment]
             self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
         )
         # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
-        # Initialize schedules for policy/value clipping
+
 
 
     def train(self) -> None:
@@ -184,6 +195,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
         self.policy.set_training_mode(True)
 
         # Update optimizer learning rate
+        if isinstance(self.policy.action_dist, DiagGaussianDistribution):
+            update_learning_rate(self.policy.log_std_optimizer, self.policy.log_std_schedule(self._current_progress_remaining))
 
         policy_losses, value_losses, entropy_losses = [], [], []
         log_std_s = []
@@ -384,7 +397,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.predict_values(new_obs)  # type: ignore[arg-type] if self.is_categorical else self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
+            values = self.policy.predict_values(new_obs, requires_grad=False)  # type: ignore[arg-type] if self.is_categorical else self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 

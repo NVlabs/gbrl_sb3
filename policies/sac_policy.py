@@ -20,8 +20,8 @@ from stable_baselines3.common.torch_layers import (BaseFeaturesExtractor,
 from stable_baselines3.common.type_aliases import Schedule
 from torch import nn
 
-from gbrl import GaussianActor
-import gbrl
+from gbrl.ac_gbrl import GaussianActor
+from gbrl.ac_gbrl import ContinuousCritic as GBRLContinuousCritic
 
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
@@ -113,7 +113,7 @@ class ContinuousCritic(BaseModel):
             for _ in range(n_critics):
                 bias = np.random.randn(action_dim + self.theta_dim) * np.sqrt(2.0 / action_dim)
                 bias[-self.theta_dim:] = 0
-                q_model = gbrl.ContinuousCritic(tree_struct=tree_struct, 
+                q_model = GBRLContinuousCritic(tree_struct=tree_struct, 
                                         output_dim=action_dim + self.theta_dim, 
                                         weights_optimizer=weights_optimizer,
                                         bias_optimizer=bias_optimizer,
@@ -135,7 +135,8 @@ class ContinuousCritic(BaseModel):
                 return tuple(q_net(qvalue_input) for q_net in self.q_models)
         q_s = []
         for q_net in self.q_models:
-            weights, bias = q_net(obs, requires_grad, target, tensor=tensor) 
+            weights, bias = q_net(obs, requires_grad, target, tensor=True) 
+
             dot = (weights * actions).sum(dim=1)
             if self.q_func_type == 'linear':
                 q = (dot + bias.squeeze())

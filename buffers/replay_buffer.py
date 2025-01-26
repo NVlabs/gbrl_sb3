@@ -6,21 +6,15 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from typing import (Any, Callable, Dict, Generator, List, NamedTuple, Optional,
-                    OrderedDict, Type, Union)
+from typing import Any, Dict, List, NamedTuple, Optional, Union
 
-import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from stable_baselines3.common.buffers import BaseBuffer, ReplayBuffer
-from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
-                                                   Schedule)
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.vec_env.patch_gym import _patch_env
-from stable_baselines3.common.vec_env.util import obs_space_info
+from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.vec_env import VecNormalize
 
-from utils.wrappers import categorical_dtype
+from env.wrappers import categorical_dtype
 
 
 class AWRReplayBufferSamples(NamedTuple):
@@ -234,14 +228,16 @@ class CategoricalAWRReplayBuffer(AWRReplayBuffer):
         return_type: str = 'monte-carlo',
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
+        is_mixed: bool = False,
     ):
+        self.is_mixed = is_mixed
         super().__init__(buffer_size, observation_space, action_space, gamma, gae_lambda, device, n_envs=n_envs, return_type= return_type, optimize_memory_usage=optimize_memory_usage, handle_timeout_termination=handle_timeout_termination)
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=categorical_dtype)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
         if optimize_memory_usage:
             # `observations` contains also the next observation
             self.next_observations = None
         else:
-            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=categorical_dtype)
+            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
     
     def to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
         """
@@ -254,10 +250,10 @@ class CategoricalAWRReplayBuffer(AWRReplayBuffer):
         :return:
         """
         if copy:
-            if array.dtype == categorical_dtype:
+            if array.dtype == categorical_dtype or array.dtype == object:
                 return np.copy(array)
             return th.tensor(array, device=self.device)
-        if array.dtype == categorical_dtype:
+        if array.dtype == categorical_dtype or array.dtype == object:
             return array
         return th.as_tensor(array, device=self.device)
 
@@ -298,14 +294,16 @@ class CategoricalReplayBuffer(ReplayBuffer):
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
+        is_mixed: bool = False
     ):
+        self.is_mixed = is_mixed
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs, optimize_memory_usage=optimize_memory_usage, handle_timeout_termination=handle_timeout_termination)
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=categorical_dtype)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
         if optimize_memory_usage:
             # `observations` contains also the next observation
             self.next_observations = None
         else:
-            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=categorical_dtype)
+            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
 
     def to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
         """
@@ -318,10 +316,10 @@ class CategoricalReplayBuffer(ReplayBuffer):
         :return:
         """
         if copy:
-            if array.dtype == categorical_dtype:
+            if array.dtype == categorical_dtype or array.dtype == object:
                 return np.copy(array)
             return th.tensor(array, device=self.device)
-        if array.dtype == categorical_dtype:
+        if array.dtype == categorical_dtype or array.dtype == object:
             return array
         return th.as_tensor(array, device=self.device)
 

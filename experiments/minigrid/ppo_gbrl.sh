@@ -78,7 +78,7 @@ fi
 
 echo "Running training for environment: $USER_ENV"
 
-COMMAND="python scripts/train.py --batch_size=128 \
+COMMAND="python scripts/train.py --batch_size=512 \
     --device=cuda \
     --ent_coef=0 \
     --env_name=$USER_ENV \
@@ -86,10 +86,11 @@ COMMAND="python scripts/train.py --batch_size=128 \
     --gamma=0.99 \
     --algo_type=ppo_gbrl \
     --n_epochs=20 \
+    --clip_range=0.2 \
     --n_steps=256 \
-    --num_envs=4 \
-    --policy_lr=0.03698799447503287 \
-    --value_lr=0.004532831318290033 \
+    --num_envs=16 \
+    --policy_lr=0.1705511311382153 \
+    --value_lr=0.010031711962959627 \
     --env_type=minigrid \
     --split_score_func=Cosine \
     --total_n_steps=$TOTAL_N_STEPS"

@@ -11,17 +11,16 @@ from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from stable_baselines3.common.buffers import ReplayBuffer
-from stable_baselines3.common.noise import ActionNoise
+
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
-from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
-                                                   Schedule, TrainFreq,
+from stable_baselines3.common.type_aliases import (MaybeCallback,
+                                                   TrainFreq,
                                                    TrainFrequencyUnit)
 from stable_baselines3.common.utils import (get_parameters_by_name,
                                             polyak_update)
 from torch.nn import functional as F
 
-from policies.sac_policy import ContinuousCritic, SACPolicy
+from policies.sac_policy import SACPolicy
 
 SelfSAC = TypeVar("SelfSAC", bound="SAC_GBRL")
 
@@ -105,6 +104,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
             tensorboard_log: str = None, 
             verbose: int = 1,
             device: str = 'cpu',
+            _init_setup_model: bool= False,
     ):
         
         tr_freq = TrainFreq(train_freq, TrainFrequencyUnit.STEP)
@@ -153,7 +153,8 @@ class SAC_GBRL(OffPolicyAlgorithm):
         self.accum_gradient_steps = 0
         self.prev_timesteps = 0
 
-        self._setup_model()
+        if _init_setup_model:
+            self._setup_model()
 
     def _setup_model(self) -> None:
         super()._setup_model()

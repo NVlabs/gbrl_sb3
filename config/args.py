@@ -9,9 +9,8 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Callable, Union
+from typing import Callable, Dict, Union
 
-import torch as th
 import yaml
 from torch.nn import ReLU, Tanh
 from torch.optim import SGD, Adam
@@ -55,7 +54,15 @@ def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float
 
     return func
 
-def preprocess_lr(lr: Union[str, float]):
+def preprocess_lr(lr: Union[str, float]) -> Union[float, Callable[[float], float]]:
+    """Pre-process learning rate
+
+    Args:
+        lr (Union[str, float]): learning rate
+
+    Returns:
+        Union[float, Callable[[float], float]]: processed learning rate
+    """
     if isinstance(lr, str):
         if ("_") in lr:
             _, initial_value = lr.split("_")
@@ -64,6 +71,20 @@ def preprocess_lr(lr: Union[str, float]):
         return float(lr)
     return lr
 
+def json_string_to_list(json_string):
+    """Convert a JSON string to a List."""
+    if json_string is None or json_string.lower() in ('null','none'):
+        return None
+    try:
+        # Parse the JSON string into a Python list
+        loaded_list = json.loads(json_string)
+        # Ensure the result is a list
+        if not isinstance(loaded_list, list):
+            raise argparse.ArgumentTypeError("The JSON string must represent a list.")
+        return loaded_list
+    except json.JSONDecodeError as e:
+        raise argparse.ArgumentTypeError(f"Invalid JSON format for list. Error: {e}")
+    
 def json_string_to_dict(json_string):
     """Convert a JSON string to a dictionary."""
     if json_string is None or json_string.lower() in ('null','none'):
@@ -78,6 +99,27 @@ def json_string_to_dict(json_string):
 
 from wandb.integration.sb3 import WandbCallback
 
+def str2tuple(input_str: str) -> tuple:
+    """
+    Safely converts a string representing a tuple into an actual tuple 
+    using manual parsing (no eval).
+
+    Parameters:
+        input_str (str): A string representing a tuple, e.g., "(1.0, 2.5, 3.0)"
+
+    Returns:
+        tuple: The parsed tuple of floats.
+    """
+    try:
+        # Remove surrounding parentheses and split the string by commas
+        clean_str = input_str.strip().replace('(', '').replace(')', '')
+        elements = clean_str.split(',')
+
+        # Convert each element to float
+        result = tuple(float(element.strip()) for element in elements if element.strip())
+        return result
+    except ValueError as e:
+        raise ValueError(f"Invalid tuple string: {input_str}. Ensure all elements are valid floats.") from e
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -101,7 +143,7 @@ def load_yaml_defaults(yaml_file: str = None):
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco', 'football']) 
+    parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco', 'football', 'equation']) 
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
     parser.add_argument('--env_name', type=str)  
     # env args
@@ -118,6 +160,7 @@ def parse_args():
     parser.add_argument('--no_improvement_kwargs', type=json_string_to_dict) # training no improvement callback
     parser.add_argument('--wrapper', type=str)
     parser.add_argument('--wrapper_kwargs', type=json_string_to_dict)
+    parser.add_argument('--neurosymbolic_kwargs', type=json_string_to_dict)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
     
     # logging args   
@@ -126,6 +169,7 @@ def parse_args():
     parser.add_argument('--group_name', type=str, help='wandb group name')
     parser.add_argument('--project', type=str)
     parser.add_argument('--entity', type=str)
+    parser.add_argument('--desc', type=str)
     # algo parameters
     parser.add_argument('--normalize_advantage', type=str2bool)
     parser.add_argument('--policy_kwargs', type=json_string_to_dict)
@@ -138,6 +182,7 @@ def parse_args():
     parser.add_argument('--target_kl', type=float)
     parser.add_argument('--log_std_init', type=float)
     parser.add_argument('--squash', type=float) # squash continuous actions using tanh
+    parser.add_argument('--nn_critic', type=str2bool)
     # NN parameters
     parser.add_argument('--learning_rate', type=str)
     parser.add_argument('--use_sde', type=str2bool)
@@ -245,14 +290,36 @@ def parse_args():
     parser.add_argument('--split_score_func', type=str, choices=['cosine', 'L2', 'l2', 'COSINE', 'Cosine'])
     parser.add_argument('--generator_type', type=str, choices=['Quantile', 'quantile', 'l2', 'Uniform', 'uniform'])
     parser.add_argument('--grow_policy', type=str, choices=['Oblivious', 'Greedy', 'greedy', 'oblivious'])
+    parser.add_argument('--feature_weights', type=json_string_to_list)
     # Saving params
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
     parser.add_argument('--save_every', type=int)
+    parser.add_argument('--specific_seed', type=int)
     # Distillation Params
     parser.add_argument('--distil', type=str2bool)
     parser.add_argument('--distil_kwargs', type=json_string_to_dict)
-    
+    # Compression Params
+    parser.add_argument('--compress', type=str2bool)
+    parser.add_argument('--compress_kwargs', type=json_string_to_dict)
+    parser.add_argument('--compress_max_steps', type=int)
+    parser.add_argument('--compress_trees_to_keep', type=int)
+    parser.add_argument('--compress_method', type=str, choices=['first_k', 'best_k'])
+    parser.add_argument('--compress_gradient_steps', type=int)
+    parser.add_argument('--compress_policy_only', type=str2bool)
+    parser.add_argument('--compress_least_squares_W', type=str2bool)
+    parser.add_argument('--compress_use_W', type=str2bool)
+    parser.add_argument('--compress_temperature', type=float)
+    parser.add_argument('--compress_lambda_reg', type=float)
+    parser.add_argument('--compress_capacity', type=int)
+    parser.add_argument('--compress_optimizer_lr', type=float)
+    parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
+    # callback 
+    parser.add_argument('--callback_kwargs', type=json_string_to_dict)
+    # self play
+    parser.add_argument('--rollouts_player', type=int)
+    # openspiel
+    parser.add_argument('--openspiel_config', type=json_string_to_dict)
     args = parser.parse_args()
 
     defaults = load_yaml_defaults()
@@ -263,7 +330,7 @@ def get_defaults(args, defaults):
     # Set hardcoded defaults
     args.env_type = args.env_type if args.env_type else 'gym'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.env_name = args.env_name if args.env_name else 'Pendulum-v1'
+    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -299,6 +366,7 @@ def get_defaults(args, defaults):
     args.target_kl = args.target_kl if args.target_kl is not None else algo_defaults.get('target_kl', None)
     args.log_std_init = args.log_std_init if args.log_std_init is not None else algo_defaults.get('log_std_init', -2)
     args.squash = args.squash if args.squash is not None else algo_defaults.get('squash', False)
+    args.nn_critic = args.nn_critic if args.nn_critic is not None else algo_defaults.get('nn_critic', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
     args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else algo_defaults.get('clip_range', 0.2)
     args.clip_range_vf = convert_clip_range(args.clip_range_vf) if args.clip_range_vf is not None else algo_defaults.get('clip_range_vf', 0.2)
@@ -379,6 +447,7 @@ def get_defaults(args, defaults):
     args.split_score_func = args.split_score_func if args.split_score_func is not None else gbrl_param_defaults['split_score_func']                     
     args.generator_type = args.generator_type if args.generator_type is not None else gbrl_param_defaults['generator_type']                     
     args.shared_tree_struct = args.shared_tree_struct if args.shared_tree_struct is not None else gbrl_param_defaults['shared_tree_struct']                          
+    args.feature_weights = args.feature_weights if args.feature_weights is not None else gbrl_param_defaults['feature_weights']                          
     # SAC GBRL Params
     sac_gbrl_defaults = defaults.get('sac_gbrl', {})
     args.ent_lr = args.ent_lr if args.ent_lr is not None else sac_gbrl_defaults.get('ent_lr', 1.0e-3)
@@ -397,10 +466,12 @@ def get_defaults(args, defaults):
     args.save_every = args.save_every if args.save_every is not None else defaults['save']['save_every']
     args.save_name = args.save_name if args.save_name is not None else defaults['save']['save_name']
     args.save_path = args.save_path if args.save_path is not None else defaults['save']['save_path']
+    args.specific_seed = args.specific_seed if args.specific_seed is not None else defaults['save']['specific_seed']
     
     # Distillation Params
     args.distil = args.distil if args.distil is not None else defaults['distillation']['distil']
     args.distil_kwargs = args.distil_kwargs if args.distil_kwargs is not None else defaults['distillation']['distil_kwargs']
+    # Distillation/Compression Params
     return args
 
 def process_logging(args, callback_list):
@@ -431,8 +502,9 @@ def process_logging(args, callback_list):
     return tensorboard_log
 
 def process_policy_kwargs(args):
+    algo_kwargs = {}
     if args.algo_type == 'ppo_gbrl':
-        return { 
+        algo_kwargs = { 
             "clip_range": args.clip_range,
             "clip_range_vf": args.clip_range_vf,
             "normalize_advantage": args.normalize_advantage,
@@ -440,7 +512,6 @@ def process_policy_kwargs(args):
             "n_epochs": args.n_epochs,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "ent_coef": args.ent_coef,
             "vf_coef": args.vf_coef,
             "n_steps": args.n_steps,
@@ -451,6 +522,7 @@ def process_policy_kwargs(args):
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "log_std_init": args.log_std_init,
                 "squash": args.squash,
+                "nn_critic": args.nn_critic,
                 "shared_tree_struct": args.shared_tree_struct,
                 "tree_struct": {
                     "max_depth": args.max_depth,
@@ -464,6 +536,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
@@ -486,6 +559,7 @@ def process_policy_kwargs(args):
             },
             "fixed_std": args.fixed_std,
             "log_std_lr": args.log_std_lr,
+            "learning_rate": args.learning_rate,
             "min_log_std_lr": args.min_log_std_lr,
             "policy_bound_loss_weight": args.policy_bound_loss_weight,
             "device": args.device,
@@ -493,20 +567,21 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'a2c_gbrl':
-        return { 
+        algo_kwargs = { 
             "normalize_advantage": args.normalize_advantage,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "ent_coef": args.ent_coef,
             "n_steps": args.n_steps,
             "vf_coef": args.vf_coef,
             "gae_lambda": args.gae_lambda,
+            "learning_rate": args.learning_rate,
             "gamma": args.gamma,
             "total_n_steps": args.total_n_steps,
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "log_std_init": args.log_std_init,
                 "squash": args.squash,
+                "nn_critic": args.nn_critic,
                 "shared_tree_struct": args.shared_tree_struct,
                 "tree_struct": {
                     "max_depth": args.max_depth,
@@ -520,6 +595,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
@@ -549,7 +625,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'sac_gbrl':
-        return {
+        algo_kwargs = {
             "train_freq": args.train_freq,
             "seed": args.seed,
             "buffer_size": args.buffer_size,
@@ -579,6 +655,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "actor_optimizer": {
                         "mu_optimizer": {
@@ -621,11 +698,10 @@ def process_policy_kwargs(args):
             "device": args.device
         }
     elif args.algo_type == 'awr_gbrl':
-        return {
+        algo_kwargs = {
             "normalize_advantage": args.normalize_advantage,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "ent_coef": args.ent_coef,
             "batch_size": args.batch_size,
             "beta": args.beta,
@@ -634,6 +710,7 @@ def process_policy_kwargs(args):
             "reward_mode": args.reward_mode,
             "gradient_steps": args.gradient_steps,
             "learning_starts": args.learning_starts,
+            "learning_rate": args.learning_rate,
             "gae_lambda": args.gae_lambda,
             "gamma": args.gamma,
             "train_freq": args.train_freq,
@@ -654,6 +731,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
@@ -683,9 +761,8 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'dqn_gbrl':
-        return {
+        algo_kwargs = {
             "max_q_grad_norm": args.max_q_grad_norm,
-            "is_categorical": True if args.env_type == 'minigrid' else False,
             "normalize_q_grads": args.normalize_q_grads,
             "batch_size": args.batch_size,
             "buffer_size": args.buffer_size,
@@ -710,6 +787,7 @@ def process_policy_kwargs(args):
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
+                        "feature_weights": args.feature_weights,
                     }, 
                     "critic_optimizer": {
                         "algo": args.critic_algo,
@@ -727,8 +805,9 @@ def process_policy_kwargs(args):
         }
     elif args.algo_type == 'ppo_nn':
         from stable_baselines3.common.policies import ActorCriticPolicy
-        return {
-            "policy": ActorCriticPolicy,
+        policy = ActorCriticPolicy
+        algo_kwargs = {
+            "policy": policy,
             "learning_rate": args.learning_rate,
             "n_steps": args.n_steps,
             "batch_size": args.batch_size,
@@ -748,11 +827,10 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
-            "_init_setup_model": True
         }
     elif args.algo_type == 'a2c_nn':
         from stable_baselines3.common.policies import ActorCriticPolicy
-        return {
+        algo_kwargs = {
             "policy": ActorCriticPolicy,
             "learning_rate": args.learning_rate,
             "n_steps": args.n_steps,
@@ -771,11 +849,10 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
-            "_init_setup_model": True
         }
     elif args.algo_type == 'awr_nn':
         from policies.awr_nn_policy import AWRPolicy
-        return {
+        algo_kwargs = {
             "policy": AWRPolicy,
             "learning_rate": args.learning_rate,
             "train_freq": args.train_freq,
@@ -808,7 +885,7 @@ def process_policy_kwargs(args):
         }
     elif args.algo_type == 'dqn_nn':
         from stable_baselines3.dqn.policies import DQNPolicy
-        return {
+        algo_kwargs = {
             'policy': DQNPolicy,
             "max_grad_norm": args.max_grad_norm,
             "batch_size": args.batch_size,
@@ -828,6 +905,16 @@ def process_policy_kwargs(args):
             "seed": args.seed,
             "verbose": args.verbose,
         }
+    if args.env_type in ['sepsis', 'symswap', 'openspiel']:
+        if args.env_type == 'openspiel':
+            algo_kwargs['rollouts_player'] = args.rollouts_player
+        if 'use_sde' in algo_kwargs:
+            del algo_kwargs['use_sde']
+        if 'sde_sample_freq' in algo_kwargs:
+            del algo_kwargs['sde_sample_freq']
+        if 'gbrl' in args.algo_type:
+            algo_kwargs['use_masking'] = True
+    return algo_kwargs
 
 
 

@@ -11,16 +11,96 @@ from __future__ import division
 from __future__ import print_function
 import numpy as np
 import gymnasium
+import gym
+import os 
+import tempfile
 from collections import deque
 from gymnasium.spaces import Box, Discrete
+
 
 
 from gfootball.env import config
 from gfootball.env import football_env
 from gfootball.env import observation_preprocessing, _process_representation_wrappers
 from gfootball.env import wrappers
+from gfootball.env import scenario_builder
 
 from stable_baselines3.common.env_checker import check_env
+
+import gfootball_engine as libgame
+import random
+import sys
+
+from absl import flags
+from absl import logging
+
+Player = libgame.FormationEntry
+Role = libgame.e_PlayerRole
+Team = libgame.e_Team
+
+FLAGS = flags.FLAGS
+
+import importlib
+
+
+class ModifiableScenario(scenario_builder.Scenario):
+
+  def __init__(self, config):
+    # Game config controls C++ engine and is derived from the main config.
+    self._scenario_cfg = libgame.ScenarioConfig.make()
+    self._config = config
+    self._active_team = Team.e_Left
+    scenario = None
+    try:
+      scenario = importlib.import_module('.football_scenarios.{}'.format(config['level']), package='env')
+    except ImportError as e:
+      logging.error('Loading scenario "%s" failed' % config['level'])
+      logging.error(e)
+      sys.exit(1)
+    scenario.build_scenario(self)
+    self.SetTeam(libgame.e_Team.e_Left)
+    self._FakePlayersForEmptyTeam(self._scenario_cfg.left_team)
+    self.SetTeam(libgame.e_Team.e_Right)
+    self._FakePlayersForEmptyTeam(self._scenario_cfg.right_team)
+    self._BuildScenarioConfig()
+
+class ModifiableConfig(config.Config):
+
+  def __init__(self, values=None):
+    self._values = {
+        'action_set': 'default',
+        'custom_display_stats': None,
+        'display_game_stats': True,
+        'dump_full_episodes': False,
+        'dump_scores': False,
+        'players': ['agent:left_players=1'],
+        'level': '11_vs_11_stochastic',
+        'physics_steps_per_frame': 10,
+        'render_resolution_x': 1280,
+        'real_time': False,
+        'tracesdir': os.path.join(tempfile.gettempdir(), 'dumps'),
+        'video_format': 'avi',
+        'video_quality_level': 0,  # 0 - low, 1 - medium, 2 - high
+        'write_video': False
+    }
+    self._values['render_resolution_y'] = int(
+        0.5625 * self._values['render_resolution_x'])
+    if values:
+      self._values.update(values)
+    self.NewScenario()
+
+  def NewScenario(self, inc = 1):
+    if 'episode_number' not in self._values:
+      self._values['episode_number'] = 0
+    self._values['episode_number'] += inc
+    self._scenario_values = {}
+    
+    from gfootball.env import scenario_builder
+    if self._values['level'] in scenario_builder.all_scenarios():
+      self._scenario_cfg = scenario_builder.Scenario(self).ScenarioConfig()
+    else:
+       self._scenario_cfg = ModifiableScenario(self).ScenarioConfig()
+       
 
 class FootballEnvWrapper(football_env.FootballEnv):
     def __init__(self, config):
@@ -33,6 +113,40 @@ class FootballEnvWrapper(football_env.FootballEnv):
     def step(self, action):
         obs, reward, done, info = super().step(action)
         return obs, float(reward), done, False, info
+    
+class FootballEnvSpuriousWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+      gym.ObservationWrapper.__init__(self, env)
+      action_shape = np.shape(self.env.action_space)
+      shape = (action_shape[0] if len(action_shape) else 1, 119)
+      self.observation_space = gymnasium.spaces.Box(
+          low=-np.inf, high=np.inf, shape=shape, dtype=np.float32)
+
+    def get_stadium_info(self):
+        grass_idx = np.random.choice([0, 1, 2])
+        grass_type = np.zeros(3, dtype=float)
+        grass_type[grass_idx] = 1
+        is_raining = np.array([np.random.choice([0.0, 1.0])])
+        # number_of_people = np.array([np.random.randint(50000)], dtype=float)
+        # self.stadium_info = np.concatenate([grass_type, is_raining, number_of_people], axis=0)
+        self.stadium_info = np.concatenate([grass_type, is_raining], axis=0)
+
+    def reset(self, **kwargs):
+        """Resets the environment, returning a modified observation using :meth:`self.observation`."""
+        obs, info = self.env.reset(**kwargs)
+        self.get_stadium_info()
+        return self.observation(obs), info
+
+    def step(self, action):
+        """Returns a modified observation using :meth:`self.observation` after calling :meth:`env.step`."""
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        if terminated or truncated:
+           self.get_stadium_info()
+        return self.observation(observation), reward, terminated, truncated, info
+    
+    def observation(self, observation):
+        """Returns a modified observation."""
+        return np.concatenate([observation, self.stadium_info], axis=0)
     
 
 class MultiAgentToSingleAgentWrapper(wrappers.MultiAgentToSingleAgent):
@@ -121,7 +235,8 @@ def create_environment_sb3(env_name='',
                        channel_dimensions=(
                            observation_preprocessing.SMM_WIDTH,
                            observation_preprocessing.SMM_HEIGHT),
-                       other_config_options={}):
+                       other_config_options={},
+                       **kwargs):
   """Creates a Google Research Football environment.
 
   Args:
@@ -198,7 +313,11 @@ def create_environment_sb3(env_name='',
   """
   assert env_name
 
-  scenario_config = config.Config({'level': env_name}).ScenarioConfig()
+  # scenario_config = config.Config({'level': env_name}).ScenarioConfig()
+  entry_config = {'level': env_name}
+  if 'seed' in kwargs:
+     entry_config['game_engine_random_seed'] = kwargs['seed']
+  scenario_config = ModifiableConfig(entry_config).ScenarioConfig()
   players = [('agent:left_players=%d,right_players=%d' % (
       number_of_left_players_agent_controls,
       number_of_right_players_agent_controls))]
@@ -226,21 +345,24 @@ def create_environment_sb3(env_name='',
       'write_video': write_video,
   }
   config_values.update(other_config_options)
-  c = config.Config(config_values)
+  # c = config.Config(config_values)
+  c = ModifiableConfig(config_values)
 
   env = FootballEnvWrapper(c)
   if multiagent_to_singleagent:
-    env = wrappers.MultiAgentToSingleAgentWrapper(
+    env = MultiAgentToSingleAgentWrapper(
         env, number_of_left_players_agent_controls,
         number_of_right_players_agent_controls)
   if dump_frequency > 1:
-    env = wrappers.PeriodicDumpWriterWrapper(env, dump_frequency, render)
+    env = PeriodicDumpWriterWrapper(env, dump_frequency, render)
   elif render:
     env.render()
   env = _apply_output_wrappers(
       env, rewards, representation, channel_dimensions,
       (number_of_left_players_agent_controls +
        number_of_right_players_agent_controls == 1), stacked)
+  if kwargs.get('spurious', False):
+      env = FootballEnvSpuriousWrapper(env)
   return env
 
 class FootballGymSB3(gymnasium.Env):
@@ -248,7 +370,7 @@ class FootballGymSB3(gymnasium.Env):
     metadata = None
     
     def __init__(self, env_name="11_vs_11_easy_stochastic", rewards="scoring,checkpoints", 
-                 representation="simple115v2", 
+                 representation="simple115v2", **kwargs,
                 ):
         super(FootballGymSB3, self).__init__()
         self.env = create_environment_sb3(
@@ -262,12 +384,15 @@ class FootballGymSB3(gymnasium.Env):
             write_video=False,
             dump_frequency=1,
             logdir=".",
+            # logdir="videos/",
             extra_players=None,
             number_of_left_players_agent_controls=1,
-            number_of_right_players_agent_controls=0)  
+            number_of_right_players_agent_controls=0,
+            **kwargs)  
         self.action_space = Discrete(19)
         # self.observation_space = Box(low=0, high=255, shape=(72, 96, 16), dtype=np.uint8)
-        self.observation_space = Box(low=float('-inf'), high=float('inf') , shape=(115,), dtype=np.float32)
+        shape_size = 119 if kwargs.get('spurious', False) else 115
+        self.observation_space = Box(low=float('-inf'), high=float('inf') , shape=(shape_size,), dtype=np.float32)
         self.reward_range = (-1, 1)
         
     def transform_obs(self, raw_obs):
@@ -288,3 +413,5 @@ class FootballGymSB3(gymnasium.Env):
         return self.env.step([action])
     
 check_env(env=FootballGymSB3(), warn=True)
+
+

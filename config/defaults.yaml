@@ -3,41 +3,46 @@ env:
   env_kwargs: null
   verbose: 1
   seed: 0
-  num_envs: 1
+  num_envs: 16
   eval_kwargs:
-    eval_freq: 25000
+    eval_freq: 2000
     stop_train: False
     min_evals: 5
     record: False
     video_length: 2000
     max_no_improvement_evals: 10
-    n_eval_episodes: 5
+    n_eval_episodes: 100
   wrapper: null
   log_interval: 10
-  total_n_steps: 150000
+  total_n_steps: 1500000
+  # total_n_steps: 20000
   device: 'cuda'
   no_improvement_kwargs: null
 save:
   save_every: 0
   save_name: 'default_name'
   save_path: 'saved_models/'
+  specific_seed: null
 logging:
   project: ""
   run_name: 'default'  # Logging using weights and biases
   group_name: 'default_group'
   entity: "default_entity"
+  desc: "" # run/sweep description for experiment tracking
 gbrl_params:
   control_variates: False
   split_score_func: "cosine"
   generator_type: "Quantile"
   shared_tree_struct: True
+  feature_weights: null
 tree_optimizer: 
-  policy_optimizer: # PPO / AWR
+  policy_optimizer: # PPO / AWR 
     algo: 'SGD'
-    lr: 1.0e-2
+    lr: 5.0e-2
+    # lr: 1.0e-3
   value_optimizer: # PPO / AWR
     algo: 'SGD'
-    lr: 0.01
+    lr: 0.005
   mu_optimizer: # SAC 
     algo: 'SGD'
     lr: 5.0e-4
@@ -56,7 +61,7 @@ tree_optimizer:
 tree_struct:
   max_depth: 4
   grow_policy: oblivious
-  n_bins: 256
+  n_bins: 250
   min_data_in_leaf: 0
   par_th: 2
 ppo_gbrl:
@@ -66,19 +71,21 @@ ppo_gbrl:
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-  n_steps: 512
+  n_steps: 128
   gamma: 0.99
+  nn_critic: False
   gae_lambda: 0.95
   normalize_advantage: True
+  learning_rate: 3.0e-4
   target_kl: null
   normalize_value_grads: False
-  batch_size: 1024
+  batch_size: 128
   n_epochs: 10
   clip_range: 0.2
   clip_range_vf: null
   log_std_lr: lin_0.0017
   min_log_std_lr: 0.000475
-  ent_coef: 0.0580
+  ent_coef: 0.0
   vf_coef: 0.871923
   max_policy_grad_norm: null
   max_value_grad_norm: null
@@ -92,7 +99,7 @@ ppo_nn:
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-  n_steps: 2048
+  n_steps: 128
   gamma: 0.99
   gae_lambda: 0.95
   normalize_advantage: True
@@ -121,6 +128,7 @@ a2c_gbrl:
   normalize_advantage: True
   normalize_policy_grads: False
   log_std_lr: lin_0.0017
+  learning_rate: 3.0e-4
   min_log_std_lr: 0.000475
   ent_coef: 0.0580
   vf_coef: 0.871923
@@ -183,6 +191,7 @@ awr_gbrl:
   ent_coef: 0.0
   beta: 0.05
   gae_lambda: 0.95
+  learning_rate: 3.0e-4
   normalize_advantage: False
   log_std_lr: lin_0.0017
   min_log_std_lr: 0.000475
@@ -278,3 +287,4 @@ distillation:
     max_depth: 4
     lr: 1.0
     capacity: 20000
+
