@@ -645,8 +645,6 @@ class NoisyEvalCallback(EvalCallback):
             # Add to current Logger
             self.logger.record(f"eval/{self.env_name}_mean_reward", float(mean_reward))
             self.logger.record(f"eval/{self.env_name}_mean_ep_length", mean_ep_length)
-            # self.logger.record(f"eval/{self.env_name}_std_reward", float(std_reward))
-            # self.logger.record(f"eval/{self.env_name}_std_ep_length", std_ep_length)
 
             if len(self._is_success_buffer) > 0:
                 success_rate = np.mean(self._is_success_buffer)
