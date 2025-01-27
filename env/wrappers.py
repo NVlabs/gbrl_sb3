@@ -6,28 +6,22 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-import operator
-from functools import reduce
-from typing import (Any, Callable, Dict, List, OrderedDict)
+from typing import Any, Callable, Dict, List, OrderedDict
 
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
-from gymnasium import spaces
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
-from minigrid.wrappers import ObservationWrapper
+from minigrid.wrappers import FullyObsWrapper, ObservationWrapper
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
                                                      EpisodicLifeEnv,
                                                      FireResetEnv,
                                                      NoopResetEnv,
                                                      StickyActionEnv)
-
 from stable_baselines3.common.type_aliases import AtariStepReturn
 from stable_baselines3.common.vec_env import DummyVecEnv
-from minigrid.wrappers import FullyObsWrapper
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
-from stable_baselines3.common.vec_env.util import ( obs_space_info)
-
+from stable_baselines3.common.vec_env.util import obs_space_info
 
 
 def save_rendered_frame(env, frame_number=None):

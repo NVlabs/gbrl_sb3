@@ -261,7 +261,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
             value_losses.append(value_loss.item())
             entropy_losses.append(entropy_loss.item())
 
-            self.policy.step(replay_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+            self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
             params, grads = self.policy.model.get_params()
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                 if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
@@ -327,7 +327,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
             value_loss.backward()
 
             value_losses.append(value_loss.item())
-            self.policy.critic_step(replay_data.observations, self.max_value_grad_norm )
+            self.policy.critic_step(value_grad_clip=self.max_value_grad_norm )
 
         policy_losses, entropy_losses = [], []
         values, next_values = self.get_values(observations, next_observations)
@@ -372,7 +372,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
             policy_loss.backward()
 
 
-            self.policy.actor_step(replay_data.observations, self.max_policy_grad_norm)    
+            self.policy.actor_step(policy_grad_clip=self.max_policy_grad_norm)    
             policy_losses.append(policy_loss.item())
             entropy_losses.append(entropy_loss.item())
 

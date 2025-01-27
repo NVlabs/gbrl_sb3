@@ -24,9 +24,11 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
                                               VecNormalize, VecVideoRecorder)
 
-from env.wrappers import CategoricalDummyVecEnv, MiniGridCategoricalObservationWrapper
-from utils.helpers import make_ram_atari_env
 from env.minigrid import register_minigrid_tests
+from env.wrappers import (CategoricalDummyVecEnv,
+                          MiniGridCategoricalObservationWrapper)
+from utils.helpers import make_ram_atari_env
+
 warnings.filterwarnings("ignore")
 
 from stable_baselines3.a2c.a2c import A2C

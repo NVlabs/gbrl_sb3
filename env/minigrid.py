@@ -8,13 +8,9 @@
 ##############################################################################
 from __future__ import annotations
 
-from typing import Any, List
 
 import numpy as np
-from gymnasium import spaces
-from gymnasium.core import ActType, ObsType
 from gymnasium.envs.registration import register
-from minigrid.core.constants import COLOR_NAMES
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
 from minigrid.core.world_object import Ball, Box

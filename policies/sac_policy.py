@@ -157,12 +157,12 @@ class ContinuousCritic(BaseModel):
             features = self.extract_features(obs, self.features_extractor)
         return self.q_models[0](th.cat([features, actions], dim=1))
     
-    def step(self, observations: Union[np.array, th.Tensor], q_grad_clip: float=None) -> None:
+    def step(self, observations: Optional[Union[np.array, th.Tensor]] = None, q_grad_clip: float=None) -> None:
         if self.q_func_type == 'nn':
              self.optimizer.step()
         else:
             for idx in range(self.n_critics):
-                self.q_models[idx].step(observations, q_grad_clip)
+                self.q_models[idx].step(observations=observations, q_grad_clip=q_grad_clip)
 
     def get_num_trees(self):
         return self.q_models[0].get_num_trees()
@@ -293,8 +293,8 @@ class Actor(BasePolicy):
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
         return self(observation, deterministic)
 
-    def step(self, observations: th.Tensor, policy_grad_clip: float = None) -> None:
-        return self.model.step(observations, policy_grad_clip)
+    def step(self, observations: Optional[th.Tensor] = None, mu_grad_clip: Optional[float] = None, log_std_grad_clip: Optional[float] = None) -> None:
+        return self.model.step(observations=observations, mu_grad_clip=mu_grad_clip, log_std_grad_clip=log_std_grad_clip)
 
     def get_num_trees(self):
         return self.model.get_num_trees()

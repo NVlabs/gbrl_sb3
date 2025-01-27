@@ -412,7 +412,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     break
 
                 # Fit GBRL model on gradients - Optimization step
-                self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+                self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
                 params, grads = self.policy.get_params()
                 if isinstance(grads, tuple):
                     theta_grad, values_grad = grads

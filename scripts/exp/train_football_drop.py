@@ -17,30 +17,17 @@ import sys
 import warnings
 
 from stable_baselines3.common.callbacks import (
-    CallbackList, CheckpointCallback, EvalCallback,
-    StopTrainingOnNoModelImprovement)
+    CallbackList, CheckpointCallback)
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
-                                              VecNormalize, VecVideoRecorder)
+from stable_baselines3.common.vec_env import (
+                                              VecNormalize)
 
-from callback.callbacks import (ActorCriticCompressionCallback,
+from callback.callbacks import (
                                 OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining,
                                 MultiEvalCallback)
-from utils.helpers import (make_ram_atari_env, 
-                           make_ram_ocatari_env, 
-                           set_seed,
-                           make_openspiel_env, 
-                           make_bsuite_env,
-                           make_carl_env,
-                           make_highway_env)
-from env.wrappers import (CategoricalDummyVecEnv,
-                          CategoricalObservationWrapper,
-                          MiniGridFlatObsWrapper,
-                          HighWayWrapper)
-from env.ocatari import MIXED_ATARI_ENVS
-from env.minigrid import register_minigrid_tests
+from utils.helpers import set_seed
 
 warnings.filterwarnings("ignore")
 
@@ -53,7 +40,6 @@ from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
-from algos.ppo_selfplay import PPO_GBRL_SelfPlay, PPO_SelfPlay
 from algos.sac import SAC_GBRL
 from config.args import parse_args, process_logging, process_policy_kwargs
 
@@ -70,9 +56,6 @@ if __name__ == '__main__':
             callback_list.append(OnPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
         elif args.algo_type in OFF_POLICY_ALGOS:
             callback_list.append(OffPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
-    if args.compress and args.compress_kwargs:
-        args.compress_kwargs['capacity'] = int(args.compress_kwargs['capacity'] / args.num_envs)
-        callback_list.append(ActorCriticCompressionCallback(args.compress_kwargs, args.compress_kwargs.get('compress_verbose', 0)))
         
     tensorboard_log = process_logging(args, callback_list)
     env, eval_env = None, None
@@ -91,8 +74,9 @@ if __name__ == '__main__':
             args.wrapper_kwargs['gamma'] = args.gamma
             env = VecNormalize(env, **args.wrapper_kwargs)
         if args.evaluate:
-            env_list = ["academy_single_goal_versus_lazy_drop_2player",
-              "academy_single_goal_versus_lazy_drop_3player",
+            env_list = ["academy_counterattack_hard_drop",
+                        "academy_counterattack_hard",
+              "academy_single_goal_versus_lazy_drop",
               "academy_single_goal_versus_lazy"]
             for eval_env_name in env_list:
                 eval_kwargs = args.env_kwargs.copy() 

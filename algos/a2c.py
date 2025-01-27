@@ -239,7 +239,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
             policy_losses.append(policy_loss.item())
             value_losses.append(value_loss.item())
 
-            self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+            self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
             params, grads = self.policy.model.get_params()
             theta_grad, values_grad = grads
             theta = params[0]

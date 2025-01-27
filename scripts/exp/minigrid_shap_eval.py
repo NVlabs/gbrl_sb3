@@ -11,9 +11,9 @@ import glob
 import os
 import sys
 from pathlib import Path
-import torch as th
 
 import numpy as np
+import torch as th
 
 ROOT_PATH = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT_PATH))
@@ -21,21 +21,28 @@ sys.path.insert(0, str(ROOT_PATH))
 import warnings
 
 import matplotlib
+
 matplotlib.use('Agg')  # Use a non-interactive backend
 import matplotlib.pyplot as plt
-
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.logger import configure
-from stable_baselines3.common.save_util import load_from_pkl
-from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
+from stable_baselines3.common.vec_env import (DummyVecEnv,
                                               VecNormalize)
 
-from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper, FlatObsWrapperWithDirectionCategoricalInfo
-from utils.shap_visualization import MiniGridShapVisualizationWrapper, PolicyDeepExplainer, ShapVecVideoRecorder
 from env.minigrid import register_minigrid_tests
+from env.wrappers import (CategoricalDummyVecEnv,
+                          MiniGridCategoricalObservationWrapper)
+from utils.shap_visualization import (MiniGridShapVisualizationWrapper,
+                                      PolicyDeepExplainer,
+                                      ShapVecVideoRecorder)
+
 warnings.filterwarnings("ignore")
 
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import gymnasium as gym
 from stable_baselines3.a2c.a2c import A2C
+from stable_baselines3.common.vec_env import (VecEnv, VecMonitor,
+                                              is_vecenv_wrapped)
 from stable_baselines3.dqn.dqn import DQN
 from stable_baselines3.ppo.ppo import PPO
 
@@ -46,9 +53,6 @@ from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
 from algos.sac import SAC_GBRL
 from config.args import json_string_to_dict
-from typing import Union, Dict, Callable, Optional, Any, Tuple, List
-import gymnasium as gym 
-from stable_baselines3.common.vec_env import VecEnv, VecMonitor, is_vecenv_wrapped
 
 NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
@@ -163,19 +167,7 @@ def shap_evaluate_policy(
     n_episode = 0
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
-        # observations =  np.array([[b'wall,grey,open', b'wall,grey,open', b'wall,grey,open', b'wall,grey,open',
-        #                         b'wall,grey,open', b'wall,grey,open', b'wall,grey,open', b'wall,grey,open',
-        #                         b'wall,grey,open', b'wall,grey,open', b'wall,grey,open', b'wall,grey,open',
-        #                         b'wall,grey,open', b'wall,grey,open', b'wall,grey,open', b'wall,grey,open',
-        #                         b'wall,grey,open', b'empty,red,open', b'empty,red,open', b'empty,red,open',
-        #                         b'box,red,open', b'wall,grey,open', b'wall,grey,open', b'wall,grey,open',
-        #                         b'empty,red,open', b'empty,red,open', b'ball,red,open', b'empty,red,open',
-        #                         b'wall,grey,open', b'wall,grey,open', b'wall,grey,open', b'empty,red,open',
-        #                         b'empty,red,open', b'empty,red,open', b'empty,red,open', b'wall,grey,open',
-        #                         b'wall,grey,open', b'wall,grey,open', b'empty,red,open', b'ball,blue,open',
-        #                         b'empty,red,open', b'empty,red,open', b'wall,grey,open', b'wall,grey,open',
-        #                         b'wall,grey,open', b'empty,red,open', b'empty,red,open', b'empty,red,open',
-        #                         b'empty,red,open', b'3', b'get a red ball']], dtype=object)
+    
         actions, states = model.predict(
             observations,  # type: ignore[arg-type]
             state=states,
@@ -189,62 +181,8 @@ def shap_evaluate_policy(
             shap_observations = th.tensor(observations).to(model.device)
             e = PolicyDeepExplainer(model.policy, background_obs)
             shap_values = e.shap_values(shap_observations)[:, :, actions]
-#         shap_values = np.array([[[-0.00000000e+00],
-#   [ 2.70963371e-01],
-#   [ 1.26255560e+00],
-#   [ 1.52961564e+00],
-#   [ 2.51150966e+00],
-#   [ 5.88993669e-01],
-#   [ 2.31040740e+00],
-#   [-0.00000000e+00],
-#   [-1.41602447e-02],
-#   [ 3.37574273e-01],
-#   [-9.48563516e-01],
-#   [ 1.44321382e+00],
-#   [ 5.16685545e-01],
-#   [-1.88959467e+00],
-#   [-0.00000000e+00],
-#   [-2.36205772e-01],
-#   [ 2.10285261e-02],
-#   [-8.69891405e-01],
-#   [ 3.56438965e-01],
-#   [ 1.83357513e+00],
-#   [ 4.82213557e-01],
-#   [-0.00000000e+00],
-#   [ 5.07186353e-01],
-#   [ 8.82550105e-02],
-#   [ 2.84291816e+00],
-#   [ 3.84706831e+00],
-#   [ 3.17644901e+01],
-#   [-0.00000000e+00],
-#   [-0.00000000e+00],
-#   [-4.64622140e-01],
-#   [-8.03813517e-01],
-#   [ 6.09743953e-01],
-#   [ 9.45979416e-01],
-#   [ 2.34105301e+00],
-#   [-3.93869914e-02],
-#   [-0.00000000e+00],
-#   [ 1.40217558e-01],
-#   [ 2.79373884e-01],
-#   [ 1.63541830e+00],
-#   [-1.24054785e+01],
-#   [ 1.14089753e-02],
-#   [ 3.54652792e-01],
-#   [-0.00000000e+00],
-#   [-9.44270939e-02],
-#   [ 5.45584679e-01],
-#   [-2.94912601e+00],
-#   [-1.95166707e-01],
-#   [-5.34993559e-02],
-#   [-1.36119199e+00],
-#   [-5.08264720e-01],
-#   [ 1.67697086e+01]]])
+
         env.set_shap_values(shap_values, MINIGRID_ACTIONS[actions[0]])
-
-        # if MINIGRID_ACTIONS[actions[0]] == 'pickup object':
-        #     print()
-
         
         if render:
             env.render()
@@ -309,13 +247,10 @@ if __name__ == '__main__':
     parser.add_argument('--name_str', type=str, default='eval')  
     parser.add_argument('--folder_path', type=str, default=str(ROOT_PATH / 'saved_models'))
     # env args
-    # parser.add_argument('--total_n_steps', type=int)
     parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cuda')
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--checkpoint', type=str)
     parser.add_argument('--n_eval_episodes', type=int, default=1000)
-    # parser.add_argument('--n_eval_episodes', type=int, default=10000)
-    # parser.add_argument('--video_length', type=int, default=250)
     parser.add_argument('--video_length', type=int, default=100)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
     parser.add_argument('--env_kwargs', type=json_string_to_dict)
@@ -356,8 +291,8 @@ if __name__ == '__main__':
 
 
     register_minigrid_tests()
-    # wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
-    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirectionCategoricalInfo
+    from minigrid.wrappers import FlatObsWrapper
+    wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     eval_kwargs = {} if args.env_kwargs is None else args.env_kwargs.copy()
     eval_env = make_vec_env(args.eval_env, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)

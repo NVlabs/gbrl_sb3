@@ -6,10 +6,8 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-import numpy as np
 import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.distributions import (
@@ -20,8 +18,7 @@ from stable_baselines3.common.policies import BaseModel, BasePolicy
 from stable_baselines3.common.preprocessing import get_action_dim
 from stable_baselines3.common.torch_layers import (BaseFeaturesExtractor,
                                                    CombinedExtractor,
-                                                   FlattenExtractor,
-                                                   MlpExtractor, NatureCNN,
+                                                   FlattenExtractor, NatureCNN,
                                                    create_mlp)
 from stable_baselines3.common.type_aliases import Schedule
 from torch import nn

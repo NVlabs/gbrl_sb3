@@ -9,7 +9,7 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Callable, Dict, Union
+from typing import Callable, Union
 
 import yaml
 from torch.nn import ReLU, Tanh
@@ -98,6 +98,7 @@ def json_string_to_dict(json_string):
         raise argparse.ArgumentTypeError('Invalid JSON format for dictionary.')
 
 from wandb.integration.sb3 import WandbCallback
+
 
 def str2tuple(input_str: str) -> tuple:
     """
@@ -329,8 +330,9 @@ def parse_args():
 def get_defaults(args, defaults):
     # Set hardcoded defaults
     args.env_type = args.env_type if args.env_type else 'gym'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
+    args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
+    # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
+    args.env_name = args.env_name if args.env_name else 'Pendulum-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -639,6 +641,7 @@ def process_policy_kwargs(args):
             "gradient_steps": args.gradient_steps,
             "max_q_grad_norm": args.max_q_grad_norm,
             "max_policy_grad_norm": args.max_policy_grad_norm,
+            "log_std_grad_clip": args.log_std_grad_clip,
             "verbose": args.verbose,
              "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "n_critics": args.n_critics,

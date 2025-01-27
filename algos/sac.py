@@ -100,6 +100,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
             gradient_steps: int = 1,
             max_q_grad_norm: float = None,
             max_policy_grad_norm: float = None,
+            log_std_grad_clip: float = None,
             policy_kwargs: Dict = None,
             tensorboard_log: str = None, 
             verbose: int = 1,
@@ -148,6 +149,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
         self.target_update_interval = target_update_interval
         self.max_q_grad_norm = max_q_grad_norm
         self.max_policy_grad_norm = max_policy_grad_norm
+        self.log_std_grad_clip = log_std_grad_clip
         self.ent_coef_optimizer: Optional[th.optim.Adam] = None
         self.reg_coef = 1
         self.accum_gradient_steps = 0
@@ -270,7 +272,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
             critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 
             critic_loss.backward()
-            self.critic.step(replay_data.observations, self.max_q_grad_norm)
+            self.critic.step(q_grad_clip=self.max_q_grad_norm)
 
             q_values_pi = th.cat(self.policy.predict_critic(replay_data.observations, actions_pi), dim=1)
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
@@ -283,7 +285,7 @@ class SAC_GBRL(OffPolicyAlgorithm):
             q_s_max.append(min_qf_pi.max().item())
             q_s_min.append(min_qf_pi.min().item())
 
-            self.actor.step(replay_data.observations, self.max_policy_grad_norm)
+            self.actor.step(mu_grad_clip=self.max_policy_grad_norm, log_std_grad_clip=self.log_std_grad_clip)
             # Update target networks
             if self.policy.nn_critic and gradient_step % self.target_update_interval == 0:
                 polyak_update(self.critic.parameters(), self.policy.critic_target.parameters(), self.tau)

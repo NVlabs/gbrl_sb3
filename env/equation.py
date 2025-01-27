@@ -6,13 +6,10 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-import math
 import gymnasium as gym
-from gymnasium import spaces
 import numpy as np
+from gymnasium import spaces
 from gymnasium.envs.registration import register
-
-
 
 
 class LinearEquationEnv(gym.Env):

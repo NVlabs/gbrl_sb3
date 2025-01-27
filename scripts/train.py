@@ -26,13 +26,11 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
 from callback.callbacks import (OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
-from utils.helpers import (make_ram_atari_env, 
-                           set_seed,)
-from env.wrappers import (CategoricalDummyVecEnv,
-                          MiniGridCategoricalObservationWrapper,)
-
-from env.minigrid import register_minigrid_tests
 from env.equation import register_equation_tests
+from env.minigrid import register_minigrid_tests
+from env.wrappers import (CategoricalDummyVecEnv,
+                          MiniGridCategoricalObservationWrapper)
+from utils.helpers import make_ram_atari_env, set_seed
 
 warnings.filterwarnings("ignore")
 
@@ -45,10 +43,8 @@ from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
-
 from algos.sac import SAC_GBRL
 from config.args import parse_args, process_logging, process_policy_kwargs
-
 
 NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
