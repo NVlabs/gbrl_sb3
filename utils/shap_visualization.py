@@ -16,6 +16,7 @@ from io import BytesIO
 import torch as th
 from PIL import Image
 from pathlib import Path
+from matplotlib.colors import LinearSegmentedColormap
 import cv2
 from gym.core import ObsType
 from typing import Any, Union
@@ -360,6 +361,9 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         self.extra_shap = None
         self.image_shape = np.zeros((7, 7))
         self.algo_type=algo_type
+        self.cmap =  LinearSegmentedColormap.from_list(
+    "yellow_white_green", [(0, "yellow"), (0.5, "white"), (1, "green")]
+)
         self.save_idx = 0
         self.go_forward_idx = 0
         self.plot_path = Path(plot_path)
@@ -427,7 +431,9 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         self.extra_shap = extra_shap
 
         # # Map SHAP values to colors using the same colormap
-        colors = plt.cm.coolwarm(extra_shap)
+        # colors = plt.cm.coolwarm(extra_shap)
+        # colors = plt.cm.coolwarm(norm(self.extra_shap[1]))
+        colors = self.cmap(norm(extra_shap))
         # Plot the bar chart
         ax.bar(self.feature_labels, extra_shap, color=colors)
         ax.set_title("Additional Features", fontsize=6)
@@ -446,7 +452,8 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         plot_img = image[:, :, :3]  # Discard alpha channel
         plt.close(fig)
 
-        if actions == 'pickup object' or actions == 'go forward':
+        # if actions == 'pickup object' or actions == 'go forward':
+        if actions == 'pickup object':
             self.save_shap_image(actions)
         
         return plot_img
@@ -468,11 +475,12 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         norm = plt.Normalize(vmin=-1, vmax=1)  # Replace with your heatmap's vmin and vmax
         # # Map SHAP values to colors using the same colormap
         # colors = plt.cm.coolwarm(norm(self.extra_shap))
-        colors = plt.cm.coolwarm(norm(self.extra_shap[1]))
+        # colors = plt.cm.coolwarm(norm(self.extra_shap[1]))
+        colors = self.cmap(norm(self.extra_shap[1]))
         # Plot the bar chart
         
         # sm = plt.cm.ScalarMappable(cmap='coolwarm', norm=norm)
-        sm = plt.cm.ScalarMappable(cmap='coolwarm', norm=norm)
+        sm = plt.cm.ScalarMappable(cmap=self.cmap, norm=norm)
         # sm.set_array([])  # Required for adding a colorbar
         sm.set_array([-1, 1]) 
         ax[1].bar(self.feature_labels[1], self.extra_shap[1], color=colors)
@@ -480,13 +488,13 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
         
 
         # ax[1].set_title("Additional Features", fontsize=14)
-        ax[1].set_ylabel("SHAP Value", fontsize=16)
+        ax[1].set_ylabel("SHAP Value", fontsize=24)
         ax[1].set_xticks(range(len(self.feature_labels) - 1 ))
-        ax[1].set_xticklabels(['Mission'], rotation=0, ha='center', fontsize=16)
-        cb.ax.tick_params(labelsize=14)
-        ax[1].tick_params(axis='y', labelsize=14)
+        ax[1].set_xticklabels(['Mission'], rotation=0, ha='center', fontsize=22)
+        cb.ax.tick_params(labelsize=20)
+        ax[1].tick_params(axis='y', labelsize=20)
         ax[1].set_ylim((-1, 1))
-        fig.suptitle(f"Mission: {self.mission} \n Action: {action}", fontsize=18)
+        fig.suptitle(f"Mission: {self.mission} \n Action: {action}", fontsize=24)
 
         shap_values = self.image_shape  # SHAP values already passed
         tile_size = 32  # Size of each grid cell
@@ -505,7 +513,8 @@ class MiniGridShapVisualizationWrapper(gym.Wrapper):
                 # Get the SHAP value for this cell
                 shap_value = shap_values[i, j] if i < shap_values.shape[0] and j < shap_values.shape[1] else 0.0
                 # Map the SHAP value directly to a color using a colormap
-                color = plt.cm.coolwarm((shap_value + 1) / 2) 
+                # color = plt.cm.coolwarm((shap_value + 1) / 2) 
+                color = self.cmap((shap_value + 1) / 2) 
                 # Rescale [-1, 1] to [0, 1]
                 color_bgr = tuple(int(c * 255) for c in color[:3])  # Convert RGBA to BGR for OpenCV
             

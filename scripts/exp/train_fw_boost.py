@@ -32,7 +32,8 @@ import stable_baselines3
 
 print(f"SB3 Version: {stable_baselines3.__version__}")
 
-ENV_NAME = 'Pendulum-v1'
+# ENV_NAME = 'Pendulum-v1'
+ENV_NAME = 'CartPole-v1'
 # ENV_NAME = 'academy_empty_goal'
 
 from algos.ppo import PPO_GBRL
@@ -44,7 +45,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--env_name', type=str, default=ENV_NAME)  
     parser.add_argument('--env_type', type=str, default='gym')  
-    parser.add_argument('--fw_type', type=str, default='gbrl', choices=['gbrl', 'cb', 'xgb'])  
+    parser.add_argument('--fw_type', type=str, default='cb', choices=['gbrl', 'cb', 'xgb'])  
     parser.add_argument('--algo_type', type=str)  
     # env args
     parser.add_argument('--seed', type=int, default=0)
@@ -81,7 +82,23 @@ if __name__ == '__main__':
                                   'clip_range': 0.2,
                                   'ent_coef': 0,
                                   'batch_size': 512,
-                                  'wrapper': 'normalize'}}
+                                  'wrapper': 'normalize'},
+                'CartPole-v1': {'n_epochs': 1,
+                'max_depth': 4,
+                'n_steps': 128,
+                'wrapper': None,
+                'num_envs': 8,
+                'policy_lr': 0.029,
+                'value_lr': 0.015,
+                'max_policy_grad_norm': 100,
+                'max_value_grad_norm': 10,
+                'log_std_init': -2,
+                'gamma': 0.98,
+                'gae_lambda': 0.8 ,
+                'clip_range': 0.2,
+                'ent_coef': 0,
+                'batch_size': 64}}
+
     
     args.algo_type = args.fw_type
     tensorboard_log = process_logging(args, callback_list)

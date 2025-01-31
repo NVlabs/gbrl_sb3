@@ -31,7 +31,7 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
                                               VecNormalize)
 
 from env.ocatari import MIXED_ATARI_ENVS
-from env.wrappers import CategoricalDummyVecEnv, CategoricalObservationWrapper, FlatObsWrapperWithDirection, FlatObsWrapperWithDirectionCategoricalInfo
+from env.wrappers import CategoricalDummyVecEnv, MiniGridCategoricalObservationWrapper, FlatObsWrapperWithDirection, FlatObsWrapperWithDirectionCategoricalInfo
 from utils.helpers import make_ram_atari_env, make_ram_ocatari_env, make_carl_env
 from utils.shap_visualization import MiniGridShapVisualizationWrapper, PolicyDeepExplainer, ShapVecVideoRecorder
 from env.minigrid import register_minigrid_tests
@@ -191,57 +191,57 @@ def shap_evaluate_policy(
             shap_observations = th.tensor(observations).to(model.device)
             e = PolicyDeepExplainer(model.policy, background_obs)
             shap_values = e.shap_values(shap_observations)[:, :, actions]
-#         shap_values = np.array([[[-0.00000000e+00],
-#   [ 2.70963371e-01],
-#   [ 1.26255560e+00],
-#   [ 1.52961564e+00],
-#   [ 2.51150966e+00],
-#   [ 5.88993669e-01],
-#   [ 2.31040740e+00],
-#   [-0.00000000e+00],
-#   [-1.41602447e-02],
-#   [ 3.37574273e-01],
-#   [-9.48563516e-01],
-#   [ 1.44321382e+00],
-#   [ 5.16685545e-01],
-#   [-1.88959467e+00],
-#   [-0.00000000e+00],
-#   [-2.36205772e-01],
-#   [ 2.10285261e-02],
-#   [-8.69891405e-01],
-#   [ 3.56438965e-01],
-#   [ 1.83357513e+00],
-#   [ 4.82213557e-01],
-#   [-0.00000000e+00],
-#   [ 5.07186353e-01],
-#   [ 8.82550105e-02],
-#   [ 2.84291816e+00],
-#   [ 3.84706831e+00],
-#   [ 3.17644901e+01],
-#   [-0.00000000e+00],
-#   [-0.00000000e+00],
-#   [-4.64622140e-01],
-#   [-8.03813517e-01],
-#   [ 6.09743953e-01],
-#   [ 9.45979416e-01],
-#   [ 2.34105301e+00],
-#   [-3.93869914e-02],
-#   [-0.00000000e+00],
-#   [ 1.40217558e-01],
-#   [ 2.79373884e-01],
-#   [ 1.63541830e+00],
-#   [-1.24054785e+01],
-#   [ 1.14089753e-02],
-#   [ 3.54652792e-01],
-#   [-0.00000000e+00],
-#   [-9.44270939e-02],
-#   [ 5.45584679e-01],
-#   [-2.94912601e+00],
-#   [-1.95166707e-01],
-#   [-5.34993559e-02],
-#   [-1.36119199e+00],
-#   [-5.08264720e-01],
-#   [ 1.67697086e+01]]])
+        shap_values = np.array([[[-0.00000000e+00],
+  [ 2.70963371e-01],
+  [ 1.26255560e+00],
+  [ 1.52961564e+00],
+  [ 2.51150966e+00],
+  [ 5.88993669e-01],
+  [ 2.31040740e+00],
+  [-0.00000000e+00],
+  [-1.41602447e-02],
+  [ 3.37574273e-01],
+  [-9.48563516e-01],
+  [ 1.44321382e+00],
+  [ 5.16685545e-01],
+  [-1.88959467e+00],
+  [-0.00000000e+00],
+  [-2.36205772e-01],
+  [ 2.10285261e-02],
+  [-8.69891405e-01],
+  [ 3.56438965e-01],
+  [ 1.83357513e+00],
+  [ 4.82213557e-01],
+  [-0.00000000e+00],
+  [ 5.07186353e-01],
+  [ 8.82550105e-02],
+  [ 2.84291816e+00],
+  [ 3.84706831e+00],
+  [ 3.17644901e+01],
+  [-0.00000000e+00],
+  [-0.00000000e+00],
+  [-4.64622140e-01],
+  [-8.03813517e-01],
+  [ 6.09743953e-01],
+  [ 9.45979416e-01],
+  [ 2.34105301e+00],
+  [-3.93869914e-02],
+  [-0.00000000e+00],
+  [ 1.40217558e-01],
+  [ 2.79373884e-01],
+  [ 1.63541830e+00],
+  [-1.24054785e+01],
+  [ 1.14089753e-02],
+  [ 3.54652792e-01],
+  [-0.00000000e+00],
+  [-9.44270939e-02],
+  [ 5.45584679e-01],
+  [-2.94912601e+00],
+  [-1.95166707e-01],
+  [-5.34993559e-02],
+  [-1.36119199e+00],
+  [-5.08264720e-01],
+  [ 1.67697086e+01]]])
         env.set_shap_values(shap_values, MINIGRID_ACTIONS[actions[0]])
 
         # if MINIGRID_ACTIONS[actions[0]] == 'pickup object':
@@ -358,8 +358,8 @@ if __name__ == '__main__':
 
 
     register_minigrid_tests()
-    # wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
-    wrapper_class = CategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirectionCategoricalInfo
+    wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirection
+    # wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapperWithDirectionCategoricalInfo
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
     eval_kwargs = {} if args.env_kwargs is None else args.env_kwargs.copy()
     eval_env = make_vec_env(args.eval_env, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
