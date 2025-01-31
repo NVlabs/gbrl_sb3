@@ -176,6 +176,7 @@ class ActorCriticPolicy(BasePolicy):
                                         activation_fn=self.activation_fn,
                                         )).to(self.device)
             self.model = ParametricActor(tree_struct=tree_struct, 
+                input_dim=self.features_dim,
                 output_dim=self.logits_dim, 
                 policy_optimizer=policy_optimizer,
                 gbrl_params=tree_optimizer['gbrl_params'],
@@ -184,6 +185,7 @@ class ActorCriticPolicy(BasePolicy):
             self.value_optimizer = self.optimizer_class(self.value_net.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)  # type: ignore[call-arg]
         else:
             self.model = ActorCritic(tree_struct=tree_struct, 
+                            input_dim=self.features_dim,
                             output_dim=self.logits_dim + 1, 
                             shared_tree_struct=self.shared_tree_struct,
                             policy_optimizer=policy_optimizer,

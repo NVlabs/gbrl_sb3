@@ -114,6 +114,7 @@ class ContinuousCritic(BaseModel):
                 bias = np.random.randn(action_dim + self.theta_dim) * np.sqrt(2.0 / action_dim)
                 bias[-self.theta_dim:] = 0
                 q_model = GBRLContinuousCritic(tree_struct=tree_struct, 
+                                        input_dim=features_dim,
                                         output_dim=action_dim + self.theta_dim, 
                                         weights_optimizer=weights_optimizer,
                                         bias_optimizer=bias_optimizer,
@@ -258,6 +259,7 @@ class Actor(BasePolicy):
         mu_optimizer['stop_idx'] = stop_idx
 
         self.model = GaussianActor(tree_struct=tree_struct, 
+                            input_dim=self.features_extractor.features_dim,
                             output_dim=action_dim*2, 
                             mu_optimizer=mu_optimizer,
                             std_optimizer=std_optimizer,

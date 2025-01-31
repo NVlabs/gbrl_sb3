@@ -15,5 +15,5 @@ gymnasium[box2d]==0.29.1
 gymnasium[mujoco]==0.29.1
 opencv-python>=4.8.1.78
 tensorboard==2.15.1
-gbrl==1.0.8
+gbrl==1.0.9
 

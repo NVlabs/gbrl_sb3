@@ -66,12 +66,13 @@ class DQNPolicy(BasePolicy):
             optimizer_kwargs=optimizer_kwargs,
             normalize_images=normalize_images,
         )
-
+        features_extractor = self.make_features_extractor()
         self.is_categorical = is_categorical
         bias = np.random.randn(action_space.n) * np.sqrt(2.0 / action_space.n)
         tree_optimizer['critic_optimizer']['start_idx'] = 0
         tree_optimizer['critic_optimizer']['stop_idx'] = action_space.n
         self.q_model = DiscreteCritic(tree_struct=tree_struct, 
+                            input_dim=features_extractor.features_dim,
                             output_dim=action_space.n, 
                             bias=bias,
                             **tree_optimizer)
