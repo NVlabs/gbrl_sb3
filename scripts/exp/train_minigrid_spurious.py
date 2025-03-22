@@ -17,32 +17,21 @@ import sys
 import warnings
 
 from stable_baselines3.common.callbacks import (
-    CallbackList, CheckpointCallback, EvalCallback,
-    StopTrainingOnNoModelImprovement)
-from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack, 
-                                              VecNormalize, VecVideoRecorder)
+    CallbackList, CheckpointCallback)
+from stable_baselines3.common.vec_env import (DummyVecEnv, VecNormalize)
 from stable_baselines3.common.env_util import make_vec_env
-from callback.callbacks import (ActorCriticCompressionCallback,
+from callback.callbacks import (
                                 MultiEvalCallback,
                                 OffPolicyDistillationCallback,
-                                OnPolicyDistillationCallback,
-                                StopTrainingOnNoImprovementInTraining)
-from utils.helpers import (make_ram_atari_env, 
-                           make_ram_ocatari_env, 
+                                OnPolicyDistillationCallback)
+from utils.helpers import ( 
                            set_seed,
-                           make_multi_wrapper_vec_env,
-                           make_openspiel_env, 
-                           make_bsuite_env,
-                           make_carl_env,
-                           make_highway_env)
+)
 from env.wrappers import (CategoricalDummyVecEnv,
-                          MiniGridCategoricalObservationWrapper,
-                          MiniGridOneHotObservationWrapper,
-                          MiniGridIndexCategoricalObservationWrapper,
-                          FlatObsWrapperWithDirection)
-from env.ocatari import MIXED_ATARI_ENVS
+                          MiniGridCategoricalObservationWrapper)
+
 from env.minigrid import register_minigrid_tests
-from minigrid.wrappers import FullyObsWrapper, FlatObsWrapper
+from minigrid.wrappers import FlatObsWrapper
 
 warnings.filterwarnings("ignore")
 
@@ -55,7 +44,6 @@ from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
-from algos.ppo_selfplay import PPO_GBRL_SelfPlay, PPO_SelfPlay
 from algos.sac import SAC_GBRL
 from config.args import parse_args, process_logging, process_policy_kwargs
 
@@ -72,9 +60,6 @@ if __name__ == '__main__':
             callback_list.append(OnPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
         elif args.algo_type in OFF_POLICY_ALGOS:
             callback_list.append(OffPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
-    if args.compress and args.compress_kwargs:
-        args.compress_kwargs['capacity'] = int(args.compress_kwargs['capacity'] / args.num_envs)
-        callback_list.append(ActorCriticCompressionCallback(args.compress_kwargs, args.compress_kwargs.get('compress_verbose', 0)))
         
     tensorboard_log = process_logging(args, callback_list)
     env, eval_env = None, None
@@ -86,9 +71,8 @@ if __name__ == '__main__':
     scenario_name = 'MiniGrid-SpuriousFetch-8x8-N3-v'
 
     register_minigrid_tests()
-    wrapper_class = MiniGridIndexCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else MiniGridOneHotObservationWrapper
+    wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
     vec_env_cls= CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-    # vec_env_kwargs = {'is_mixed': True}
     env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
      
     if args.wrapper == 'normalize':

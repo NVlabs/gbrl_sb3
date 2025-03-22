@@ -9,13 +9,12 @@ wandb==0.16.0
 # torch>=2.0.
 # gymnasium_robotics==1.2.4
 mujoco-py==2.1.2.14
-networkx==3.4.2
 minigrid==2.3.1
 gymnasium[atari]==0.29.1
 gymnasium[accept-rom-license]==0.29.1
 gymnasium[box2d]==0.29.1
 gymnasium[mujoco]==0.29.1
-opencv-python==4.7.0.72
+opencv-python>=4.8.1.78
 tensorboard==2.15.1
 # --index-url https://test.pypi.org/simple/
 # --extra-index-url https://pypi.org/simple/

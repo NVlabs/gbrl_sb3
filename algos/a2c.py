@@ -10,7 +10,7 @@ import io
 import pathlib
 import sys
 import time
-from typing import (Any, ClassVar, Dict, Iterable, Optional, Type, TypeVar,
+from typing import (Any, Dict, Iterable, Optional, TypeVar,
                     Union)
 
 import numpy as np
@@ -20,8 +20,7 @@ from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.distributions import DiagGaussianDistribution
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
-                                                   Schedule)
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback
 from stable_baselines3.common.utils import (explained_variance, get_linear_fn,
                                             obs_as_tensor, safe_mean, update_learning_rate, get_schedule_fn)
 from stable_baselines3.common.vec_env import VecEnv
@@ -103,15 +102,17 @@ class A2C_GBRL(OnPolicyAlgorithm):
         self.normalize_advantage = normalize_advantage
         self.max_policy_grad_norm = max_policy_grad_norm
         self.max_value_grad_norm = max_value_grad_norm
-        num_rollouts = total_n_steps / (n_steps  * env.num_envs)
+        num_rollouts = total_n_steps / (n_steps * env.num_envs)
         total_num_updates = num_rollouts
         assert 'tree_optimizer' in policy_kwargs, "tree_optimizer must be a dictionary within policy_kwargs"
-        assert 'gbrl_params' in policy_kwargs['tree_optimizer'], "gbrl_params must be a dictionary within policy_kwargs['tree_optimizer]"
+        assert 'params' in policy_kwargs['tree_optimizer'], \
+            "params must be a dictionary within policy_kwargs['tree_optimizer]"
         policy_kwargs['tree_optimizer']['policy_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
         self.fixed_std = fixed_std
-        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'is_categorical') and env.is_categorical) 
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'is_categorical') and
+                                                                         env.is_categorical)
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         if is_categorical:
             policy_kwargs['is_categorical'] = True
@@ -120,14 +121,14 @@ class A2C_GBRL(OnPolicyAlgorithm):
 
         if isinstance(log_std_lr, str):
             if 'lin_' in log_std_lr:
-                log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
+                log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_', '')), min_log_std_lr, 1)
             else:
                 log_std_lr = float(log_std_lr)
         policy_kwargs['log_std_schedule'] = get_schedule_fn(log_std_lr)
         super().__init__(
             ActorCriticPolicy,
             env,
-            learning_rate=learning_rate, #does nothing for categorical output spaces
+            learning_rate=learning_rate,  # does nothing for categorical output spaces
             n_steps=n_steps,
             gamma=gamma,
             gae_lambda=gae_lambda,
@@ -153,15 +154,15 @@ class A2C_GBRL(OnPolicyAlgorithm):
         # Update optimizer inside the policy if we want to use RMSProp
         # (original implementation) rather than Adam
 
-        self.rollout_buffer_class =RolloutBuffer
+        self.rollout_buffer_class = RolloutBuffer
         self.rollout_buffer_kwargs = {}
         if is_categorical or is_mixed:
-            self.rollout_buffer_class = CategoricalRolloutBuffer 
+            self.rollout_buffer_class = CategoricalRolloutBuffer
             self.rollout_buffer_kwargs['is_mixed'] = is_mixed
-        
+
         if _init_setup_model:
             self.a2c_setup_model()
-    
+
     def a2c_setup_model(self) -> None:
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
@@ -184,8 +185,6 @@ class A2C_GBRL(OnPolicyAlgorithm):
         # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
 
-
-
     def train(self) -> None:
         """
         Update policy using the currently gathered
@@ -196,7 +195,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
 
         # Update optimizer learning rate
         if isinstance(self.policy.action_dist, DiagGaussianDistribution):
-            update_learning_rate(self.policy.log_std_optimizer, self.policy.log_std_schedule(self._current_progress_remaining))
+            update_learning_rate(self.policy.log_std_optimizer,
+                                 self.policy.log_std_schedule(self._current_progress_remaining))
 
         policy_losses, value_losses, entropy_losses = [], [], []
         log_std_s = []
@@ -239,13 +239,14 @@ class A2C_GBRL(OnPolicyAlgorithm):
             policy_losses.append(policy_loss.item())
             value_losses.append(value_loss.item())
 
-            self.policy.step(rollout_data.observations, self.max_policy_grad_norm, self.max_value_grad_norm)
+            self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
             params, grads = self.policy.model.get_params()
             theta_grad, values_grad = grads
             theta = params[0]
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                 if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
-                    th.nn.utils.clip_grad_norm(self.policy.log_std, max_norm=self.max_policy_grad_norm, error_if_nonfinite=True)
+                    th.nn.utils.clip_grad_norm_(self.policy.log_std, max_norm=self.max_policy_grad_norm,
+                                                error_if_nonfinite=True)
                 self.policy.log_std_optimizer.step()
                 log_std_grad = self.policy.log_std.grad.clone().detach().cpu().numpy()
                 self.policy.log_std_optimizer.zero_grad()
@@ -264,14 +265,15 @@ class A2C_GBRL(OnPolicyAlgorithm):
             theta_grad_maxs.append(theta_grad.max().item())
             theta_grad_mins.append(theta_grad.min().item())
 
-        explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+        explained_var = explained_variance(self.rollout_buffer.values.flatten(),
+                                           self.rollout_buffer.returns.flatten())
 
         self._n_updates += 1
-        
+
         iteration = self.policy.model.get_iteration()
         num_trees = self.policy.model.get_num_trees()
         value_iteration = 0
-        
+
         if isinstance(iteration, tuple):
             iteration, value_iteration = iteration
         value_num_trees = 0
@@ -379,7 +381,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
                     and infos[idx].get("terminal_observation") is not None
                     and infos[idx].get("TimeLimit.truncated", False)
                 ):
-                    terminal_obs = infos[idx]["terminal_observation"] if self.is_categorical else self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    terminal_obs = infos[idx]["terminal_observation"] if self.is_categorical else \
+                        self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
                     rewards[idx] += self.gamma * terminal_value
@@ -397,14 +400,14 @@ class A2C_GBRL(OnPolicyAlgorithm):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.predict_values(new_obs, requires_grad=False)  # type: ignore[arg-type] if self.is_categorical else self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
+            values = self.policy.predict_values(new_obs, requires_grad=False)
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 
         return True
-    
+
     def learn(
         self: SelfA2C,
         total_timesteps: int,
@@ -414,7 +417,7 @@ class A2C_GBRL(OnPolicyAlgorithm):
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ) -> SelfA2C:
-        
+
         iteration = 0
         total_timesteps, callback = self._setup_learn(
             total_timesteps,
@@ -426,7 +429,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
         callback.on_training_start(locals(), globals())
         assert self.env is not None
         while self.num_timesteps < total_timesteps:
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                      n_rollout_steps=self.n_steps)
 
             if continue_training is False:
                 break
@@ -441,8 +445,10 @@ class A2C_GBRL(OnPolicyAlgorithm):
                 fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
                 self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in
+                                       self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in
+                                       self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
@@ -453,10 +459,10 @@ class A2C_GBRL(OnPolicyAlgorithm):
         callback.on_training_end()
 
         return self
-    
+
     def save(self,
-        path: Union[str, pathlib.Path, io.BufferedIOBase],
-        exclude: Optional[Iterable[str]] = None,
-        include: Optional[Iterable[str]] = None,
-    ) -> None:
+             path: Union[str, pathlib.Path, io.BufferedIOBase],
+             exclude: Optional[Iterable[str]] = None,
+             include: Optional[Iterable[str]] = None,
+             ) -> None:
         self.policy.model.save_model(path)

@@ -19,18 +19,16 @@ import warnings
 from stable_baselines3.common.callbacks import (
     CallbackList, CheckpointCallback)
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import (DummyVecEnv,
-                                              VecNormalize)
+from stable_baselines3.common.vec_env import (VecNormalize)
 
-from callback.callbacks import (ActorCriticCompressionCallback,
+from callback.callbacks import (
                                 OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
-                                StopTrainingOnNoImprovementInTraining,
-                                MultiEvalWithObsCallback,
                                 NoisyEvalCallback)
 from utils.helpers import set_seed
 
-from utils.helpers import make_eval_carl_env
+
+
 
 warnings.filterwarnings("ignore")
 
@@ -43,7 +41,6 @@ from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
-from algos.ppo_selfplay import PPO_GBRL_SelfPlay, PPO_SelfPlay
 from algos.sac import SAC_GBRL
 from config.args import parse_args, process_logging, process_policy_kwargs
 
@@ -60,10 +57,7 @@ if __name__ == '__main__':
             callback_list.append(OnPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
         elif args.algo_type in OFF_POLICY_ALGOS:
             callback_list.append(OffPolicyDistillationCallback(args.distil_kwargs, args.distil_kwargs.get('distil_verbose', 0)))
-    if args.compress and args.compress_kwargs:
-        args.compress_kwargs['capacity'] = int(args.compress_kwargs['capacity'] / args.num_envs)
-        callback_list.append(ActorCriticCompressionCallback(args.compress_kwargs, args.compress_kwargs.get('compress_verbose', 0)))
-        
+
     tensorboard_log = process_logging(args, callback_list)
     env, eval_env = None, None
     if args.env_kwargs is None:

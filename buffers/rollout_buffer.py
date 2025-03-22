@@ -6,19 +6,16 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from typing import (Any, Callable, Dict, Generator, List, NamedTuple, Optional,
-                    OrderedDict, Type, Union)
+from typing import Generator, NamedTuple, Optional, Union
 
-import gymnasium as gym
 import numpy as np
 import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.buffers import BaseBuffer, RolloutBuffer
-from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
-                                                   Schedule)
 from stable_baselines3.common.vec_env import VecNormalize
 
-from env.wrappers import categorical_dtype
+from gbrl.common.utils import categorical_dtype
+
 
 class CategoricalRolloutBufferSamples(NamedTuple):
     observations: np.ndarray
@@ -27,6 +24,8 @@ class CategoricalRolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
+
+
 class MaskableCategoricalRolloutBufferSamples(NamedTuple):
     observations: np.ndarray
     actions: th.Tensor
@@ -36,6 +35,7 @@ class MaskableCategoricalRolloutBufferSamples(NamedTuple):
     returns: th.Tensor
     action_masks: th.Tensor
 
+
 class MaskableRolloutBufferSamples(NamedTuple):
     observations: th.Tensor
     actions: th.Tensor
@@ -44,6 +44,7 @@ class MaskableRolloutBufferSamples(NamedTuple):
     advantages: th.Tensor
     returns: th.Tensor
     action_masks: th.Tensor
+
 
 class CategoricalRolloutBuffer(BaseBuffer):
     """
@@ -94,10 +95,10 @@ class CategoricalRolloutBuffer(BaseBuffer):
         self.generator_ready = False
         self.is_mixed = is_mixed
         self.reset()
-        
 
     def reset(self) -> None:
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if self.is_mixed else categorical_dtype)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape),
+                                     dtype=object if self.is_mixed else categorical_dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -210,9 +211,8 @@ class CategoricalRolloutBuffer(BaseBuffer):
 
         start_idx = 0
         while start_idx < self.buffer_size * self.n_envs:
-            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            yield self._get_samples(indices[start_idx:start_idx + batch_size])
             start_idx += batch_size
-
 
     def categorical_to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
         """
@@ -247,7 +247,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
         )
         return CategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 
-    
+
 class MaskableCategoricalRolloutBuffer(CategoricalRolloutBuffer):
     """
     Rollout buffer that also stores the invalid action masks associated with each observation.
@@ -331,7 +331,7 @@ class MaskableCategoricalRolloutBuffer(CategoricalRolloutBuffer):
 
         start_idx = 0
         while start_idx < self.buffer_size * self.n_envs:
-            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            yield self._get_samples(indices[start_idx:start_idx + batch_size])
             start_idx += batch_size
 
     def _get_samples(
@@ -427,7 +427,7 @@ class MaskableRolloutBuffer(RolloutBuffer):
 
         start_idx = 0
         while start_idx < self.buffer_size * self.n_envs:
-            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            yield self._get_samples(indices[start_idx:start_idx + batch_size])
             start_idx += batch_size
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> MaskableRolloutBufferSamples:
@@ -441,4 +441,3 @@ class MaskableRolloutBuffer(RolloutBuffer):
             self.action_masks[batch_inds].reshape(-1, self.mask_dims),
         )
         return MaskableRolloutBufferSamples(*map(self.to_torch, data))
-

@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import gymnasium as gym
 import numpy as np
 import torch as th
-from gbrl.ac_gbrl import ActorCritic, ParametricActor
+from gbrl.models.actor import ParametricActor
+from gbrl.models.actor_critic import ActorCritic
 from gymnasium import spaces
 from sb3_contrib.common.maskable.distributions import (
     MaskableCategoricalDistribution, make_masked_proba_distribution)
@@ -72,7 +73,7 @@ class ActorCriticPolicy(BasePolicy):
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
         lr_schedule: Schedule,
-        tree_struct: Dict = None, 
+        tree_struct: Dict = None,
         tree_optimizer: Dict = None,
         net_arch: Optional[List[Union[int, Dict[str, List[int]]]]] = None,
         activation_fn: Type[nn.Module] = nn.Tanh,
@@ -122,7 +123,8 @@ class ActorCriticPolicy(BasePolicy):
         self.is_categorical = is_categorical
         self.distribution = None
         self.nn_critic = nn_critic
-        assert (nn_critic and not shared_tree_struct) or (not nn_critic), "Cannot use shared tree structure with NN critic"
+        assert (nn_critic and not shared_tree_struct) or (not nn_critic), \
+            "Cannot use shared tree structure with NN critic"
         self.shared_tree_struct = shared_tree_struct
         self.value_net = None
 
@@ -141,36 +143,38 @@ class ActorCriticPolicy(BasePolicy):
         self.log_std_init = log_std_init
         self.log_std_optimizer = None
         self.use_masking = use_masking
-        
+
         # Action distribution
         if use_masking:
-             self.action_dist = make_masked_proba_distribution(action_space)
+            self.action_dist = make_masked_proba_distribution(action_space)
         else:
-            self.action_dist = SquashedDiagGaussianDistribution(get_action_dim(action_space)) if isinstance(action_space, spaces.Box) and squash else make_proba_distribution(action_space)  
+            self.action_dist = SquashedDiagGaussianDistribution(get_action_dim(action_space)) \
+                if isinstance(action_space, spaces.Box) and squash else make_proba_distribution(action_space)
         self._build(tree_struct, tree_optimizer, lr_schedule, log_std_schedule)
-    
-    def _build(self, tree_struct: Dict, tree_optimizer: Dict, lr_schedule: Schedule, log_std_schedule: Schedule) -> None:
-        """
 
-        """ 
+    def _build(self, tree_struct: Dict, tree_optimizer: Dict, lr_schedule: Schedule,
+               log_std_schedule: Schedule) -> None:
+
         policy_optimizer = tree_optimizer['policy_optimizer']
         policy_optimizer['start_idx'] = 0
         policy_optimizer['stop_idx'] = self.logits_dim
         value_optimizer = tree_optimizer.get('value_optimizer', None)
-        if  value_optimizer is not None:
+        if value_optimizer is not None:
             value_start_idx = self.logits_dim if self.shared_tree_struct else 0
             value_optimizer['start_idx'] = value_start_idx
             value_optimizer['stop_idx'] = value_start_idx + 1
         else:
             policy_optimizer['stop_idx'] = self.logits_dim + 1
 
-        if isinstance(self.action_dist, DiagGaussianDistribution) or isinstance(self.action_dist, SquashedDiagGaussianDistribution) :
+        if isinstance(self.action_dist, DiagGaussianDistribution) or isinstance(self.action_dist,
+                                                                                SquashedDiagGaussianDistribution):
             self.log_std = nn.Parameter(th.ones(self.action_dist.action_dim) * self.log_std_init, requires_grad=True)
             assert log_std_schedule is not None, "log_std_schedule is None"
             self.log_std_optimizer = th.optim.Adam([self.log_std], lr=log_std_schedule(1))
-        
+
         if self.nn_critic:
             self.value_net = nn.Sequential(*create_mlp(input_dim=self.features_dim,
+<<<<<<< HEAD
                                         output_dim=1,
                                         net_arch=self.net_arch,
                                         activation_fn=self.activation_fn,
@@ -192,9 +196,33 @@ class ActorCriticPolicy(BasePolicy):
                             value_optimizer=value_optimizer,
                             gbrl_params=tree_optimizer['gbrl_params'],
                             device=tree_optimizer.get('device', 'cpu'))
+=======
+                                           output_dim=1,
+                                           net_arch=self.net_arch,
+                                           activation_fn=self.activation_fn)
+                                           ).to(self.device)
+            self.model = ParametricActor(tree_struct=tree_struct,
+                                         input_dim=self.features_dim,
+                                         output_dim=self.logits_dim,
+                                         policy_optimizer=policy_optimizer,
+                                         params=tree_optimizer['params'],
+                                         device=tree_optimizer.get('device', 'cpu'))
+            # Setup optimizer with initial learning rate
+            self.value_optimizer = self.optimizer_class(self.value_net.parameters(),
+                                                        lr=lr_schedule(1), **self.optimizer_kwargs)
+        else:
+            self.model = ActorCritic(tree_struct=tree_struct,
+                                     input_dim=self.features_dim,
+                                     output_dim=self.logits_dim + 1,
+                                     shared_tree_struct=self.shared_tree_struct,
+                                     policy_optimizer=policy_optimizer,
+                                     value_optimizer=value_optimizer,
+                                     params=tree_optimizer['params'],
+                                     device=tree_optimizer.get('device', 'cpu'))
+>>>>>>> master
 
-    def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False, 
-                requires_grad: bool=False, action_masks: Optional[np.ndarray] = None,
+    def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False,
+                requires_grad: bool = False, action_masks: Optional[np.ndarray] = None,
                 stop_idx: int = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
@@ -211,7 +239,8 @@ class ActorCriticPolicy(BasePolicy):
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
 
-    def _get_action_dist_from_obs(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True, stop_idx: int = None) -> Distribution:
+    def _get_action_dist_from_obs(self, obs: Union[th.Tensor, np.ndarray],
+                                  requires_grad: bool = True, stop_idx: int = None) -> Distribution:
         """
         Retrieve action distribution given the latent codes.
 
@@ -241,7 +270,7 @@ class ActorCriticPolicy(BasePolicy):
             # return self.action_dist.proba_distribution(mean_actions, self.log_std, mean_actions)
         else:
             raise ValueError("Invalid action distribution")
-        
+
     def get_schedule_learning_rates(self):
         lrs = self.model.get_schedule_learning_rates()
         # lrs is a numpy array for each optimizer
@@ -254,8 +283,9 @@ class ActorCriticPolicy(BasePolicy):
         else:
             policy_lr, value_lr = lrs
         return policy_lr, value_lr
-    
-    def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False, action_masks: Optional[np.ndarray] = None, requires_grad: bool = False) -> th.Tensor:
+
+    def _predict(self, observation: Union[th.Tensor, np.ndarray], deterministic: bool = False,
+                 action_masks: Optional[np.ndarray] = None, requires_grad: bool = False) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
 
@@ -263,7 +293,8 @@ class ActorCriticPolicy(BasePolicy):
         :param deterministic: Whether to use stochastic or deterministic actions
         :return: Taken action according to the policy
         """
-        return self.get_distribution(obs=observation, action_masks=action_masks, requires_grad=requires_grad).get_actions(deterministic=deterministic)
+        return self.get_distribution(obs=observation, action_masks=action_masks,
+                                     requires_grad=requires_grad).get_actions(deterministic=deterministic)
 
     def predict(
         self,
@@ -313,7 +344,8 @@ class ActorCriticPolicy(BasePolicy):
 
         return actions, state
 
-    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor, requires_grad: bool=True, action_masks: Optional[np.ndarray] = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor, requires_grad: bool = True,
+                         action_masks: Optional[np.ndarray] = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
         given the observations.
@@ -326,12 +358,13 @@ class ActorCriticPolicy(BasePolicy):
         # Preprocess the observation if needed
         distribution, values = self._get_action_dist_from_obs(obs, requires_grad=requires_grad)
         if action_masks is not None:
-             distribution.apply_masking(action_masks)
+            distribution.apply_masking(action_masks)
         log_prob = distribution.log_prob(actions)
         self.distribution = distribution
         return values, log_prob, distribution.entropy()
-    
-    def get_distribution(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = False, action_masks: Optional[np.ndarray] = None) -> Distribution:
+
+    def get_distribution(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = False,
+                         action_masks: Optional[np.ndarray] = None) -> Distribution:
         """
         Get the current policy distribution given the observations.
 
@@ -340,19 +373,20 @@ class ActorCriticPolicy(BasePolicy):
         """
         distribution, _ = self._get_action_dist_from_obs(obs, requires_grad=requires_grad)
         if action_masks is not None:
-             distribution.apply_masking(action_masks)
+            distribution.apply_masking(action_masks)
         return distribution
 
     def get_iteration(self):
         return self.model.get_iteration()
-    
+
     def get_total_iterations(self):
         return self.model.get_total_iterations()
 
     def get_num_trees(self):
         return self.model.get_num_trees()
-    
-    def predict_values(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True, stop_idx: int = None) -> th.Tensor:
+
+    def predict_values(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True,
+                       stop_idx: int = None) -> th.Tensor:
         """
         Get the estimated values according to the current policy given the observations.
 
@@ -370,19 +404,22 @@ class ActorCriticPolicy(BasePolicy):
 
     def get_params(self):
         return self.model.get_params()
-    
-    def step(self, observations: Union[np.array, th.Tensor], policy_grad_clip: float=None, value_grad_clip: float=None) -> None:
+
+    def step(self, observations: Optional[Union[np.array, th.Tensor]] = None, policy_grad_clip: float = None,
+             value_grad_clip: float = None) -> None:
         if self.nn_critic:
             self.value_optimizer.step()
-            return self.model.step(observations, policy_grad_clip)
-        return self.model.step(observations, policy_grad_clip, value_grad_clip)
-    
-    def actor_step(self, obs: Union[th.Tensor, np.ndarray], policy_grad_clip: float=None) -> None:
-        self.model.actor_step(obs, policy_grad_clip)
+            return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip)
+        return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
+                               value_grad_clip=value_grad_clip)
 
-    def critic_step(self, obs: Union[th.Tensor, np.ndarray], value_grad_clip : float=None) -> None:
-        self.model.critic_step(obs, value_grad_clip)
-    
+    def actor_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
+                   policy_grad_clip: float = None) -> None:
+        self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip)
+
+    def critic_step(self, observations: Optional[Union[th.Tensor, np.ndarray]],
+                    value_grad_clip: float = None) -> None:
+        self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip)
+
     def update_learning_rate(self, policy_learning_rate, value_learning_rate):
         self.model.adjust_learning_rates(policy_learning_rate, value_learning_rate)
-    

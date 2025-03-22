@@ -9,18 +9,22 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Callable, Dict, Union
+from typing import Callable, Union
 
 import yaml
 from torch.nn import ReLU, Tanh
 from torch.optim import SGD, Adam
+from wandb.integration.sb3 import WandbCallback
 
-str2Opt = {'adam': Adam, 'sgd': SGD}
-str2Activation = {'relu': ReLU, 'tanh': Tanh}
 import wandb
 from utils.helpers import convert_clip_range
 
+str2Opt = {'adam': Adam, 'sgd': SGD}
+str2Activation = {'relu': ReLU, 'tanh': Tanh}
+
+
 ROOT_PATH = Path(__file__).parent
+
 
 def get_value(x):
     if isinstance(x, dict):
@@ -54,6 +58,7 @@ def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float
 
     return func
 
+
 def preprocess_lr(lr: Union[str, float]) -> Union[float, Callable[[float], float]]:
     """Pre-process learning rate
 
@@ -71,9 +76,10 @@ def preprocess_lr(lr: Union[str, float]) -> Union[float, Callable[[float], float
         return float(lr)
     return lr
 
+
 def json_string_to_list(json_string):
     """Convert a JSON string to a List."""
-    if json_string is None or json_string.lower() in ('null','none'):
+    if json_string is None or json_string.lower() in ('null', 'none'):
         return None
     try:
         # Parse the JSON string into a Python list
@@ -84,24 +90,24 @@ def json_string_to_list(json_string):
         return loaded_list
     except json.JSONDecodeError as e:
         raise argparse.ArgumentTypeError(f"Invalid JSON format for list. Error: {e}")
-    
+
+
 def json_string_to_dict(json_string):
     """Convert a JSON string to a dictionary."""
-    if json_string is None or json_string.lower() in ('null','none'):
+    if json_string is None or json_string.lower() in ('null', 'none'):
         return None
     try:
         loaded_dict = json.loads(json_string)
-        for key in loaded_dict: 
+        for key in loaded_dict:
             loaded_dict[key] = get_value(loaded_dict[key])
         return loaded_dict
     except json.JSONDecodeError:
         raise argparse.ArgumentTypeError('Invalid JSON format for dictionary.')
 
-from wandb.integration.sb3 import WandbCallback
 
 def str2tuple(input_str: str) -> tuple:
     """
-    Safely converts a string representing a tuple into an actual tuple 
+    Safely converts a string representing a tuple into an actual tuple
     using manual parsing (no eval).
 
     Parameters:
@@ -121,10 +127,11 @@ def str2tuple(input_str: str) -> tuple:
     except ValueError as e:
         raise ValueError(f"Invalid tuple string: {input_str}. Ensure all elements are valid floats.") from e
 
+
 def str2bool(v):
     if isinstance(v, bool):
-       return v
-    if v.lower() in ('null','none'):
+        return v
+    if v.lower() in ('null', 'none'):
         return None
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
         return True
@@ -134,18 +141,22 @@ def str2bool(v):
         # raise argparse.ArgumentTypeError('Boolean value expected.')
         return v
 
+
 def load_yaml_defaults(yaml_file: str = None):
     if yaml_file is None:
         yaml_file = ROOT_PATH / 'defaults.yaml'
     with open(yaml_file, 'r') as file:
         return yaml.safe_load(file)
-    
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
-    parser.add_argument('--env_type', type=str, choices=['atari', 'ocatari', 'minigrid', 'robotics', 'gym', 'mujoco', 'football', 'symswap','openspiel', 'bsuite', 'highway', 'carl','equation', 'sepsis']) 
-    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn']) 
-    parser.add_argument('--env_name', type=str)  
+    parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
+                                                         'football', 'equation'])
+    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl',
+                                                          'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn'])
+    parser.add_argument('--env_name', type=str)
     # env args
     parser.add_argument('--seed', type=int)
     parser.add_argument('--verbose', type=int)
@@ -157,14 +168,14 @@ def parse_args():
     parser.add_argument('--evaluate', type=str2bool)
     parser.add_argument('--env_kwargs', type=json_string_to_dict)
     parser.add_argument('--eval_kwargs', type=json_string_to_dict)
-    parser.add_argument('--no_improvement_kwargs', type=json_string_to_dict) # training no improvement callback
+    parser.add_argument('--no_improvement_kwargs', type=json_string_to_dict)  # training no improvement callback
     parser.add_argument('--wrapper', type=str)
     parser.add_argument('--wrapper_kwargs', type=json_string_to_dict)
     parser.add_argument('--neurosymbolic_kwargs', type=json_string_to_dict)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
-    
-    # logging args   
-    parser.add_argument('--wandb', type=str2bool) 
+
+    # logging args
+    parser.add_argument('--wandb', type=str2bool)
     parser.add_argument('--run_name', type=str, help='name of run')
     parser.add_argument('--group_name', type=str, help='wandb group name')
     parser.add_argument('--project', type=str)
@@ -181,7 +192,7 @@ def parse_args():
     parser.add_argument('--gae_lambda', type=float)
     parser.add_argument('--target_kl', type=float)
     parser.add_argument('--log_std_init', type=float)
-    parser.add_argument('--squash', type=float) # squash continuous actions using tanh
+    parser.add_argument('--squash', type=float)  # squash continuous actions using tanh
     parser.add_argument('--nn_critic', type=str2bool)
     # NN parameters
     parser.add_argument('--learning_rate', type=str)
@@ -189,7 +200,7 @@ def parse_args():
     parser.add_argument('--max_grad_norm', type=float)
     parser.add_argument('--sde_sample_freq', type=int)
     parser.add_argument('--stats_window_size', type=int)
-    ## A2C NN
+    # A2C NN
     parser.add_argument('--use_rms_prop', type=str2bool)
     parser.add_argument('--rms_prop_eps', type=float)
     # PPO_GBRL params
@@ -208,10 +219,10 @@ def parse_args():
     parser.add_argument('--value_beta_2', type=float)
     parser.add_argument('--value_eps', type=float)
     parser.add_argument('--value_shrinkage', type=float)
-   
+
     parser.add_argument('--log_std_lr', type=str)
     parser.add_argument('--min_log_std_lr', type=float)
-    
+
     parser.add_argument('--max_value_grad_norm', type=float)
     parser.add_argument('--max_policy_grad_norm', type=float)
     parser.add_argument('--vf_coef', type=float)
@@ -220,7 +231,7 @@ def parse_args():
     parser.add_argument('--log_std_grad_clip', type=float)
     parser.add_argument('--fixed_std', type=str2bool)
     parser.add_argument('--policy_bound_loss_weight', type=float)
-    #SAC GBRL Params
+    # SAC GBRL Params
     parser.add_argument('--mu_algo', type=str)
     parser.add_argument('--std_algo', type=str)
     parser.add_argument('--weights_algo', type=str)
@@ -314,7 +325,7 @@ def parse_args():
     parser.add_argument('--compress_capacity', type=int)
     parser.add_argument('--compress_optimizer_lr', type=float)
     parser.add_argument('--compress_optimizer_kwargs', type=json_string_to_dict)
-    # callback 
+    # callback
     parser.add_argument('--callback_kwargs', type=json_string_to_dict)
     # self play
     parser.add_argument('--rollouts_player', type=int)
@@ -326,69 +337,12 @@ def parse_args():
 
     return get_defaults(args, defaults)
 
+
 def get_defaults(args, defaults):
     # Set hardcoded defaults
-    # args.env_type = args.env_type if args.env_type else 'ocatari'
-    # args.env_type = args.env_type if args.env_type else 'carl'
-    # args.env_type = args.env_type if args.env_type else 'sepsis'
-    # args.env_type = args.env_type if args.env_type else 'extrapolation'
-    # args.env_type = args.env_type if args.env_type else 'minigrid'
-    # args.env_type = args.env_type if args.env_type else 'robotics'
-    # args.env_type = args.env_type if args.env_type else 'chain'
-    # args.env_type = args.env_type if args.env_type else 'warehouse_sorting'
-    # args.env_type = args.env_type if args.env_type else 'pipeline_opt'
-    # args.env_type = args.env_type if args.env_type else 'bank'
-    # args.env_type = args.env_type if args.env_type else 'matrix_inv'
-    # args.env_type = args.env_type if args.env_type else 'football'
-    # args.env_type = args.env_type if args.env_type else 'openspiel'
-    # args.env_type = args.env_type if args.env_type else 'openspiel'
-    # args.env_type = args.env_type if args.env_type else 'highway'
-    # args.env_type = args.env_type if args.env_type else 'bsuite'
     args.env_type = args.env_type if args.env_type else 'gym'
-    # args.env_type = args.env_type if args.env_type else 'gym'
-    # args.algo_type = args.algo_type if args.algo_type else 'sac_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'a2c_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
-    # args.algo_type = args.algo_type if args.algo_type else 'awr_gbrl'
-    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-
-    # args.env_name = args.env_name if args.env_name else 'Pong-v4'
-    args.env_name = args.env_name if args.env_name else 'MountainCarContinuous-v0'
-    # args.env_name = args.env_name if args.env_name else 'CartPole-v1'
-    # args.env_name = args.env_name if args.env_name else 'Gopher-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'SpaceInvaders-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'highway-v0'
-    # args.env_name = args.env_name if args.env_name else 'discounting_chain'
-    # args.env_name = args.env_name if args.env_name else 'connect_four'
-    # args.env_name = args.env_name if args.env_name else 'Pong-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'Tennis-ramNoFrameskip-v4'
-    # args.env_name = args.env_name if args.env_name else 'CARLCartPole'
-    # args.env_name = args.env_name if args.env_name else 'CARLMountainCar'
-    # args.env_name = args.env_name if args.env_name else 'Extrapolation-Continuous-train'
-    # args.env_name = args.env_name if args.env_name else 'Extrapolation-Continuous-train'
-    # args.env_name = args.env_name if args.env_name else 'Sepsis/ICU-Sepsis-v2'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-rank-v3'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-RedBlueDoors-6x6-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-SpuriousFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'academy_single_goal_versus_lazy'
-    # args.env_name = args.env_name if args.env_name else 'BabyAI-OpenDoorsOrderN2-v0'
-    # args.env_name = args.env_name if args.env_name else 'PointMaze_Medium_Diverse_GRDense-v3'
-    # args.env_name = args.env_name if args.env_name else 'PointMaze_Large_Diverse_GRDense-v3'
-    # args.env_name = args.env_name if args.env_name else 'StrLinearEquation-v0'
-    # args.env_name = args.env_name if args.env_name else 'Compare-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-OODFetch-8x8-N3-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-SpuriousFetch-8x8-N3-v3'
-    # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v0'
-    # args.env_name = args.env_name if args.env_name else 'SymSwap-v0'
-    # args.env_name = args.env_name if args.env_name else 'Pendulum-v1'
-    # args.env_name = args.env_name if args.env_name else 'academy_empty_goal'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-DistanceFetch-8x8-N3-Categorical-v0'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.env_name = args.env_name if args.env_name else 'CartPole-v1'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
     args.verbose = args.verbose if args.verbose is not None else defaults['env']['verbose']
@@ -401,11 +355,13 @@ def get_defaults(args, defaults):
     args.wrapper = args.wrapper if args.wrapper is not None else defaults['env']['wrapper']
     args.env_kwargs = args.env_kwargs if args.env_kwargs is not None else defaults['env']['env_kwargs']
     args.eval_kwargs = args.eval_kwargs if args.eval_kwargs else defaults['env']['eval_kwargs']
-    args.no_improvement_kwargs = args.no_improvement_kwargs if args.no_improvement_kwargs else defaults['env'].get('no_improvement_kwargs', None)
+    args.no_improvement_kwargs = args.no_improvement_kwargs if args.no_improvement_kwargs else \
+        defaults['env'].get('no_improvement_kwargs', None)
     # Wrapper kwargs
     if args.wrapper == 'normalize' and args.wrapper_kwargs is None:
         args.wrapper_kwargs = defaults[args.algo_type]['wrapper_kwargs']
-    args.atari_wrapper_kwargs = args.atari_wrapper_kwargs if args.atari_wrapper_kwargs else defaults[args.algo_type]['atari_wrapper_kwargs']
+    args.atari_wrapper_kwargs = args.atari_wrapper_kwargs if args.atari_wrapper_kwargs else \
+        defaults[args.algo_type]['atari_wrapper_kwargs']
     # Logging defaults
     args.wandb = args.wandb if args.wandb is not None else False
     args.run_name = args.run_name if args.run_name is not None else defaults['logging']['run_name']
@@ -414,7 +370,8 @@ def get_defaults(args, defaults):
     args.entity = args.entity if args.entity is not None else defaults['logging']['entity']
     # Algorithm specific defaults
     algo_defaults = defaults.get(args.algo_type, {})
-    args.normalize_advantage = args.normalize_advantage if args.normalize_advantage is not None else algo_defaults.get('normalize_advantage', False)
+    args.normalize_advantage = args.normalize_advantage if args.normalize_advantage is not None else \
+        algo_defaults.get('normalize_advantage', False)
     args.n_epochs = args.n_epochs if args.n_epochs is not None else algo_defaults.get('n_epochs', 10)
     args.n_steps = args.n_steps if args.n_steps is not None else algo_defaults.get('n_steps', 512)
     args.ent_coef = args.ent_coef if args.ent_coef is not None else algo_defaults.get('ent_coef', 0.01)
@@ -426,139 +383,177 @@ def get_defaults(args, defaults):
     args.squash = args.squash if args.squash is not None else algo_defaults.get('squash', False)
     args.nn_critic = args.nn_critic if args.nn_critic is not None else algo_defaults.get('nn_critic', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
-    args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else algo_defaults.get('clip_range', 0.2)
-    args.clip_range_vf = convert_clip_range(args.clip_range_vf) if args.clip_range_vf is not None else algo_defaults.get('clip_range_vf', 0.2)
-    args.max_policy_grad_norm = args.max_policy_grad_norm if args.max_policy_grad_norm is not None else algo_defaults.get('max_policy_grad_norm', 150.0)
-    args.max_value_grad_norm = args.max_value_grad_norm if args.max_value_grad_norm is not None else algo_defaults.get('max_value_grad_norm', 100.0)
+    args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else \
+        algo_defaults.get('clip_range', 0.2)
+    args.clip_range_vf = convert_clip_range(args.clip_range_vf) if args.clip_range_vf is not None else \
+        algo_defaults.get('clip_range_vf', 0.2)
+    args.max_policy_grad_norm = args.max_policy_grad_norm if args.max_policy_grad_norm is not None else \
+        algo_defaults.get('max_policy_grad_norm', 150.0)
+    args.max_value_grad_norm = args.max_value_grad_norm if args.max_value_grad_norm is not None else \
+        algo_defaults.get('max_value_grad_norm', 100.0)
     args.fixed_std = args.fixed_std if args.fixed_std is not None else algo_defaults.get('fixed_std', False)
-    args.policy_bound_loss_weight = args.policy_bound_loss_weight if args.policy_bound_loss_weight is not None else algo_defaults.get('policy_bound_loss_weight', None)
-    args.min_log_std_lr = args.min_log_std_lr if args.min_log_std_lr is not None else algo_defaults.get('min_log_std_lr', 1.e-6)
+    args.policy_bound_loss_weight = args.policy_bound_loss_weight if args.policy_bound_loss_weight is not None else \
+        algo_defaults.get('policy_bound_loss_weight', None)
+    args.min_log_std_lr = args.min_log_std_lr if args.min_log_std_lr is not None else \
+        algo_defaults.get('min_log_std_lr', 1.e-6)
     args.log_std_lr = args.log_std_lr if args.log_std_lr is not None else algo_defaults.get('log_std_lr', 1.e-2)
     args.buffer_size = args.buffer_size if args.buffer_size is not None else algo_defaults.get('buffer_size', 1000000)
     args.train_freq = args.train_freq if args.train_freq is not None else algo_defaults.get('train_freq', 1)
-    args.learning_starts = args.learning_starts if args.learning_starts is not None else algo_defaults.get('learning_starts', 10000)
-    args.gradient_steps = args.gradient_steps if args.gradient_steps is not None else algo_defaults.get('gradient_steps', 50)
+    args.learning_starts = args.learning_starts if args.learning_starts is not None else \
+        algo_defaults.get('learning_starts', 10000)
+    args.gradient_steps = args.gradient_steps if args.gradient_steps is not None else \
+        algo_defaults.get('gradient_steps', 50)
     args.beta = args.beta if args.beta is not None else algo_defaults.get('beta', 1.0)
-    args.policy_gradient_steps = args.policy_gradient_steps if args.policy_gradient_steps is not None else algo_defaults.get('policy_gradient_steps', 1000)
-    args.value_gradient_steps = args.value_gradient_steps if args.value_gradient_steps is not None else algo_defaults.get('value_gradient_steps', 200)
+    args.policy_gradient_steps = args.policy_gradient_steps if args.policy_gradient_steps is not None else \
+        algo_defaults.get('policy_gradient_steps', 1000)
+    args.value_gradient_steps = args.value_gradient_steps if args.value_gradient_steps is not None else \
+        algo_defaults.get('value_gradient_steps', 200)
     args.weights_max = args.weights_max if args.weights_max is not None else algo_defaults.get('weights_max', 20)
-    args.value_batch_size = args.value_batch_size if args.value_batch_size is not None else algo_defaults.get('value_batch_size', 8192)
+    args.value_batch_size = args.value_batch_size if args.value_batch_size is not None else \
+        algo_defaults.get('value_batch_size', 8192)
     args.reward_mode = args.reward_mode if args.reward_mode is not None else algo_defaults.get('reward_mode', 'gae')
     args.tau = args.tau if args.tau is not None else algo_defaults.get('tau', 0.005)
     # NN Params
-    args.learning_rate = preprocess_lr(args.learning_rate if args.learning_rate is not None else algo_defaults.get('learning_rate', 1.e-2))
-    args.actor_learning_rate = preprocess_lr(args.actor_learning_rate if args.actor_learning_rate is not None else algo_defaults.get('actor_learning_rate', 1.e-2))
-    args.critic_learning_rate = preprocess_lr(args.critic_learning_rate if args.critic_learning_rate is not None else algo_defaults.get('critic_learning_rate', 1.e-2))
+    args.learning_rate = preprocess_lr(args.learning_rate if args.learning_rate is not None else
+                                       algo_defaults.get('learning_rate', 1.e-2))
+    args.actor_learning_rate = preprocess_lr(args.actor_learning_rate if
+                                             args.actor_learning_rate is not None else
+                                             algo_defaults.get('actor_learning_rate', 1.e-2))
+    args.critic_learning_rate = preprocess_lr(args.critic_learning_rate if
+                                              args.critic_learning_rate is not None else
+                                              algo_defaults.get('critic_learning_rate', 1.e-2))
     args.use_sde = args.use_sde if args.use_sde is not None else algo_defaults.get('use_sde', False)
-    args.max_grad_norm = args.max_grad_norm if args.max_grad_norm is not None else algo_defaults.get('max_grad_norm', 0.5)
-    args.sde_sample_freq = args.sde_sample_freq if args.sde_sample_freq is not None else algo_defaults.get('sde_sample_freq', -1)
-    args.stats_window_size = args.stats_window_size if args.stats_window_size is not None else algo_defaults.get('stats_window_size', 100)
-    args.use_rms_prop = args.use_rms_prop if args.use_rms_prop is not None else algo_defaults.get('use_rms_prop', False)
-    args.rms_prop_eps = args.rms_prop_eps if args.rms_prop_eps is not None else algo_defaults.get('rms_prop_eps', 1.0e-5)
+    args.max_grad_norm = args.max_grad_norm if args.max_grad_norm is not None else \
+        algo_defaults.get('max_grad_norm', 0.5)
+    args.sde_sample_freq = args.sde_sample_freq if args.sde_sample_freq is not None \
+        else algo_defaults.get('sde_sample_freq', -1)
+    args.stats_window_size = args.stats_window_size if args.stats_window_size is not None \
+        else algo_defaults.get('stats_window_size', 100)
+    args.use_rms_prop = args.use_rms_prop if args.use_rms_prop is not None else \
+        algo_defaults.get('use_rms_prop', False)
+    args.rms_prop_eps = args.rms_prop_eps if args.rms_prop_eps is not None else \
+        algo_defaults.get('rms_prop_eps', 1.0e-5)
     # Optimizer Params
     tree_optimizer_defaults = defaults['tree_optimizer']
-    args.policy_algo = args.policy_algo if args.policy_algo is not None else tree_optimizer_defaults['policy_optimizer']['algo']
-    args.policy_lr = args.policy_lr if args.policy_lr is not None else tree_optimizer_defaults['policy_optimizer']['lr']
-    args.policy_beta_1 = args.policy_beta_1 if args.policy_beta_1 is not None else tree_optimizer_defaults['policy_optimizer'].get('beta_1', 0.9)
-    args.policy_beta_2 = args.policy_beta_2 if args.policy_beta_2 is not None else tree_optimizer_defaults['policy_optimizer'].get('beta_2', 0.999)
-    args.policy_eps = args.policy_eps if args.policy_eps is not None else tree_optimizer_defaults['policy_optimizer'].get('eps', 1.0e-5)
-    args.value_algo = args.value_algo if args.value_algo is not None else tree_optimizer_defaults['value_optimizer']['algo']
+    args.policy_algo = args.policy_algo if args.policy_algo is not None else \
+        tree_optimizer_defaults['policy_optimizer']['algo']
+    args.policy_lr = args.policy_lr if args.policy_lr is not None else \
+        tree_optimizer_defaults['policy_optimizer']['lr']
+    args.policy_beta_1 = args.policy_beta_1 if args.policy_beta_1 is not None else \
+        tree_optimizer_defaults['policy_optimizer'].get('beta_1', 0.9)
+    args.policy_beta_2 = args.policy_beta_2 if args.policy_beta_2 is not None else \
+        tree_optimizer_defaults['policy_optimizer'].get('beta_2', 0.999)
+    args.policy_eps = args.policy_eps if args.policy_eps is not None else \
+        tree_optimizer_defaults['policy_optimizer'].get('eps', 1.0e-5)
+    args.value_algo = args.value_algo if args.value_algo is not None else \
+        tree_optimizer_defaults['value_optimizer']['algo']
     args.value_lr = args.value_lr if args.value_lr is not None else tree_optimizer_defaults['value_optimizer']['lr']
-    args.value_beta_1 = args.value_beta_1 if args.value_beta_1 is not None else tree_optimizer_defaults['value_optimizer'].get('beta_1', 0.9)
-    args.value_beta_2 = args.value_beta_2 if args.value_beta_2 is not None else tree_optimizer_defaults['value_optimizer'].get('beta_2', 0.999)
-    args.value_eps = args.value_eps if args.value_eps is not None else tree_optimizer_defaults['value_optimizer'].get('eps', 1.0e-5)
+    args.value_beta_1 = args.value_beta_1 if args.value_beta_1 is not None else \
+        tree_optimizer_defaults['value_optimizer'].get('beta_1', 0.9)
+    args.value_beta_2 = args.value_beta_2 if args.value_beta_2 is not None else \
+        tree_optimizer_defaults['value_optimizer'].get('beta_2', 0.999)
+    args.value_eps = args.value_eps if args.value_eps is not None else \
+        tree_optimizer_defaults['value_optimizer'].get('eps', 1.0e-5)
     args.mu_algo = args.mu_algo if args.mu_algo is not None else tree_optimizer_defaults['mu_optimizer']['algo']
     args.mu_lr = args.mu_lr if args.mu_lr is not None else tree_optimizer_defaults['mu_optimizer']['lr']
-    args.mu_beta_1 = args.mu_beta_1 if args.mu_beta_1 is not None else tree_optimizer_defaults['mu_optimizer'].get('beta_1', 0.9)
-    args.mu_beta_2 = args.mu_beta_2 if args.mu_beta_2 is not None else tree_optimizer_defaults['mu_optimizer'].get('beta_2', 0.999)
+    args.mu_beta_1 = args.mu_beta_1 if args.mu_beta_1 is not None else \
+        tree_optimizer_defaults['mu_optimizer'].get('beta_1', 0.9)
+    args.mu_beta_2 = args.mu_beta_2 if args.mu_beta_2 is not None else \
+        tree_optimizer_defaults['mu_optimizer'].get('beta_2', 0.999)
     args.mu_eps = args.mu_eps if args.mu_eps is not None else tree_optimizer_defaults['mu_optimizer'].get('eps', 1.0e-5)
     args.std_algo = args.std_algo if args.std_algo is not None else tree_optimizer_defaults['std_optimizer']['algo']
     args.std_lr = args.std_lr if args.std_lr is not None else tree_optimizer_defaults['std_optimizer']['lr']
-    args.std_beta_1 = args.std_beta_1 if args.std_beta_1 is not None else tree_optimizer_defaults['std_optimizer'].get('beta_1', 0.9)
-    args.std_beta_2 = args.std_beta_2 if args.std_beta_2 is not None else tree_optimizer_defaults['std_optimizer'].get('beta_2', 0.999)
-    args.std_eps = args.std_eps if args.std_eps is not None else tree_optimizer_defaults['std_optimizer'].get('eps', 1.0e-5)
-    args.weights_algo = args.weights_algo if args.weights_algo is not None else tree_optimizer_defaults['weights_optimizer']['algo']
-    args.weights_lr = args.weights_lr if args.weights_lr is not None else tree_optimizer_defaults['weights_optimizer']['lr']
-    args.weights_beta_1 = args.weights_beta_1 if args.weights_beta_1 is not None else tree_optimizer_defaults['weights_optimizer'].get('beta_1', 0.9)
-    args.weights_beta_2 = args.weights_beta_2 if args.weights_beta_2 is not None else tree_optimizer_defaults['weights_optimizer'].get('beta_2', 0.999)
-    args.weights_eps = args.weights_eps if args.weights_eps is not None else tree_optimizer_defaults['weights_optimizer'].get('eps', 1.0e-5)
-    args.bias_algo = args.bias_algo if args.bias_algo is not None else tree_optimizer_defaults['bias_optimizer']['algo']
+    args.std_beta_1 = args.std_beta_1 if args.std_beta_1 is not None else \
+        tree_optimizer_defaults['std_optimizer'].get('beta_1', 0.9)
+    args.std_beta_2 = args.std_beta_2 if args.std_beta_2 is not None else \
+        tree_optimizer_defaults['std_optimizer'].get('beta_2', 0.999)
+    args.std_eps = args.std_eps if args.std_eps is not None else \
+        tree_optimizer_defaults['std_optimizer'].get('eps', 1.0e-5)
+    args.weights_algo = args.weights_algo if args.weights_algo is not None else \
+        tree_optimizer_defaults['weights_optimizer']['algo']
+    args.weights_lr = args.weights_lr if args.weights_lr is not None else \
+        tree_optimizer_defaults['weights_optimizer']['lr']
+    args.weights_beta_1 = args.weights_beta_1 if args.weights_beta_1 is not None else \
+        tree_optimizer_defaults['weights_optimizer'].get('beta_1', 0.9)
+    args.weights_beta_2 = args.weights_beta_2 if args.weights_beta_2 is not None else \
+        tree_optimizer_defaults['weights_optimizer'].get('beta_2', 0.999)
+    args.weights_eps = args.weights_eps if args.weights_eps is not None else \
+        tree_optimizer_defaults['weights_optimizer'].get('eps', 1.0e-5)
+    args.bias_algo = args.bias_algo if args.bias_algo is not None else \
+        tree_optimizer_defaults['bias_optimizer']['algo']
     args.bias_lr = args.bias_lr if args.bias_lr is not None else tree_optimizer_defaults['bias_optimizer']['lr']
-    args.bias_beta_1 = args.bias_beta_1 if args.bias_beta_1 is not None else tree_optimizer_defaults['bias_optimizer'].get('beta_1', 0.9)
-    args.bias_beta_2 = args.bias_beta_2 if args.bias_beta_2 is not None else tree_optimizer_defaults['bias_optimizer'].get('beta_2', 0.999)
-    args.bias_eps = args.bias_eps if args.bias_eps is not None else tree_optimizer_defaults['bias_optimizer'].get('eps', 1.0e-5)
-    args.critic_algo = args.critic_algo if args.critic_algo is not None else tree_optimizer_defaults['critic_optimizer']['algo']
-    args.critic_lr = args.critic_lr if args.critic_lr is not None else tree_optimizer_defaults['critic_optimizer']['lr']
-    args.critic_beta_1 = args.critic_beta_1 if args.critic_beta_1 is not None else tree_optimizer_defaults['critic_optimizer'].get('beta_1', 0.9)
-    args.critic_beta_2 = args.critic_beta_2 if args.critic_beta_2 is not None else tree_optimizer_defaults['critic_optimizer'].get('beta_2', 0.999)
-    args.critic_eps = args.critic_eps if args.critic_eps is not None else tree_optimizer_defaults['critic_optimizer'].get('eps', 1.0e-5)
+    args.bias_beta_1 = args.bias_beta_1 if args.bias_beta_1 is not None else \
+        tree_optimizer_defaults['bias_optimizer'].get('beta_1', 0.9)
+    args.bias_beta_2 = args.bias_beta_2 if args.bias_beta_2 is not None else \
+        tree_optimizer_defaults['bias_optimizer'].get('beta_2', 0.999)
+    args.bias_eps = args.bias_eps if args.bias_eps is not None else \
+        tree_optimizer_defaults['bias_optimizer'].get('eps', 1.0e-5)
+    args.critic_algo = args.critic_algo if args.critic_algo is not None else \
+        tree_optimizer_defaults['critic_optimizer']['algo']
+    args.critic_lr = args.critic_lr if args.critic_lr is not None else \
+        tree_optimizer_defaults['critic_optimizer']['lr']
+    args.critic_beta_1 = args.critic_beta_1 if args.critic_beta_1 is not None else \
+        tree_optimizer_defaults['critic_optimizer'].get('beta_1', 0.9)
+    args.critic_beta_2 = args.critic_beta_2 if args.critic_beta_2 is not None else \
+        tree_optimizer_defaults['critic_optimizer'].get('beta_2', 0.999)
+    args.critic_eps = args.critic_eps if args.critic_eps is not None else \
+        tree_optimizer_defaults['critic_optimizer'].get('eps', 1.0e-5)
     # Tree struct params
     tree_struct_defaults = defaults['tree_struct']
     args.max_depth = args.max_depth if args.max_depth is not None else tree_struct_defaults['max_depth']
     args.n_bins = args.n_bins if args.n_bins is not None else tree_struct_defaults['n_bins']
-    args.min_data_in_leaf = args.min_data_in_leaf if args.min_data_in_leaf is not None else tree_struct_defaults['min_data_in_leaf']
+    args.min_data_in_leaf = args.min_data_in_leaf if args.min_data_in_leaf is not None \
+        else tree_struct_defaults['min_data_in_leaf']
     args.par_th = args.par_th if args.par_th is not None else tree_struct_defaults['par_th']
-    args.grow_policy = args.grow_policy if args.grow_policy is not None else tree_struct_defaults['grow_policy']                     
+    args.grow_policy = args.grow_policy if args.grow_policy is not None else \
+        tree_struct_defaults['grow_policy']
     # GBRL Params
-    gbrl_param_defaults = defaults['gbrl_params']  
-    args.control_variates = args.control_variates if args.control_variates is not None else gbrl_param_defaults['control_variates']                     
-    args.split_score_func = args.split_score_func if args.split_score_func is not None else gbrl_param_defaults['split_score_func']                     
-    args.generator_type = args.generator_type if args.generator_type is not None else gbrl_param_defaults['generator_type']                     
-    args.shared_tree_struct = args.shared_tree_struct if args.shared_tree_struct is not None else gbrl_param_defaults['shared_tree_struct']                          
-    args.feature_weights = args.feature_weights if args.feature_weights is not None else gbrl_param_defaults['feature_weights']                          
+    gbrl_param_defaults = defaults['params']
+    args.control_variates = args.control_variates if args.control_variates is not None else \
+        gbrl_param_defaults['control_variates']
+    args.split_score_func = args.split_score_func if args.split_score_func is not None else \
+        gbrl_param_defaults['split_score_func']
+    args.generator_type = args.generator_type if args.generator_type is not None else \
+        gbrl_param_defaults['generator_type']
+    args.shared_tree_struct = args.shared_tree_struct if args.shared_tree_struct is not None else \
+        gbrl_param_defaults['shared_tree_struct']
+    args.feature_weights = args.feature_weights if args.feature_weights is not None else \
+        gbrl_param_defaults['feature_weights']
     # SAC GBRL Params
     sac_gbrl_defaults = defaults.get('sac_gbrl', {})
     args.ent_lr = args.ent_lr if args.ent_lr is not None else sac_gbrl_defaults.get('ent_lr', 1.0e-3)
     args.n_critics = args.n_critics if args.n_critics is not None else sac_gbrl_defaults.get('n_critics', 1)
-    args.target_update_interval = args.target_update_interval if args.target_update_interval is not None else sac_gbrl_defaults.get('target_update_interval', 100)
-    args.max_q_grad_norm = args.max_q_grad_norm if args.max_q_grad_norm is not None else sac_gbrl_defaults.get('max_q_grad_norm', 0.0)
-    args.target_entropy = args.target_entropy if args.target_entropy is not None else sac_gbrl_defaults.get('target_entropy', "auto")
-    args.q_func_type = args.q_func_type if args.q_func_type is not None else sac_gbrl_defaults.get('q_func_type', 'linear')
+    args.target_update_interval = args.target_update_interval if args.target_update_interval is not None else \
+        sac_gbrl_defaults.get('target_update_interval', 100)
+    args.max_q_grad_norm = args.max_q_grad_norm if args.max_q_grad_norm is not None else \
+        sac_gbrl_defaults.get('max_q_grad_norm', 0.0)
+    args.target_entropy = args.target_entropy if args.target_entropy is not None else \
+        sac_gbrl_defaults.get('target_entropy', "auto")
+    args.q_func_type = args.q_func_type if args.q_func_type is not None else \
+        sac_gbrl_defaults.get('q_func_type', 'linear')
     # DQN Params
     dqn_gbrl_defaults = defaults.get('dqn_gbrl', {})
-    args.exploration_fraction = args.exploration_fraction if args.exploration_fraction is not None else dqn_gbrl_defaults.get('exploration_fraction', 0.1)
-    args.exploration_initial_eps = args.exploration_initial_eps if args.exploration_initial_eps is not None else dqn_gbrl_defaults.get('exploration_initial_eps', 1.0)
-    args.exploration_final_eps = args.exploration_final_eps if args.exploration_final_eps is not None else dqn_gbrl_defaults.get('exploration_final_eps', 0.05)
-    args.normalize_q_grads = args.normalize_q_grads if args.normalize_q_grads is not None else dqn_gbrl_defaults.get('normalize_q_grads', False)
+    args.exploration_fraction = args.exploration_fraction if args.exploration_fraction is not None else \
+        dqn_gbrl_defaults.get('exploration_fraction', 0.1)
+    args.exploration_initial_eps = args.exploration_initial_eps if args.exploration_initial_eps is not None else \
+        dqn_gbrl_defaults.get('exploration_initial_eps', 1.0)
+    args.exploration_final_eps = args.exploration_final_eps if args.exploration_final_eps is not None else \
+        dqn_gbrl_defaults.get('exploration_final_eps', 0.05)
+    args.normalize_q_grads = args.normalize_q_grads if args.normalize_q_grads is not None else \
+        dqn_gbrl_defaults.get('normalize_q_grads', False)
     # Saving params
     args.save_every = args.save_every if args.save_every is not None else defaults['save']['save_every']
     args.save_name = args.save_name if args.save_name is not None else defaults['save']['save_name']
     args.save_path = args.save_path if args.save_path is not None else defaults['save']['save_path']
     args.specific_seed = args.specific_seed if args.specific_seed is not None else defaults['save']['specific_seed']
-    
+
     # Distillation Params
     args.distil = args.distil if args.distil is not None else defaults['distillation']['distil']
-    args.distil_kwargs = args.distil_kwargs if args.distil_kwargs is not None else defaults['distillation']['distil_kwargs']
+    args.distil_kwargs = args.distil_kwargs if args.distil_kwargs is not None else \
+        defaults['distillation']['distil_kwargs']
     # Distillation/Compression Params
-    args.compress = args.compress if args.compress is not None else defaults['compression']['compress']
-    args.compress_kwargs = args.compress_kwargs if args.compress_kwargs is not None else defaults['compression']['compress_kwargs']
-    if args.compress_max_steps:
-        args.compress_kwargs['max_steps'] = args.compress_max_steps
-    if args.compress_trees_to_keep:
-        args.compress_kwargs['trees_to_keep'] = args.compress_trees_to_keep
-    if args.compress_method:
-        args.compress_kwargs['method'] = args.compress_method
-    if args.compress_gradient_steps:
-        args.compress_kwargs['gradient_steps'] = args.compress_gradient_steps
-    if args.compress_policy_only:
-        args.compress_kwargs['policy_only'] = args.compress_policy_only
-    if args.compress_least_squares_W:
-        args.compress_kwargs['least_squares_W'] = args.compress_least_squares_W
-    if args.compress_use_W:
-        args.compress_kwargs['use_W'] = args.compress_use_W
-    if args.compress_temperature:
-        args.compress_kwargs['temperature'] = args.compress_temperature
-    if args.compress_lambda_reg:
-        args.compress_kwargs['lambda_reg'] = args.compress_lambda_reg
-    if args.compress_capacity:
-        args.compress_kwargs['capacity'] = args.compress_capacity
-    if args.compress_optimizer_kwargs:
-        args.compress_kwargs['optimizer_kwargs'] = args.compress_optimizer_kwargs
-        if args.compress_optimizer_lr:
-            args.compress_kwargs['optimizer_kwargs']['lr'] = args.compress_optimizer_lr
-    # self play parameters
-    args.rollouts_player = args.rollouts_player if args.rollouts_player is not None else defaults['self_play']['rollouts_player']
     return args
+
 
 def process_logging(args, callback_list):
     if not args.wandb:
@@ -568,16 +563,18 @@ def process_logging(args, callback_list):
 
     print(f'args.wand: {args.wandb}')
     # run_name = args.project
-    run = wandb.init(project=args.project, group=None if args.group_name is None else args.group_name + '_' + args.algo_type + '_' + args.env_type + '_' + args.env_name,
-                     name=args.run_name + '_' + args.algo_type + '_' + args.env_type + '_' + args.env_name + '_seed_' + str(args.seed), mode="online",
-                     config=args.__dict__, entity=args.entity, monitor_gym=True, sync_tensorboard=True, save_code=False
-                    )
+    wandb.init(project=args.project, group=None if args.group_name is None else
+               args.group_name + '_' + args.algo_type + '_' + args.env_type + '_' + args.env_name,
+               name=args.run_name + '_' + args.algo_type + '_' + args.env_type + '_' +
+               args.env_name + '_seed_' + str(args.seed), mode="online",
+               config=args.__dict__, entity=args.entity, monitor_gym=True, sync_tensorboard=True,
+               save_code=False)
 
     callback_list.append(WandbCallback(
-    gradient_save_freq=0,
-    model_save_path=None,
-    verbose=1)
-)
+                         gradient_save_freq=0,
+                         model_save_path=None,
+                         verbose=1)
+                         )
     tb_name = ''
     if args.group_name is not None:
         tb_name += f'g_{args.group_name}_'
@@ -587,10 +584,11 @@ def process_logging(args, callback_list):
     print('finished setting up wandb')
     return tensorboard_log
 
+
 def process_policy_kwargs(args):
     algo_kwargs = {}
     if args.algo_type == 'ppo_gbrl':
-        algo_kwargs = { 
+        algo_kwargs = {
             "clip_range": args.clip_range,
             "clip_range_vf": args.clip_range_vf,
             "normalize_advantage": args.normalize_advantage,
@@ -616,14 +614,14 @@ def process_policy_kwargs(args):
                     "min_data_in_leaf": args.min_data_in_leaf,
                     "par_th": args.par_th,
                     "grow_policy": args.grow_policy,
-                }, 
+                },
                 "tree_optimizer": {
-                    "gbrl_params": {
+                    "params": {
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
                         "feature_weights": args.feature_weights,
-                    }, 
+                    },
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
                         "policy_lr": args.policy_lr,
@@ -632,7 +630,7 @@ def process_policy_kwargs(args):
                         "policy_beta_2": args.policy_beta_2,
                         "policy_eps": args.policy_eps,
                         "policy_shrinkage": args.policy_shrinkage,
-                    }, 
+                    },
                     "value_optimizer": {
                         "value_algo": args.value_algo,
                         "value_lr": args.value_lr,
@@ -653,7 +651,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'a2c_gbrl':
-        algo_kwargs = { 
+        algo_kwargs = {
             "normalize_advantage": args.normalize_advantage,
             "max_policy_grad_norm": args.max_policy_grad_norm,
             "max_value_grad_norm": args.max_value_grad_norm,
@@ -675,14 +673,14 @@ def process_policy_kwargs(args):
                     "min_data_in_leaf": args.min_data_in_leaf,
                     "par_th": args.par_th,
                     "grow_policy": args.grow_policy,
-                }, 
+                },
                 "tree_optimizer": {
-                    "gbrl_params": {
+                    "params": {
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
                         "feature_weights": args.feature_weights,
-                    }, 
+                    },
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
                         "policy_lr": args.policy_lr,
@@ -691,7 +689,7 @@ def process_policy_kwargs(args):
                         "policy_beta_2": args.policy_beta_2,
                         "policy_eps": args.policy_eps,
                         "policy_shrinkage": args.policy_shrinkage,
-                    }, 
+                    },
                     "value_optimizer": {
                         "value_algo": args.value_algo,
                         "value_lr": args.value_lr,
@@ -725,8 +723,9 @@ def process_policy_kwargs(args):
             "gradient_steps": args.gradient_steps,
             "max_q_grad_norm": args.max_q_grad_norm,
             "max_policy_grad_norm": args.max_policy_grad_norm,
+            "log_std_grad_clip": args.log_std_grad_clip,
             "verbose": args.verbose,
-             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
+            "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "n_critics": args.n_critics,
                 "q_func_type": args.q_func_type,
                 "tree_struct": {
@@ -735,14 +734,14 @@ def process_policy_kwargs(args):
                     "min_data_in_leaf": args.min_data_in_leaf,
                     "par_th": args.par_th,
                     "grow_policy": args.grow_policy,
-                }, 
+                },
                 "tree_optimizer": {
-                    "gbrl_params": {
+                    "params": {
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
                         "feature_weights": args.feature_weights,
-                    }, 
+                    },
                     "actor_optimizer": {
                         "mu_optimizer": {
                             "mu_algo": args.mu_algo,
@@ -751,7 +750,7 @@ def process_policy_kwargs(args):
                             "mu_beta_2": args.mu_beta_2,
                             "mu_eps": args.mu_eps,
                             "mu_shrinkage": args.mu_shrinkage,
-                        }, 
+                        },
                         "std_optimizer": {
                             "std_algo": args.std_algo,
                             "std_lr": args.std_lr,
@@ -759,7 +758,7 @@ def process_policy_kwargs(args):
                             "std_beta_2": args.std_beta_2,
                             "std_eps": args.std_eps,
                             "std_shrinkage": args.std_shrinkage,
-                        }, 
+                        },
                     },
                     "critic_optimizer": {
                         "weights_optimizer": {
@@ -811,14 +810,14 @@ def process_policy_kwargs(args):
                     "min_data_in_leaf": args.min_data_in_leaf,
                     "par_th": args.par_th,
                     "grow_policy": args.grow_policy,
-                }, 
+                },
                 "tree_optimizer": {
-                    "gbrl_params": {
+                    "params": {
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
                         "feature_weights": args.feature_weights,
-                    }, 
+                    },
                     "policy_optimizer": {
                         "policy_algo": args.policy_algo,
                         "policy_lr": args.policy_lr,
@@ -826,7 +825,7 @@ def process_policy_kwargs(args):
                         "policy_beta_2": args.policy_beta_2,
                         "policy_eps": args.policy_eps,
                         "policy_shrinkage": args.policy_shrinkage,
-                    }, 
+                    },
                     "value_optimizer": {
                         "value_algo": args.value_algo,
                         "value_lr": args.value_lr,
@@ -867,14 +866,14 @@ def process_policy_kwargs(args):
                     "min_data_in_leaf": args.min_data_in_leaf,
                     "par_th": args.par_th,
                     "grow_policy": args.grow_policy,
-                }, 
+                },
                 "tree_optimizer": {
-                    "gbrl_params": {
+                    "params": {
                         "split_score_func": args.split_score_func,
                         'control_variates': args.control_variates,
                         "generator_type": args.generator_type,
                         "feature_weights": args.feature_weights,
-                    }, 
+                    },
                     "critic_optimizer": {
                         "algo": args.critic_algo,
                         "lr": args.critic_lr,
@@ -882,7 +881,7 @@ def process_policy_kwargs(args):
                         "beta_2": args.critic_beta_2,
                         "eps": args.critic_eps,
                         "shrinkage": args.critic_shrinkage,
-                    }, 
+                    },
                 },
             },
             "device": args.device,
@@ -890,19 +889,8 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
         }
     elif args.algo_type == 'ppo_nn':
-        from sb3_contrib.ppo_mask import MlpPolicy, CnnPolicy
         from stable_baselines3.common.policies import ActorCriticPolicy
         policy = ActorCriticPolicy
-        if args.env_type in ['openspiel', 'symswap', 'sepsis']:
-            if args.env_name in ['connect_four']: # CNN envs
-                policy = CnnPolicy
-                if args.policy_kwargs is None:
-                    args.policy_kwargs = {} 
-                from env.openspiel import ConnectFourCNN
-                args.policy_kwargs["normalize_images"] = False
-                args.policy_kwargs["features_extractor_class"] = ConnectFourCNN
-            else:
-                policy = MlpPolicy
         algo_kwargs = {
             "policy": policy,
             "learning_rate": args.learning_rate,
@@ -997,7 +985,7 @@ def process_policy_kwargs(args):
             "exploration_initial_eps": args.exploration_initial_eps,
             "exploration_final_eps": args.exploration_final_eps,
             "target_update_interval": args.target_update_interval,
-            "policy_kwargs": args.policy_kwargs, 
+            "policy_kwargs": args.policy_kwargs,
             "device": args.device,
             "seed": args.seed,
             "verbose": args.verbose,
@@ -1012,9 +1000,6 @@ def process_policy_kwargs(args):
         if 'gbrl' in args.algo_type:
             algo_kwargs['use_masking'] = True
     return algo_kwargs
-
-
-
 
 
 if __name__ == '__main__':

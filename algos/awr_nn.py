@@ -6,7 +6,7 @@
 # https://nvlabs.github.io/gbrl_sb3/license.html
 #
 ##############################################################################
-from typing import Any, Dict, List, NamedTuple, Optional, Type, Union
+from typing import Any, Dict, Optional, Type, Union
 
 import numpy as np
 import torch as th
@@ -14,8 +14,7 @@ import torch.nn as nn
 from gymnasium import spaces
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
-from stable_baselines3.common.type_aliases import (GymEnv, Schedule, TrainFreq,
-                                                   TrainFrequencyUnit)
+from stable_baselines3.common.type_aliases import (GymEnv, Schedule)
 from stable_baselines3.common.vec_env import VecNormalize
 from torch.nn import functional as F
 

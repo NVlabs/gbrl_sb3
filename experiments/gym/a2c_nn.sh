@@ -38,8 +38,7 @@ if [ "$ENV_NAME" == "CartPole-v1" ]; then
         --env_name=$ENV_NAME \
         --env_type=gym \
         --num_envs=8 \
-        --total_n_steps=500000 \
-        --policy='MlpPolicy'"
+        --total_n_steps=500000"
 
 elif [ "$ENV_NAME" == "LunarLander-v2" ]; then
     COMMAND="python scripts/train.py --algo_type=a2c_nn \
@@ -51,8 +50,7 @@ elif [ "$ENV_NAME" == "LunarLander-v2" ]; then
         --n_steps=5 \
         --num_envs=8 \
         --total_n_steps=200000 \
-        --learning_rate=lin_0.00083 \
-        --policy='MlpPolicy'"
+        --learning_rate=lin_0.00083"
 
 elif [ "$ENV_NAME" == "MountainCar-v0" ]; then
     COMMAND="python scripts/train.py --algo_type=a2c_nn \
@@ -62,7 +60,6 @@ elif [ "$ENV_NAME" == "MountainCar-v0" ]; then
         --env_type=gym \
         --num_envs=16 \
         --total_n_steps=1000000 \
-        --policy='MlpPolicy' \
         --wrapper=normalize"
 
 elif [ "$ENV_NAME" == "Acrobot-v1" ]; then
@@ -73,7 +70,6 @@ elif [ "$ENV_NAME" == "Acrobot-v1" ]; then
         --env_type=gym \
         --num_envs=16 \
         --total_n_steps=500000 \
-        --policy='MlpPolicy' \
         --wrapper=normalize"
 
 elif [ "$ENV_NAME" == "Pendulum-v1" ]; then
