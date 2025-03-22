@@ -12,3 +12,4 @@ saved_models/
 videos/
 temp/
 results/
+*venv*/

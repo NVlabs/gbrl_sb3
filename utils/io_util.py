@@ -9,17 +9,19 @@
 import io
 import os
 import pathlib
-import zipfile
 import tempfile
 import warnings
-from typing import Any, Dict, Optional, Union, Tuple
+import zipfile
+from typing import Any, Dict, Optional, Tuple, Union
 
 import stable_baselines3 as sb3
 import torch as th
-from stable_baselines3.common.save_util import data_to_json, json_to_data, open_path
-from stable_baselines3.common.utils import get_device, get_system_info
+from gbrl.models.actor import ParametricActor
+from gbrl.models.actor_critic import ActorCritic
+from stable_baselines3.common.save_util import (data_to_json, json_to_data,
+                                                open_path)
 from stable_baselines3.common.type_aliases import TensorDict
-from gbrl.ac_gbrl import ActorCritic, ParametricActor
+from stable_baselines3.common.utils import get_device, get_system_info
 
 
 def save_to_zip_file(
@@ -58,10 +60,11 @@ def save_to_zip_file(
             for file_name, dict_ in params.items():
                 with archive.open(file_name + ".pth", mode="w", force_zip64=True) as param_file:
                     th.save(dict_, param_file)
-                  
+
         if isinstance(save_path, (str, pathlib.Path)) and data.get('gbrl', False):
             if not data['shared_tree_struct'] and not data['nn_critic']:
-                gbrl_files = [(clean_path + '_policy.gbrl_model', 'gbrl_policy.gbrl_model'), (clean_path + '_value.gbrl_model', 'gbrl_value.gbrl_model')]
+                gbrl_files = [(clean_path + '_policy.gbrl_model', 'gbrl_policy.gbrl_model'),
+                              (clean_path + '_value.gbrl_model', 'gbrl_value.gbrl_model')]
                 for gbrl_file, gbrl_model in gbrl_files:
                     with open(gbrl_file, "rb") as gbrl_model_file:
                         archive.writestr(gbrl_model, gbrl_model_file.read())
@@ -71,7 +74,7 @@ def save_to_zip_file(
                 with open(gbrl_file, "rb") as gbrl_model_file:
                     archive.writestr('actor_critic.gbrl_model', gbrl_model_file.read())
                 os.remove(gbrl_file)
-        
+
         # Save metadata: library version when file was saved
         archive.writestr("_stable_baselines3_version", sb3.__version__)
         # Save system info about the current python env
@@ -79,8 +82,6 @@ def save_to_zip_file(
 
     if isinstance(save_path, (str, pathlib.Path)):
         file.close()
-
-
 
 
 def load_from_zip_file(
@@ -178,7 +179,9 @@ def load_from_zip_file(
                 if gbrl_files and data['shared_tree_struct']:
                     gbrl_model = ActorCritic.load_model(os.path.join(temp_dir, gbrl_files[0]), device)
                 elif gbrl_files and not data['shared_tree_struct'] and not data['nn_critic']:
-                    gbrl_model = ActorCritic.load_model(os.path.join(temp_dir, gbrl_files[0].replace('_policy.gbrl_model', '').replace('_value.gbrl_model', '')), device)
+                    gbrl_model = ActorCritic.load_model(
+                        os.path.join(temp_dir, gbrl_files[0].replace('_policy.gbrl_model', '').replace(
+                            '_value.gbrl_model', '')), device)
                 elif gbrl_files and data['nn_critic']:
                     gbrl_model = ParametricActor.load_model(os.path.join(temp_dir, gbrl_files[0]), device)
 

@@ -17,7 +17,7 @@ from stable_baselines3.common.torch_layers import (BaseFeaturesExtractor,
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import is_vectorized_observation
 
-from gbrl.ac_gbrl import DiscreteCritic
+from gbrl.models.critic import DiscreteCritic
 
 
 class DQNPolicy(BasePolicy):
@@ -47,7 +47,7 @@ class DQNPolicy(BasePolicy):
         observation_space: spaces.Space,
         action_space: spaces.Discrete,
         lr_schedule: Schedule,
-        tree_struct: Dict = None, 
+        tree_struct: Dict = None,
         tree_optimizer: Dict = None,
         features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
@@ -71,12 +71,11 @@ class DQNPolicy(BasePolicy):
         bias = np.random.randn(action_space.n) * np.sqrt(2.0 / action_space.n)
         tree_optimizer['critic_optimizer']['start_idx'] = 0
         tree_optimizer['critic_optimizer']['stop_idx'] = action_space.n
-        self.q_model = DiscreteCritic(tree_struct=tree_struct, 
-                            input_dim=features_extractor.features_dim,
-                            output_dim=action_space.n, 
-                            bias=bias,
-                            **tree_optimizer)
-
+        self.q_model = DiscreteCritic(tree_struct=tree_struct,
+                                      input_dim=features_extractor.features_dim,
+                                      output_dim=action_space.n,
+                                      bias=bias,
+                                      **tree_optimizer)
 
     def forward(self, obs: th.Tensor, deterministic: bool = True, requires_grad: bool = False) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic, requires_grad=requires_grad)

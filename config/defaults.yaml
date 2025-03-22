@@ -29,7 +29,7 @@ logging:
   group_name: 'default_group'
   entity: "default_entity"
   desc: "" # run/sweep description for experiment tracking
-gbrl_params:
+params:
   control_variates: False
   split_score_func: "cosine"
   generator_type: "Quantile"

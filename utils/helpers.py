@@ -11,7 +11,6 @@ import random
 from typing import Any, Callable, Dict, List, Optional, Type, Union, Tuple
 from stable_baselines3.common import type_aliases
 
-import gym as old_gym
 import warnings
 import gymnasium as gym
 
@@ -21,12 +20,10 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
-from sb3_contrib.common.wrappers import ActionMasker
 
-from env.wrappers import AtariRamWrapper, CategoricalDummyVecEnv
+from env.wrappers import AtariRamWrapper
 
 
-    
 def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float]:
     """
     Linear learning rate schedule.
@@ -46,6 +43,7 @@ def linear_schedule(initial_value: Union[float, str]) -> Callable[[float], float
         return progress_remaining * initial_value_
 
     return func
+
 
 def convert_clip_range(clip_range: Union[str, int]):
     if clip_range is None:
@@ -285,7 +283,8 @@ def evaluate_policy_and_obs(
     if not is_monitor_wrapped and warn:
         warnings.warn(
             "Evaluation environment is not wrapped with a ``Monitor`` wrapper. "
-            "This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. "
+            "This may result in reporting modified episode lengths and rewards,"
+            "if other wrappers happen to modify these. "
             "Consider wrapping environment first with ``Monitor`` wrapper.",
             UserWarning,
         )
@@ -368,12 +367,11 @@ def evaluate_policy_and_obs(
     mean_reward = np.mean(episode_rewards)
     std_reward = np.std(episode_rewards)
     if reward_threshold is not None:
-        assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
+        assert mean_reward > reward_threshold, \
+            "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
     if return_episode_rewards:
         return episode_rewards, episode_lengths, global_min_obs, global_max_obs
     return mean_reward, std_reward, global_min_obs, global_max_obs
-
-
 
 
 def evaluate_policy_with_noise(
@@ -435,7 +433,8 @@ def evaluate_policy_with_noise(
     if not is_monitor_wrapped and warn:
         warnings.warn(
             "Evaluation environment is not wrapped with a ``Monitor`` wrapper. "
-            "This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. "
+            "This may result in reporting modified episode lengths and rewards,"
+            "if other wrappers happen to modify these. "
             "Consider wrapping environment first with ``Monitor`` wrapper.",
             UserWarning,
         )
@@ -509,7 +508,8 @@ def evaluate_policy_with_noise(
     mean_reward = np.mean(episode_rewards)
     std_reward = np.std(episode_rewards)
     if reward_threshold is not None:
-        assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
+        assert mean_reward > reward_threshold, \
+            "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
     if return_episode_rewards:
         return episode_rewards, episode_lengths
     return mean_reward, std_reward

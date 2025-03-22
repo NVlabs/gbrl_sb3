@@ -18,7 +18,9 @@ from minigrid.minigrid_env import MiniGridEnv
 
 
 class SpuriousFetchEnv(MiniGridEnv):
-    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False, purple_ball: bool = False, purple_box: bool = False, add_red_ball: bool = False, grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
+    def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False,
+                 purple_ball: bool = False, purple_box: bool = False, add_red_ball: bool = False,
+                 grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -37,7 +39,7 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.use_box = use_box
         self.mission_based = mission_based
         self.purple_box = purple_box
-        self.add_red_ball = add_red_ball 
+        self.add_red_ball = add_red_ball
         MISSION_SYNTAX = [
             "get a"
         ]
@@ -48,7 +50,6 @@ class SpuriousFetchEnv(MiniGridEnv):
 
         if max_steps is None:
             max_steps = 5 * self.size**2
-        
 
         super().__init__(
             mission_space=mission_space,
@@ -63,18 +64,18 @@ class SpuriousFetchEnv(MiniGridEnv):
         # self.agent_pov = False
         self.metadata['render_fps'] = 2
         # self.metadata['render_fps'] = 10
-    
+
     def _rand_obj(self):
         """Sample a color with custom probabilities."""
         return np.random.choice([0, 1, 2])
-    
+
     @staticmethod
     def _gen_mission(syntax: str, color: str, obj_type: str):
         return f"{syntax} {color} {obj_type}"
-    
+
     def place_next_to(self, obj, target_obj):
         target_pos = target_obj.cur_pos
-        self.place_obj(obj, top=(target_pos[0]-1, target_pos[1] -1), size=(3, 3))
+        self.place_obj(obj, top=(target_pos[0]-1, target_pos[1] - 1), size=(3, 3))
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -94,6 +95,7 @@ class SpuriousFetchEnv(MiniGridEnv):
         red_pos = self.place_obj(obs_red)
 
         objPos = [red_pos]
+
         def near_obj(env, p1):
             for p2 in objPos:
                 dx = p1[0] - p2[0]
@@ -101,7 +103,7 @@ class SpuriousFetchEnv(MiniGridEnv):
                 if abs(dx) <= 1 and abs(dy) <= 1:
                     return True
             return False
-        
+
         green_pos = self.place_obj(obs_green, reject_fn=near_obj)
         objPos.append(green_pos)
         blue_pos = self.place_obj(obs_blue, reject_fn=near_obj)
@@ -109,7 +111,7 @@ class SpuriousFetchEnv(MiniGridEnv):
         objs = [obs_red, obs_green, obs_blue]
         # Choose a random object to be picked up
         target = objs[target_idx]
-        
+
         if self.use_box:
             box_obj = Box('red') if not self.purple_box else Box('purple')
             if self.randomize:

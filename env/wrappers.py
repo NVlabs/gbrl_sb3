@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, OrderedDict
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
+from gbrl.common.utils import categorical_dtype
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
 from minigrid.wrappers import FullyObsWrapper, ObservationWrapper
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
@@ -41,8 +42,6 @@ def save_rendered_frame(env, frame_number=None):
 IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 MAX_TEXT_LENGTH = 128 - 1
 
-numerical_dtype = np.dtype('float32')
-categorical_dtype = np.dtype('S128')  
 
 class MiniGridCategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
@@ -55,16 +54,21 @@ class MiniGridCategoricalObservationWrapper(ObservationWrapper):
         self.is_mixed = False
         env.is_categorical = True
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
-          
+
     def observation(self, observation):
         # Transform the observation in some way
         categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype if not self.is_mixed else object)
         for i in range(self.image_shape[0]):
             for j in range(self.image_shape[1]):
-                if isinstance(self.env, FullyObsWrapper) and str(IDX_TO_OBJECT[observation['image'][i, j, 0]]) == 'agent':
-                   category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(observation['image'][i, j, 2])}"   
+                if isinstance(self.env, FullyObsWrapper) and \
+                   str(IDX_TO_OBJECT[observation['image'][i, j, 0]]) == 'agent':
+                    category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])}," + \
+                               f"{str(IDX_TO_COLOR[observation['image'][i, j, 1]])}," + \
+                               f"{str(observation['image'][i, j, 2])}"
                 else:
-                    category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])},{str(IDX_TO_COLOR[observation['image'][i, j, 1]])},{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
+                    category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])}," \
+                               f"{str(IDX_TO_COLOR[observation['image'][i, j, 1]])}," \
+                               f"{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
                 categorical_array[i*self.image_shape[1] + j] = category.encode('utf-8')
         categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
         categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
@@ -73,7 +77,8 @@ class MiniGridCategoricalObservationWrapper(ObservationWrapper):
     def reset(self, seed: int = None):
         observation, info = self.env.reset(seed=seed)
         return self.observation(observation), info
-    
+
+
 class MiniGridIndexCategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -82,16 +87,19 @@ class MiniGridIndexCategoricalObservationWrapper(ObservationWrapper):
         self.flattened_shape = self.image_shape[0]*self.image_shape[1]*3 + 2
         env.is_categorical = True
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.flattened_shape, ), dtype=np.float32)
-          
+
     def observation(self, observation):
         # Transform the observation in some way
         n_categories = 3
         categorical_array = np.empty(self.flattened_shape, dtype=categorical_dtype)
         for i in range(self.image_shape[0]):
-            for j in range(self.image_shape[1]): 
-                categorical_array[(i*self.image_shape[1] + j)*n_categories] = str(IDX_TO_OBJECT[observation['image'][i, j, 0]]).encode('utf-8')
-                categorical_array[(i*self.image_shape[1] + j)*n_categories + 1] = str(IDX_TO_COLOR[observation['image'][i, j, 1]]).encode('utf-8')
-                categorical_array[(i*self.image_shape[1] + j)*n_categories + 2] = str(IDX_TO_STATE[observation['image'][i, j, 2]]).encode('utf-8')
+            for j in range(self.image_shape[1]):
+                categorical_array[(i*self.image_shape[1] + j)*n_categories] = str(
+                    IDX_TO_OBJECT[observation['image'][i, j, 0]]).encode('utf-8')
+                categorical_array[(i*self.image_shape[1] + j)*n_categories + 1] = str(
+                    IDX_TO_COLOR[observation['image'][i, j, 1]]).encode('utf-8')
+                categorical_array[(i*self.image_shape[1] + j)*n_categories + 2] = str(
+                    IDX_TO_STATE[observation['image'][i, j, 2]]).encode('utf-8')
 
         categorical_array[-2] = str(observation['direction']).encode('utf-8')
         categorical_array[-1] = observation['mission'].encode('utf-8')
@@ -100,7 +108,8 @@ class MiniGridIndexCategoricalObservationWrapper(ObservationWrapper):
     def reset(self, seed: int = None):
         observation, info = self.env.reset(seed=seed)
         return self.observation(observation), info
-    
+
+
 class CategoricalDummyVecEnv(DummyVecEnv):
     """
     Creates a simple vectorized wrapper for multiple environments, calling each environment in sequence on the current
@@ -132,13 +141,16 @@ class CategoricalDummyVecEnv(DummyVecEnv):
         super().__init__(env_fns)
         obs_space = env.observation_space
         self.keys, shapes, _ = obs_space_info(obs_space)
-        self.is_mixed = is_mixed or(hasattr(env, 'is_mixed') and env.is_mixed) 
+        self.is_mixed = is_mixed or (hasattr(env, 'is_mixed') and env.is_mixed)
         self.is_categorical = True
 
-        self.buf_obs = OrderedDict([(k, np.zeros((self.num_envs, *tuple(shapes[k])), dtype=object if self.is_mixed else categorical_dtype)) for k in self.keys])
+        self.buf_obs = OrderedDict([(k, np.zeros((self.num_envs, *tuple(shapes[k])),
+                                                 dtype=object if self.is_mixed else categorical_dtype)) for
+                                    k in self.keys])
         self.buf_dones = np.zeros((self.num_envs,), dtype=bool)
         self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos: List[Dict[str, Any]] = [{} for _ in range(self.num_envs)]
+
 
 class CategoricalMaxAndSkipEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
     """
@@ -184,7 +196,8 @@ class CategoricalMaxAndSkipEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
         max_frame = self._obs_buffer.max(axis=0)
 
         return max_frame, total_reward, terminated, truncated, info
-    
+
+
 class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
     """
     Atari 2600 preprocessings
@@ -200,7 +213,8 @@ class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
     * Clip reward to {-1, 0, 1}
     * Sticky actions: disabled by default
 
-    See https://danieltakeshi.github.io/2016/11/25/frame-skipping-and-preprocessing-for-deep-q-networks-on-atari-2600-games/
+    See
+    https://danieltakeshi.github.io/2016/11/25/frame-skipping-and-preprocessing-for-deep-q-networks-on-atari-2600-games/
     for a visual explanation.
 
     .. warning::
@@ -231,7 +245,8 @@ class AtariRamWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
             env = NoopResetEnv(env, noop_max=noop_max)
         # frame_skip=1 is the same as no frame-skip (action repeat)
         if frame_skip > 1:
-            env = CategoricalMaxAndSkipEnv(env, skip=frame_skip, wrapper_dtype=object if hasattr(env, 'is_mixed') and env.is_mixed else env.observation_space.dtype)
+            env = CategoricalMaxAndSkipEnv(env, skip=frame_skip, wrapper_dtype=object if hasattr(env, 'is_mixed') and
+                                           env.is_mixed else env.observation_space.dtype)
         if terminal_on_life_loss:
             env = EpisodicLifeEnv(env)
         if "FIRE" in env.unwrapped.get_action_meanings():  # type: ignore[attr-defined]

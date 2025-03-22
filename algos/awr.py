@@ -12,13 +12,13 @@ from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
 import torch as th
-import torch.nn as nn
+
 from gymnasium import spaces
 from stable_baselines3.common.distributions import DiagGaussianDistribution
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv
-from stable_baselines3.common.utils import (get_linear_fn,
-                                            get_schedule_fn, update_learning_rate)
+from stable_baselines3.common.utils import (get_linear_fn, get_schedule_fn,
+                                            update_learning_rate)
 from stable_baselines3.common.vec_env import VecNormalize
 from torch.nn import functional as F
 
@@ -63,10 +63,11 @@ class AWR_GBRL(OffPolicyAlgorithm):
         self.shared_tree_struct = policy_kwargs.get("shared_tree_struct", True)
         if isinstance(log_std_lr, str):
             if 'lin_' in log_std_lr:
-                log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
+                log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_', '')), min_log_std_lr, 1)
             else:
                 log_std_lr = float(log_std_lr)
-        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and
+                                                                         env.categorical)
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         self.is_categorical = is_categorical
         self.is_mixed = is_mixed
@@ -91,40 +92,39 @@ class AWR_GBRL(OffPolicyAlgorithm):
             buffer_kwargs['env'] = env
         if is_mixed:
             buffer_kwargs['is_mixed'] = True
-        
+
         tr_freq = train_freq // env.num_envs
         policy_kwargs['tree_optimizer']['device'] = device
         if isinstance(log_std_lr, str):
             if 'lin_' in log_std_lr:
-                log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_' ,'')), min_log_std_lr, 1) 
+                log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_', '')), min_log_std_lr, 1)
             else:
                 log_std_lr = float(log_std_lr)
         policy_kwargs['log_std_schedule'] = get_schedule_fn(log_std_lr)
         super().__init__(policy=ActorCriticPolicy,
-        env=env,
-        replay_buffer_class=CategoricalAWRReplayBuffer if is_categorical else AWRReplayBuffer,
-        support_multi_env=True,
-        tensorboard_log=tensorboard_log,
-        seed=seed,
-        train_freq = tr_freq,
-        verbose=verbose,
-        device=device,
-        learning_starts=learning_starts,
-        learning_rate=learning_rate,
-        batch_size=batch_size,
-        gradient_steps=gradient_steps,
-        buffer_size=buffer_size,
-        gamma=gamma,
-        policy_kwargs=policy_kwargs,
-        replay_buffer_kwargs=buffer_kwargs,
-        )
+                         env=env,
+                         replay_buffer_class=CategoricalAWRReplayBuffer if is_categorical else AWRReplayBuffer,
+                         support_multi_env=True,
+                         tensorboard_log=tensorboard_log,
+                         seed=seed,
+                         train_freq=tr_freq,
+                         verbose=verbose,
+                         device=device,
+                         learning_starts=learning_starts,
+                         learning_rate=learning_rate,
+                         batch_size=batch_size,
+                         gradient_steps=gradient_steps,
+                         buffer_size=buffer_size,
+                         gamma=gamma,
+                         policy_kwargs=policy_kwargs,
+                         replay_buffer_kwargs=buffer_kwargs,
+                         )
 
         super()._setup_model()
 
         self.bound_min = self.get_action_bound_min()
         self.bound_max = self.get_action_bound_max()
         self.epochs = 0
-
 
     def get_values(self, observations: np.ndarray, next_observations: np.ndarray) -> np.ndarray:
         n_samples, n_envs = observations.shape[0], observations.shape[1]
@@ -137,12 +137,12 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 values[:, env_idx] = torch_values.detach().cpu().numpy().squeeze()
                 next_values[:, env_idx] = torch_next_values.detach().cpu().numpy().squeeze()
             return values, next_values
-            
+
         for env_idx in range(n_envs):
             for i in range(0, n_samples, self.value_batch_size):
                 torch_values = self.policy.critic(observations[i:i+self.value_batch_size, env_idx])
                 torch_next_values = self.policy.critic(next_observations[i:i+self.value_batch_size, env_idx])
-                
+
                 values[i:i+self.value_batch_size, env_idx] = torch_values.detach().cpu().numpy().squeeze()
                 next_values[i:i+self.value_batch_size, env_idx] = torch_next_values.detach().cpu().numpy().squeeze()
         return values, next_values
@@ -160,28 +160,29 @@ class AWR_GBRL(OffPolicyAlgorithm):
         else:
             bound_max = np.inf * np.ones(1)
         return th.tensor(bound_max, device=self.device)
-  
+
     def train(self, gradient_steps: int, batch_size: int) -> None:
         """
         Sample the replay buffer and do the updates
         (gradient descent and update target networks)
         """
-         # Switch to train mode (this affects batch norm / dropout)
+        # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
 
         if isinstance(self.policy.action_dist, DiagGaussianDistribution):
-            update_learning_rate(self.policy.log_std_optimizer, self.policy.log_std_schedule(self._current_progress_remaining))
+            update_learning_rate(self.policy.log_std_optimizer, self.policy.log_std_schedule(
+                self._current_progress_remaining))
 
         if self.shared_tree_struct:
             policy_losses, value_losses, entropy_losses = self.shared_models_train(gradient_steps, batch_size)
-        else: 
+        else:
             policy_losses, value_losses, entropy_losses = self.separate_models_train(batch_size)
 
         self.epochs += 1
         iteration = self.policy.model.get_iteration()
         num_trees = self.policy.model.get_num_trees()
         value_iteration = 0
-        
+
         if isinstance(iteration, tuple):
             iteration, value_iteration = iteration
         value_num_trees = 0
@@ -201,11 +202,12 @@ class AWR_GBRL(OffPolicyAlgorithm):
         self.logger.record("train/policy_num_trees", num_trees)
         self.logger.record("time/total_timesteps", self.num_timesteps)
         self.logger.record("train/value_num_trees", value_num_trees)
-    
+
     def shared_models_train(self, gradient_steps: int, batch_size: int) -> None:
         observations = self.replay_buffer._normalize_obs(self.replay_buffer.observations, self._vec_normalize_env)
-        next_observations = self.replay_buffer._normalize_obs(self.replay_buffer.next_observations, self._vec_normalize_env)
-        
+        next_observations = self.replay_buffer._normalize_obs(self.replay_buffer.next_observations,
+                                                              self._vec_normalize_env)
+
         observations = observations[:self.replay_buffer.valid_pos]
         next_observations = next_observations[:self.replay_buffer.valid_pos]
         values, next_values = self.get_values(observations, next_observations)
@@ -220,7 +222,6 @@ class AWR_GBRL(OffPolicyAlgorithm):
         weights_max, weights_min = [], []
 
         for _ in range(gradient_steps):
-            # replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
             actions = replay_data.actions
             if isinstance(self.action_space, spaces.Discrete):
@@ -245,7 +246,8 @@ class AWR_GBRL(OffPolicyAlgorithm):
             policy_loss = -(log_prob*weights).mean()
             value_loss = 0.5*F.mse_loss(values, replay_data.returns)
 
-            if self.policy_bound_loss_weight is not None and self.policy_bound_loss_weight > 0 and isinstance(self.action_space, spaces.Box):
+            if self.policy_bound_loss_weight is not None and self.policy_bound_loss_weight > 0 and \
+                    isinstance(self.action_space, spaces.Box):
                 val = self.model.distribution.mode()
                 vio_min = th.clamp(val - self.bound_min, max=0)
                 vio_max = th.clamp(val - self.bound_max, min=0)
@@ -253,10 +255,10 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 violation = 0.5 * self.policy_bound_loss_weight * violation.mean*()
                 policy_loss += violation
                 violations.append(violation.item())
-            
+
             loss = (policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss)
             loss.backward()
-    
+
             policy_losses.append(policy_loss.item())
             value_losses.append(value_loss.item())
             entropy_losses.append(entropy_loss.item())
@@ -265,14 +267,15 @@ class AWR_GBRL(OffPolicyAlgorithm):
             params, grads = self.policy.model.get_params()
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                 if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
-                    th.nn.utils.clip_grad_norm(self.policy.log_std, max_norm=self.max_policy_grad_norm, error_if_nonfinite=True)
+                    th.nn.utils.clip_grad_norm_(self.policy.log_std, max_norm=self.max_policy_grad_norm,
+                                                error_if_nonfinite=True)
                 self.policy.log_std_optimizer.step()
                 log_std_grad = self.policy.log_std.grad.clone().detach().cpu().numpy()
                 self.policy.log_std_optimizer.zero_grad()
                 assert ~np.isnan(log_std_grad).any(), "nan in assigned grads"
                 assert ~np.isinf(log_std_grad).any(), "infinity in assigned grads"
                 log_stds.append(self.policy.log_std.detach().cpu().numpy())
-            
+
             theta_grad, values_grad = grads
             theta = params[0]
             values_maxs.append(values.max().item())
@@ -303,10 +306,9 @@ class AWR_GBRL(OffPolicyAlgorithm):
             if hasattr(self.policy, "log_std"):
                 self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
         return policy_losses, value_losses, entropy_losses
-        
 
     def separate_models_train(self, batch_size: int) -> None:
-        env = self.env if isinstance(self.env, VecNormalize) else None 
+        env = self.env if isinstance(self.env, VecNormalize) else None
         observations = self.replay_buffer._normalize_obs(self.replay_buffer.observations, env)
         next_observations = self.replay_buffer._normalize_obs(self.replay_buffer.next_observations, env)
 
@@ -327,13 +329,13 @@ class AWR_GBRL(OffPolicyAlgorithm):
             value_loss.backward()
 
             value_losses.append(value_loss.item())
-            self.policy.critic_step(value_grad_clip=self.max_value_grad_norm )
+            self.policy.critic_step(value_grad_clip=self.max_value_grad_norm)
 
         policy_losses, entropy_losses = [], []
         values, next_values = self.get_values(observations, next_observations)
         if self.replay_buffer.return_type == 'gae':
             self.replay_buffer.add_advantages_returns(values, next_values, env=self._vec_normalize_env)
-        self._n_updates += self.value_gradient_steps 
+        self._n_updates += self.value_gradient_steps
 
         for _ in range(self.policy_gradient_steps):
             # Sample replay buffer
@@ -345,7 +347,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
             advantages = replay_data.advantages
 
             if self.normalize_advantage:
-                adv_mean, adv_std = advantages.mean(), advantages.std() 
+                adv_mean, adv_std = advantages.mean(), advantages.std()
                 advantages = (advantages - adv_mean) / (adv_std + 1e-5)
 
             weights = th.exp(advantages / self.beta)
@@ -359,26 +361,27 @@ class AWR_GBRL(OffPolicyAlgorithm):
             else:
                 entropy_loss = -th.mean(entropy)
 
-            policy_loss = -(log_prob*weights).mean() +  self.ent_coef*entropy_loss 
+            policy_loss = -(log_prob*weights).mean() + self.ent_coef*entropy_loss
 
-            if self.policy_bound_loss_weight is not None and self.policy_bound_loss_weight > 0 and isinstance(self.action_space, spaces.Box):
+            if self.policy_bound_loss_weight is not None and self.policy_bound_loss_weight > 0 and \
+                    isinstance(self.action_space, spaces.Box):
                 val = self.model.distribution.mode()
                 vio_min = th.clamp(val - self.bound_min, max=0)
                 vio_max = th.clamp(val - self.bound_max, min=0)
                 violation = vio_min.pow_(2).sum(axis=-1) + vio_max.pow_(2).sum(axis=-1)
                 violation = 0.5 * self.policy_bound_loss_weight * violation.mean*()
                 policy_loss += violation
-            
+
             policy_loss.backward()
 
-
-            self.policy.actor_step(policy_grad_clip=self.max_policy_grad_norm)    
+            self.policy.actor_step(policy_grad_clip=self.max_policy_grad_norm)
             policy_losses.append(policy_loss.item())
             entropy_losses.append(entropy_loss.item())
 
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                 if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
-                    th.nn.utils.clip_grad_norm(self.policy.log_std, max_norm=self.max_policy_grad_norm, error_if_nonfinite=True)
+                    th.nn.utils.clip_grad_norm_(self.policy.log_std, max_norm=self.max_policy_grad_norm,
+                                                error_if_nonfinite=True)
                 self.policy.log_std_optimizer.step()
                 log_std_grad = self.policy.log_std.grad.clone().detach().cpu().numpy()
                 self.policy.log_std_optimizer.zero_grad()
@@ -388,13 +391,11 @@ class AWR_GBRL(OffPolicyAlgorithm):
 
         self._n_updates += self.policy_gradient_steps
         return policy_losses, value_losses, entropy_losses
-        
-
 
     def learn(
         self,
         total_timesteps: int,
-        callback= None,
+        callback=None,
         log_interval: int = 100,
         tb_log_name: str = "",
         reset_num_timesteps: bool = True,
@@ -408,11 +409,10 @@ class AWR_GBRL(OffPolicyAlgorithm):
             reset_num_timesteps=reset_num_timesteps,
             progress_bar=progress_bar
         )
-    
+
     def save(self,
-        path: Union[str, pathlib.Path, io.BufferedIOBase],
-        exclude: Optional[Iterable[str]] = None,
-        include: Optional[Iterable[str]] = None,
-    ) -> None:
+             path: Union[str, pathlib.Path, io.BufferedIOBase],
+             exclude: Optional[Iterable[str]] = None,
+             include: Optional[Iterable[str]] = None,
+             ) -> None:
         self.policy.model.save_model(path)
-    

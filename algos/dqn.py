@@ -9,11 +9,11 @@
 import io
 import pathlib
 import warnings
-from typing import (Any, Dict, Iterable, Optional, Tuple,
-                    TypeVar, Union)
+from typing import Any, Dict, Iterable, Optional, Tuple, TypeVar, Union
 
 import numpy as np
 import torch as th
+from gbrl.models.critic import DiscreteCritic
 from gymnasium import spaces
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
@@ -23,7 +23,6 @@ from stable_baselines3.common.utils import get_linear_fn
 from torch.nn import functional as F
 
 from buffers.replay_buffer import CategoricalReplayBuffer
-from gbrl.ac_gbrl import DiscreteCritic
 from policies.dqn_policy import DQNPolicy
 
 SelfDQN = TypeVar("SelfDQN", bound="DQN_GBRL")
@@ -115,7 +114,7 @@ class DQN_GBRL(OffPolicyAlgorithm):
         if is_categorical:
             policy_kwargs['is_categorical'] = True
             if is_mixed:
-                if replay_buffer_kwargs is None: 
+                if replay_buffer_kwargs is None:
                     replay_buffer_kwargs = {}
                 replay_buffer_kwargs['is_mixed'] = True
 

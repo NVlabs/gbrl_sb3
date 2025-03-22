@@ -14,7 +14,7 @@ from gymnasium import spaces
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.vec_env import VecNormalize
 
-from env.wrappers import categorical_dtype
+from gbrl.common.utils import categorical_dtype
 
 
 class AWRReplayBufferSamples(NamedTuple):
@@ -26,6 +26,7 @@ class AWRReplayBufferSamples(NamedTuple):
     dones: th.Tensor
     rewards: th.Tensor
 
+
 class CategoricalReplayBufferSamples(NamedTuple):
     observations: np.ndarray
     next_observations: np.ndarray
@@ -33,7 +34,10 @@ class CategoricalReplayBufferSamples(NamedTuple):
     dones: th.Tensor
     rewards: th.Tensor
 
+
 RETURN_TYPES = ['monte-carlo', 'gae']
+
+
 class AWRReplayBuffer(ReplayBuffer):
     """
     Replay buffer used in off-policy algorithms like AWR.
@@ -59,7 +63,7 @@ class AWRReplayBuffer(ReplayBuffer):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
-        gamma: float, 
+        gamma: float,
         gae_lambda: float,
         device: Union[th.device, str] = "auto",
         n_envs: int = 1,
@@ -69,10 +73,11 @@ class AWRReplayBuffer(ReplayBuffer):
         env: Optional[VecNormalize] = None,
     ):
         assert return_type in RETURN_TYPES, f"return_type must be in {RETURN_TYPES}"
-        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs, optimize_memory_usage=False, handle_timeout_termination=True)
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs,
+                         optimize_memory_usage=False, handle_timeout_termination=True)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.gamma = gamma 
+        self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.last_start_pos = np.zeros(self.n_envs, dtype=np.int32)
         self.return_type = return_type
@@ -111,7 +116,8 @@ class AWRReplayBuffer(ReplayBuffer):
         self.dones[self.pos] = np.array(done).copy()
         if self.return_type == 'monte-carlo':
             # monte-carlo returns
-            norm_rewards = self._normalize_reward(reward.reshape(-1, self.n_envs), self.env if isinstance(self.env, VecNormalize) else None)
+            norm_rewards = self._normalize_reward(reward.reshape(-1, self.n_envs), self.env if
+                                                  isinstance(self.env, VecNormalize) else None)
             self.returns[self.pos] = norm_rewards
             for env_id in range(self.n_envs):
                 # Calculate discounted rewards from the last start position to the current position
@@ -129,7 +135,7 @@ class AWRReplayBuffer(ReplayBuffer):
                     remaining_length = self.buffer_size - start_pos
                     wraparound_length = self.pos
                     total_length = wraparound_length + remaining_length
-                    
+
                     disc_rew = (self.gamma ** np.arange(1, total_length + 1))[::-1] * norm_rewards[:, env_id]
                     self.returns[start_pos:, env_id] += disc_rew[:remaining_length]
                     self.returns[:self.pos, env_id] += disc_rew[remaining_length:total_length]
@@ -144,10 +150,10 @@ class AWRReplayBuffer(ReplayBuffer):
             self.full = True
             self.pos = 0
 
-
         self.valid_pos = self.buffer_size if self.full else self.pos
 
-    def add_advantages_returns(self, values: np.array, next_values: np.array, env: Optional[VecNormalize] = None) -> None:
+    def add_advantages_returns(self, values: np.array, next_values: np.array,
+                               env: Optional[VecNormalize] = None) -> None:
         """Compute Lambda return"""
         assert len(values) == self.valid_pos
 
@@ -159,11 +165,10 @@ class AWRReplayBuffer(ReplayBuffer):
         non_terminal = 1.0 - self.dones[:self.valid_pos, :] * (1.0 - self.timeouts[:self.valid_pos, :])
 
         for step in reversed(range(self.valid_pos)):
-            delta = rewards[step] + self.gamma * next_values[step] * non_terminal[step] -values[step]
+            delta = rewards[step] + self.gamma * next_values[step] * non_terminal[step] - values[step]
             last_gae_lam = delta + self.gamma * self.gae_lambda * non_terminal[step] * last_gae_lam
             self.advantages[step] = last_gae_lam
         self.returns = self.advantages + values
-
 
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> AWRReplayBufferSamples:
         """
@@ -210,7 +215,6 @@ class AWRReplayBuffer(ReplayBuffer):
         return AWRReplayBufferSamples(*tuple(map(self.to_torch, data)))
 
 
-
 class CategoricalAWRReplayBuffer(AWRReplayBuffer):
     """
     Replay buffer used in off-policy algorithms like AWR.
@@ -221,7 +225,7 @@ class CategoricalAWRReplayBuffer(AWRReplayBuffer):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
-        gamma: float, 
+        gamma: float,
         gae_lambda: float,
         device: Union[th.device, str] = "auto",
         n_envs: int = 1,
@@ -231,14 +235,18 @@ class CategoricalAWRReplayBuffer(AWRReplayBuffer):
         is_mixed: bool = False,
     ):
         self.is_mixed = is_mixed
-        super().__init__(buffer_size, observation_space, action_space, gamma, gae_lambda, device, n_envs=n_envs, return_type= return_type, optimize_memory_usage=optimize_memory_usage, handle_timeout_termination=handle_timeout_termination)
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
+        super().__init__(buffer_size, observation_space, action_space, gamma, gae_lambda, device,
+                         n_envs=n_envs, return_type=return_type, optimize_memory_usage=optimize_memory_usage,
+                         handle_timeout_termination=handle_timeout_termination)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape),
+                                     dtype=object if is_mixed else categorical_dtype)
         if optimize_memory_usage:
             # `observations` contains also the next observation
             self.next_observations = None
         else:
-            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
-    
+            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape),
+                                              dtype=object if is_mixed else categorical_dtype)
+
     def to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
         """
         Convert a numpy array to a PyTorch tensor.
@@ -284,7 +292,7 @@ class CategoricalReplayBuffer(ReplayBuffer):
     """
     Replay buffer used in off-policy algorithms like DQN.
     """
-    
+
     def __init__(
         self,
         buffer_size: int,
@@ -297,13 +305,17 @@ class CategoricalReplayBuffer(ReplayBuffer):
         is_mixed: bool = False
     ):
         self.is_mixed = is_mixed
-        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs, optimize_memory_usage=optimize_memory_usage, handle_timeout_termination=handle_timeout_termination)
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs,
+                         optimize_memory_usage=optimize_memory_usage,
+                         handle_timeout_termination=handle_timeout_termination)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape),
+                                     dtype=object if is_mixed else categorical_dtype)
         if optimize_memory_usage:
             # `observations` contains also the next observation
             self.next_observations = None
         else:
-            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if is_mixed else categorical_dtype)
+            self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape),
+                                              dtype=object if is_mixed else categorical_dtype)
 
     def to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
         """
@@ -322,7 +334,6 @@ class CategoricalReplayBuffer(ReplayBuffer):
         if array.dtype == categorical_dtype or array.dtype == object:
             return array
         return th.as_tensor(array, device=self.device)
-
 
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> CategoricalReplayBufferSamples:
         """
@@ -346,7 +357,8 @@ class CategoricalReplayBuffer(ReplayBuffer):
             batch_inds = np.random.randint(0, self.pos, size=batch_size)
         return self._get_samples(batch_inds, env=env)
 
-    def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> CategoricalReplayBufferSamples:
+    def _get_samples(self, batch_inds: np.ndarray,
+                     env: Optional[VecNormalize] = None) -> CategoricalReplayBufferSamples:
         # Sample randomly the env idx
         env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
 

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gbrl_sb3"
-version = "1.0.3"
+version = "1.1.0"
 description = "Gradient Boosting Reinforcement Learning for stable_baselines3"
 authors = [
     "Benjamin Fuhrer <bfuhrer@nvidia.com>",
