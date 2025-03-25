@@ -6,8 +6,6 @@ rl_zoo3==2.1.0
 stable_baselines3==2.1.0
 sb3_contrib==2.1.0
 wandb==0.16.0
-# torch>=2.0.
-# gymnasium_robotics==1.2.4
 mujoco-py==2.1.2.14
 minigrid==2.3.1
 gymnasium[atari]==0.29.1
@@ -16,8 +14,7 @@ gymnasium[box2d]==0.29.1
 gymnasium[mujoco]==0.29.1
 opencv-python>=4.8.1.78
 tensorboard==2.15.1
-# --index-url https://test.pypi.org/simple/
-# --extra-index-url https://pypi.org/simple/
-# --pre
-# gbrl==1.1.0.dev23
-# sudo python3 -m pip install 'gymnasium_robotics<1.3.0'
+--index-url https://test.pypi.org/simple/
+--extra-index-url https://pypi.org/simple/
+--pre
+gbrl==1.2.0.dev1
