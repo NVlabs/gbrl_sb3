@@ -174,29 +174,6 @@ class ActorCriticPolicy(BasePolicy):
 
         if self.nn_critic:
             self.value_net = nn.Sequential(*create_mlp(input_dim=self.features_dim,
-<<<<<<< HEAD
-                                        output_dim=1,
-                                        net_arch=self.net_arch,
-                                        activation_fn=self.activation_fn,
-                                        )).to(self.device)
-            self.model = ParametricActor(tree_struct=tree_struct, 
-                                         input_dim=self.features_dim,
-                output_dim=self.logits_dim, 
-                policy_optimizer=policy_optimizer,
-                gbrl_params=tree_optimizer['gbrl_params'],
-                device=tree_optimizer.get('device', 'cpu'))
-                            # Setup optimizer with initial learning rate
-            self.value_optimizer = self.optimizer_class(self.value_net.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)  # type: ignore[call-arg]
-        else:
-            self.model = ActorCritic(tree_struct=tree_struct, 
-                                     input_dim=self.features_dim,
-                            output_dim=self.logits_dim + 1, 
-                            shared_tree_struct=self.shared_tree_struct,
-                            policy_optimizer=policy_optimizer,
-                            value_optimizer=value_optimizer,
-                            gbrl_params=tree_optimizer['gbrl_params'],
-                            device=tree_optimizer.get('device', 'cpu'))
-=======
                                            output_dim=1,
                                            net_arch=self.net_arch,
                                            activation_fn=self.activation_fn)
@@ -219,7 +196,6 @@ class ActorCriticPolicy(BasePolicy):
                                      value_optimizer=value_optimizer,
                                      params=tree_optimizer['params'],
                                      device=tree_optimizer.get('device', 'cpu'))
->>>>>>> master
 
     def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False,
                 requires_grad: bool = False, action_masks: Optional[np.ndarray] = None,
@@ -240,7 +216,8 @@ class ActorCriticPolicy(BasePolicy):
         return actions, values, log_prob
 
     def _get_action_dist_from_obs(self, obs: Union[th.Tensor, np.ndarray],
-                                  requires_grad: bool = True, stop_idx: int = None) -> Distribution:
+                                  requires_grad: bool = True, stop_idx: int = None,
+                                  policy_only: bool = False) -> Distribution:
         """
         Retrieve action distribution given the latent codes.
 
@@ -251,7 +228,14 @@ class ActorCriticPolicy(BasePolicy):
             mean_actions = self.model(obs, requires_grad, tensor=True, stop_idx=stop_idx)
             values = self.value_net(obs)
         else:
-            mean_actions, values = self.model(obs, requires_grad, tensor=True)
+            if policy_only:
+                mean_actions = self.model.predict_policy(obs, requires_grad, tensor=True)
+                values = None
+            else:
+                mean_actions, values = self.model(obs, requires_grad, tensor=True)
+        if self.logits_dim == 1 and mean_actions.ndim == 1:
+            mean_actions = mean_actions.reshape((len(mean_actions), self.logits_dim))
+
         if isinstance(self.action_dist, SquashedDiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, DiagGaussianDistribution):
@@ -345,7 +329,8 @@ class ActorCriticPolicy(BasePolicy):
         return actions, state
 
     def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor, requires_grad: bool = True,
-                         action_masks: Optional[np.ndarray] = None) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+                         action_masks: Optional[np.ndarray] = None,
+                         policy_only: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
         given the observations.
@@ -356,7 +341,7 @@ class ActorCriticPolicy(BasePolicy):
             and entropy of the action distribution.
         """
         # Preprocess the observation if needed
-        distribution, values = self._get_action_dist_from_obs(obs, requires_grad=requires_grad)
+        distribution, values = self._get_action_dist_from_obs(obs, requires_grad=requires_grad, policy_only=policy_only)
         if action_masks is not None:
             distribution.apply_masking(action_masks)
         log_prob = distribution.log_prob(actions)
@@ -417,7 +402,7 @@ class ActorCriticPolicy(BasePolicy):
                    policy_grad_clip: float = None) -> None:
         self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip)
 
-    def critic_step(self, observations: Optional[Union[th.Tensor, np.ndarray]],
+    def critic_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
                     value_grad_clip: float = None) -> None:
         self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip)
 

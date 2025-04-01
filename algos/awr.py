@@ -319,6 +319,14 @@ class AWR_GBRL(OffPolicyAlgorithm):
         if self.replay_buffer.return_type == 'gae':
             self.replay_buffer.add_advantages_returns(values, next_values, env=self._vec_normalize_env)
 
+        value_losses, policy_losses, entropy_losses = [], [], []
+        theta_maxs, theta_mins, log_stds = [], [], []
+        theta_grad_maxs, theta_grad_mins = [], []
+        values_maxs, values_mins = [], []
+        values_grad_maxs, values_grad_mins = [], []
+        violations = []
+        weights_max, weights_min = [], []
+
         value_losses = []
         for _ in range(self.value_gradient_steps):
             # Sample replay buffer
@@ -330,6 +338,13 @@ class AWR_GBRL(OffPolicyAlgorithm):
 
             value_losses.append(value_loss.item())
             self.policy.critic_step(value_grad_clip=self.max_value_grad_norm)
+
+            params, grads = self.policy.model.get_params()
+            grads = grads[1]
+            values_maxs.append(values.max().item())
+            values_mins.append(values.min().item())
+            values_grad_maxs.append(grads.max().item())
+            values_grad_mins.append(grads.min().item())
 
         policy_losses, entropy_losses = [], []
         values, next_values = self.get_values(observations, next_observations)
@@ -353,7 +368,8 @@ class AWR_GBRL(OffPolicyAlgorithm):
             weights = th.exp(advantages / self.beta)
             weights = th.clamp(weights, max=self.weights_max)
 
-            values, log_prob, entropy = self.policy.evaluate_actions(replay_data.observations, actions)
+            values, log_prob, entropy = self.policy.evaluate_actions(replay_data.observations, actions,
+                                                                     policy_only=True)
 
             if entropy is None:
                 # Approximate entropy when no analytical form
@@ -371,6 +387,7 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 violation = vio_min.pow_(2).sum(axis=-1) + vio_max.pow_(2).sum(axis=-1)
                 violation = 0.5 * self.policy_bound_loss_weight * violation.mean*()
                 policy_loss += violation
+                violations.append(violation.item())
 
             policy_loss.backward()
 
@@ -387,7 +404,32 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 self.policy.log_std_optimizer.zero_grad()
                 assert ~np.isnan(log_std_grad).any(), "nan in assigned grads"
                 assert ~np.isinf(log_std_grad).any(), "infinity in assigned grads"
-                # log_std_s.append(self.policy.log_std.detach().cpu().numpy())
+                log_stds.append(self.policy.log_std.detach().cpu().numpy())
+
+            params, grads = self.policy.model.get_params()
+            grads = grads[0]
+            theta_maxs.append(params.max().item())
+            theta_mins.append(params.min().item())
+            theta_grad_maxs.append(grads.max().item())
+            theta_grad_mins.append(grads.min().item())
+            weights_max.append(weights.max().item())
+            weights_min.append(weights.min().item())
+
+        self.logger.record("param/theta_max", np.mean(theta_maxs))
+        self.logger.record("param/theta_min", np.mean(theta_mins))
+        self.logger.record("param/weights_max", np.mean(weights_max))
+        self.logger.record("param/weights_min", np.mean(weights_min))
+        self.logger.record("param/value_max", np.mean(values_maxs))
+        self.logger.record("param/value_min", np.mean(values_mins))
+        self.logger.record("param/theta_grad_max", np.mean(theta_grad_maxs))
+        self.logger.record("param/theta_grad_min", np.mean(theta_grad_mins))
+        self.logger.record("param/value_grad_max", np.mean(values_grad_maxs))
+        self.logger.record("param/value_grad_min", np.mean(values_grad_mins))
+        if log_stds:
+            self.logger.record("param/std", np.mean(np.mean(np.exp(np.concatenate(log_stds, axis=0)), axis=0)))
+            self.logger.record("param/log_std", np.mean(np.mean(np.concatenate(log_stds, axis=0), axis=0)))
+            if hasattr(self.policy, "log_std"):
+                self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
 
         self._n_updates += self.policy_gradient_steps
         return policy_losses, value_losses, entropy_losses
