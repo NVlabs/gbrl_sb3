@@ -30,7 +30,8 @@ RUN wget -O mujoco.tar.gz https://mujoco.org/download/mujoco210-linux-x86_64.tar
 WORKDIR /
 RUN git clone https://github.com/NVlabs/gbrl_sb3.git
 WORKDIR /gbrl_sb3
-# RUN git pull && pip install -r requirements.txt
+RUN git fetch; git checkout dev
+RUN git pull && pip install -r requirements.txt
 RUN pip install gfootball
 RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/root/.mujoco/mujoco210/bin
 
