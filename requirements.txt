@@ -13,7 +13,6 @@ gymnasium[atari]==0.29.1
 gymnasium[accept-rom-license]==0.29.1
 gymnasium[box2d]==0.29.1
 gymnasium[mujoco]==0.29.1
-opencv-python>=4.8.1.78
 tensorboard==2.15.1
 --index-url https://test.pypi.org/simple/
 --extra-index-url https://pypi.org/simple/
