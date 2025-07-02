@@ -35,6 +35,7 @@ params:
   generator_type: "Quantile"
   shared_tree_struct: True
   feature_weights: null
+  compliance_weight: 1.0
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
@@ -92,6 +93,7 @@ ppo_gbrl:
   policy_bound_loss_weight: null
   fixed_std: False
   log_std_init: -2
+  compliance: False
 ppo_nn:
   wrapper_kwargs:
     training: True

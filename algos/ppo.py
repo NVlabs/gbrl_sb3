@@ -148,6 +148,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  verbose: int = 1,
                  tensorboard_log: str = None,
                  use_masking: bool = False,
+                 compliance: bool = False,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -157,6 +158,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.target_kl = None
         self.max_policy_grad_norm = max_policy_grad_norm
         self.max_value_grad_norm = max_value_grad_norm
+        self.compliance = compliance
         self.batch_size = batch_size
         num_envs = 1 if isinstance(env, str) else env.num_envs
         updates_per_rollout = ((n_steps * num_envs) / batch_size) * n_epochs
@@ -418,7 +420,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     break
 
                 # Fit GBRL model on gradients - Optimization step
-                self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
+                self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm, compliance=rollout_data.compliances)
                 params, grads = self.policy.get_params()
                 if isinstance(grads, tuple):
                     theta_grad, values_grad = grads
@@ -582,6 +584,11 @@ class PPO_GBRL(OnPolicyAlgorithm):
             kwargs = {}
             if self.use_masking:
                 kwargs['action_masks'] = action_masks
+
+            if self.compliance:
+                compliances = [info.get('compliance', 0) for info in infos]
+                kwargs['compliance'] = compliances
+            
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,

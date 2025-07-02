@@ -24,6 +24,7 @@ class CategoricalRolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
+    compliances: th.Tensor
 
 
 class MaskableCategoricalRolloutBufferSamples(NamedTuple):
@@ -101,6 +102,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
                                      dtype=object if self.is_mixed else categorical_dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.compliances = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -154,6 +156,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
         episode_start: np.ndarray,
         value: th.Tensor,
         log_prob: th.Tensor,
+        compliance: Optional[np.ndarray] = None,
     ) -> None:
         """
         :param obs: Observation
@@ -164,6 +167,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
             following the current policy.
         :param log_prob: log probability of the action
             following the current policy.
+        :param compliance: does the state complie with the guidelines.
         """
         if len(log_prob.shape) == 0:
             # Reshape 0-d tensor to avoid error
@@ -183,6 +187,10 @@ class CategoricalRolloutBuffer(BaseBuffer):
         self.episode_starts[self.pos] = np.array(episode_start).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
+
+        if compliance is not None:
+            self.compliances[self.pos] = np.array(compliance).copy()
+
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -199,6 +207,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
                 "log_probs",
                 "advantages",
                 "returns",
+                "compliances",
             ]
 
             for tensor in _tensor_names:
@@ -244,6 +253,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
             self.log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
+            self.compliances[batch_inds].flatten(),
         )
         return CategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 

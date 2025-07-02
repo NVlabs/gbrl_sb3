@@ -16,11 +16,48 @@ from minigrid.core.mission import MissionSpace
 from minigrid.core.world_object import Ball, Box
 from minigrid.minigrid_env import MiniGridEnv
 
+from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
+from gbrl.common.utils import categorical_dtype
+
+IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
+
+
+def categorical_obs_encoding(observation, image_shape, flattened_image_shape, FullyObsWrapper = False, is_mixed = False):
+    # Transform the observation in some way
+    categorical_array = np.empty(flattened_image_shape, dtype=categorical_dtype if not is_mixed else object)
+    for i in range(image_shape[0]):
+        for j in range(image_shape[1]):
+            if FullyObsWrapper and \
+                str(IDX_TO_OBJECT[observation['image'][i, j, 0]]) == 'agent':
+                category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])}," + \
+                            f"{str(IDX_TO_COLOR[observation['image'][i, j, 1]])}," + \
+                            f"{str(observation['image'][i, j, 2])}"
+            else:
+                category = f"{str(IDX_TO_OBJECT[observation['image'][i, j, 0]])}," \
+                            f"{str(IDX_TO_COLOR[observation['image'][i, j, 1]])}," \
+                            f"{str(IDX_TO_STATE[observation['image'][i, j, 2]])}"
+            categorical_array[i*image_shape[1] + j] = category.encode('utf-8')
+    categorical_array[image_shape[0]*image_shape[1]] = str(observation['direction']).encode('utf-8')
+    categorical_array[image_shape[0]*image_shape[1] + 1] = observation['mission'].encode('utf-8')
+    return np.ascontiguousarray(categorical_array)
+
+# def spurious_compliance(observation, observation_space):
+#     image_shape = observation_space['image'].shape
+#     flattened_image_shape = image_shape[0]*image_shape[1] + 2
+#     categorical_obs = categorical_obs_encoding(observation, image_shape, flattened_image_shape, FullyObsWrapper=False, is_mixed=False)
+#     print('')
+
+
+def spurious_box_compliance(fwd_obj):
+    if fwd_obj is not None and fwd_obj.type == 'box' and fwd_obj.color == 'red':
+        return 1
+    return 0
 
 class SpuriousFetchEnv(MiniGridEnv):
     def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False,
                  purple_ball: bool = False, purple_box: bool = False, add_red_ball: bool = False,
-                 grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, **kwargs):
+                 grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, 
+                 compliance: bool = False, **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -40,6 +77,7 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.mission_based = mission_based
         self.purple_box = purple_box
         self.add_red_ball = add_red_ball
+        self.compliance = compliance
         MISSION_SYNTAX = [
             "get a"
         ]
@@ -152,7 +190,18 @@ class SpuriousFetchEnv(MiniGridEnv):
                 reward = 0
                 terminated = True
 
+        # if self.compliance:
+        #     spurious_compliance(obs, self.observation_space)
+                # Get the position in front of the agent
+        fwd_pos = self.front_pos
+
+        # Get the contents of the cell in front of the agent
+        fwd_cell = self.grid.get(*fwd_pos)
+        if self.compliance:
+            info['compliance'] = spurious_box_compliance(fwd_cell)
+
         return obs, reward, terminated, truncated, info
+
 
 
 def register_minigrid_tests():
@@ -195,4 +244,24 @@ def register_minigrid_tests():
         id="MiniGrid-SpuriousFetch-8x8-N3-v7",
         entry_point="env.minigrid:SpuriousFetchEnv",
         kwargs={"size": 8, "numObjs": 3, "use_box": False, "add_red_ball": True},
+    )
+    register(
+        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v0",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": True, "randomize": False, 'compliance': True},
+    )
+    register(
+        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v1",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": False, "randomize": False, 'compliance': True},
+    )
+    register(
+        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v2",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": False, "randomize": True, 'compliance': True},
+    )
+    register(
+        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v3",
+        entry_point="env.minigrid:SpuriousFetchEnv",
+        kwargs={"size": 8, "numObjs": 3, "use_box": False, 'compliance': True},
     )
