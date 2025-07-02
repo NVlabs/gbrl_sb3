@@ -35,9 +35,6 @@ RUN git fetch; git checkout dev
 RUN git pull && pip install -r requirements.txt
 RUN pip install gfootball
 
-RUN apt-get update && apt-get install --reinstall -y \
-  libmpich-dev \
-  hwloc-nox libmpich12 mpich
 # RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/root/.mujoco/mujoco210/bin
 
 
