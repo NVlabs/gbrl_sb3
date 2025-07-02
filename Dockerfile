@@ -21,19 +21,19 @@ RUN apt-get update && \
     apt-get install -y wget && \
     apt-get install -y unzip && \
     apt-get install -y swig
-# Create the directory where Mujoco will be installed
-RUN mkdir -p ~/.mujoco
-# Download and extract Mujoco
-RUN wget -O mujoco.tar.gz https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz && \
-    tar -xzf mujoco.tar.gz -C ~/.mujoco && \
-    rm mujoco.tar.gz
+# # Create the directory where Mujoco will be installed
+# RUN mkdir -p ~/.mujoco
+# # Download and extract Mujoco
+# RUN wget -O mujoco.tar.gz https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz && \
+#     tar -xzf mujoco.tar.gz -C ~/.mujoco && \
+#     rm mujoco.tar.gz
 WORKDIR /
 RUN git clone https://github.com/NVlabs/gbrl_sb3.git
 WORKDIR /gbrl_sb3
 RUN git fetch; git checkout dev
 RUN git pull && pip install -r requirements.txt
 RUN pip install gfootball
-RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/root/.mujoco/mujoco210/bin
+# RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/root/.mujoco/mujoco210/bin
 
 
 
