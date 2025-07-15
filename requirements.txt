@@ -17,4 +17,4 @@ tensorboard==2.15.1
 --index-url https://test.pypi.org/simple/
 --extra-index-url https://pypi.org/simple/
 --pre
-gbrl==1.100.0.dev1
+gbrl==1.100.0.dev4

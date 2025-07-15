@@ -89,8 +89,8 @@ if __name__ == '__main__':
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
                            wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.evaluate:
-            eval_kwargs = args.env_kwargs.copy()
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_kwargs, wrapper_class=wrapper_class,
+            eval_env_kwargs = args.env_kwargs.copy()
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class,
                                     vec_env_cls=vec_env_cls)
     elif args.env_type == 'football':
         try:
@@ -143,7 +143,9 @@ if __name__ == '__main__':
             if not os.path.exists(video_path):
                 os.makedirs(video_path, exist_ok=True)
 
-            eval_env = VecVideoRecorder(eval_env, video_folder=video_path,
+            eval_env = VecVideoRecorder(eval_env,
+                                        video_folder=str(video_path),
+                                        # record_video_trigger=lambda x: x == int(args.eval_kwargs['eval_freq'] / args.num_envs),
                                         record_video_trigger=lambda x: x == args.eval_kwargs['eval_freq'],
                                         name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                                         video_length=args.eval_kwargs.get('video_length', 2000))
@@ -154,6 +156,7 @@ if __name__ == '__main__':
                                     callback_after_eval=stop_train_callback,
                                     best_model_save_path=None,
                                     log_path=None,
+                                    deterministic=args.eval_kwargs.get('deterministic', True),
                                     eval_freq=int(args.eval_kwargs.get('eval_freq', 10000) / args.num_envs),
                                     n_eval_episodes=args.eval_kwargs.get('n_eval_episodes', 5),
                                     verbose=args.eval_kwargs.get('verbose', 1),

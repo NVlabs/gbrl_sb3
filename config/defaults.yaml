@@ -1,20 +1,22 @@
 env:
-  evaluate: False
+  evaluate: True
   env_kwargs: null
   verbose: 1
   seed: 0
   num_envs: 16
   eval_kwargs:
-    eval_freq: 2000
+    eval_freq: 50000
     stop_train: False
     min_evals: 5
-    record: False
-    video_length: 2000
+    record: True
+    video_length: 200
     max_no_improvement_evals: 10
-    n_eval_episodes: 100
+    n_eval_episodes: 10
+    max_episode_steps: 100
+    deterministic: True
   wrapper: null
   log_interval: 10
-  total_n_steps: 1500000
+  total_n_steps: 3000000
   # total_n_steps: 20000
   device: 'cuda'
   no_improvement_kwargs: null
@@ -35,7 +37,8 @@ params:
   generator_type: "Quantile"
   shared_tree_struct: True
   feature_weights: null
-  compliance_weight: 1.0
+  compliance_weight: 100000.0
+  compliance_exp: 6
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
@@ -63,6 +66,7 @@ tree_struct:
   max_depth: 4
   grow_policy: oblivious
   n_bins: 250
+  # n_bins: 100
   min_data_in_leaf: 0
   par_th: 2
 ppo_gbrl:
@@ -93,7 +97,6 @@ ppo_gbrl:
   policy_bound_loss_weight: null
   fixed_std: False
   log_std_init: -2
-  compliance: False
 ppo_nn:
   wrapper_kwargs:
     training: True
