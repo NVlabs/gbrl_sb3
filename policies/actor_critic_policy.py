@@ -390,21 +390,29 @@ class ActorCriticPolicy(BasePolicy):
     def get_params(self):
         return self.model.get_params()
 
-    def step(self, observations: Optional[Union[np.array, th.Tensor]] = None, policy_grad_clip: float = None,
-             value_grad_clip: float = None, compliance: Optional[Union[np.array, th.Tensor]] = None) -> None:
+    def step(self, observations: Optional[Union[np.ndarray, th.Tensor]] = None, policy_grad_clip: float = None,
+             value_grad_clip: float = None,
+             compliance: Optional[Union[np.ndarray, th.Tensor]] = None,
+             user_actions: Optional[Union[np.ndarray, th.Tensor]] = None,
+             ) -> None:
         if self.nn_critic:
             self.value_optimizer.step()
-            return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip, compliance=compliance)
+            return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip, compliance=compliance, user_actions=user_actions)
         return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
-                               value_grad_clip=value_grad_clip, compliance=compliance)
+                               value_grad_clip=value_grad_clip, compliance=compliance, user_actions=user_actions)
 
     def actor_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
-                   policy_grad_clip: float = None, compliance: Optional[Union[np.array, th.Tensor]] = None) -> None:
-        self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip, compliance=compliance)
+                   policy_grad_clip: float = None,
+                   compliance: Optional[Union[np.ndarray, th.Tensor]] = None,
+                   user_actions: Optional[Union[np.ndarray, th.Tensor]] = None) -> None:
+        self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip, compliance=compliance, user_actions=user_actions)
 
     def critic_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
-                    value_grad_clip: float = None, compliance: Optional[Union[np.array, th.Tensor]] = None) -> None:
-        self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip, compliance=compliance)
+                    value_grad_clip: float = None,
+                    compliance: Optional[Union[np.ndarray, th.Tensor]] = None,
+                    user_actions: Optional[Union[np.ndarray, th.Tensor]] = None,
+                    ) -> None:
+        self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip, compliance=compliance, user_actions=user_actions)
 
     def update_learning_rate(self, policy_learning_rate, value_learning_rate):
         self.model.adjust_learning_rates(policy_learning_rate, value_learning_rate)

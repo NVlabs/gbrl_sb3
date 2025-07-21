@@ -11,11 +11,23 @@ from typing import Generator, NamedTuple, Optional, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from stable_baselines3.common.buffers import BaseBuffer, RolloutBuffer
+from stable_baselines3.common.buffers import BaseBuffer
+from stable_baselines3.common.buffers import RolloutBuffer as SB3_RolloutBuffer
 from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.preprocessing import get_action_dim
+import gymnasium as gym
 
 from gbrl.common.utils import categorical_dtype
 
+class RolloutBufferSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    old_values: th.Tensor
+    old_log_prob: th.Tensor
+    advantages: th.Tensor
+    returns: th.Tensor
+    compliances: th.Tensor
+    user_actions: th.Tensor
 
 class CategoricalRolloutBufferSamples(NamedTuple):
     observations: np.ndarray
@@ -25,6 +37,7 @@ class CategoricalRolloutBufferSamples(NamedTuple):
     advantages: th.Tensor
     returns: th.Tensor
     compliances: th.Tensor
+    user_actions: th.Tensor
 
 
 class MaskableCategoricalRolloutBufferSamples(NamedTuple):
@@ -46,6 +59,155 @@ class MaskableRolloutBufferSamples(NamedTuple):
     returns: th.Tensor
     action_masks: th.Tensor
 
+class RolloutBuffer(SB3_RolloutBuffer):
+    """
+    Rollout buffer used in on-policy algorithms like A2C/PPO.
+    It corresponds to ``buffer_size`` transitions collected
+    using the current policy.
+    This experience will be discarded after the policy update.
+    In order to use PPO objective, we also store the current value of each state
+    and the log probability of each taken action.
+
+    The term rollout here refers to the model-free notion and should not
+    be used with the concept of rollout used in model-based RL or planning.
+    Hence, it is only involved in policy and value function training but not action selection.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: AcFtion space
+    :param device: PyTorch device
+    :param gae_lambda: Factor for trade-off of bias vs variance for Generalized Advantage Estimator
+        Equivalent to classic advantage when set to 1.
+    :param gamma: Discount factor
+    :param n_envs: Number of parallel environments
+    """
+
+    observations: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    advantages: np.ndarray
+    returns: np.ndarray
+    episode_starts: np.ndarray
+    log_probs: np.ndarray
+    values: np.ndarray
+    compliances: np.ndarray
+    user_actions: np.ndarray
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        gae_lambda: float = 1,
+        gamma: float = 0.99,
+        n_envs: int = 1,
+    ):
+        self.logits_dim = get_action_dim(action_space)
+        if isinstance(action_space, gym.spaces.Discrete):
+            self.logits_dim = self.logits_dim*action_space.n
+        elif isinstance(action_space, gym.spaces.MultiDiscrete):
+            self.logits_dim = action_space.nvec.sum()
+        super().__init__(buffer_size, observation_space, action_space, device, gae_lambda=gae_lambda, gamma=gamma,n_envs=n_envs)
+
+    def reset(self) -> None:
+        super().reset()
+        self.compliances = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.user_actions = np.zeros((self.buffer_size, self.n_envs, self.logits_dim), dtype=np.float32)
+
+    def add(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        episode_start: np.ndarray,
+        value: th.Tensor,
+        log_prob: th.Tensor,
+        compliance: Optional[np.ndarray] = None,
+        user_actions: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        :param obs: Observation
+        :param action: Action
+        :param reward:
+        :param episode_start: Start of episode signal.
+        :param value: estimated value of the current state
+            following the current policy.
+        :param log_prob: log probability of the action
+            following the current policy.
+        """
+        if len(log_prob.shape) == 0:
+            # Reshape 0-d tensor to avoid error
+            log_prob = log_prob.reshape(-1, 1)
+
+        # Reshape needed when using multiple envs with discrete observations
+        # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
+        if isinstance(self.observation_space, spaces.Discrete):
+            obs = obs.reshape((self.n_envs, *self.obs_shape))
+
+        # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
+        action = action.reshape((self.n_envs, self.action_dim))
+
+        self.observations[self.pos] = np.array(obs).copy()
+        self.actions[self.pos] = np.array(action).copy()
+        self.rewards[self.pos] = np.array(reward).copy()
+        self.episode_starts[self.pos] = np.array(episode_start).copy()
+        self.values[self.pos] = value.clone().cpu().numpy().flatten()
+        self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
+        if compliance is not None:
+            self.compliances[self.pos] = np.array(compliance).copy()
+
+        if user_actions is not None:
+            self.user_actions[self.pos] = np.array(user_actions).copy()
+        self.pos += 1
+        if self.pos == self.buffer_size:
+            self.full = True
+
+    def get(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamples, None, None]:
+        assert self.full, ""
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+        # Prepare the data
+        if not self.generator_ready:
+            _tensor_names = [
+                "observations",
+                "actions",
+                "values",
+                "log_probs",
+                "advantages",
+                "returns",
+                "compliances",
+                "user_actions",
+            ]
+
+            for tensor in _tensor_names:
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+            self.generator_ready = True
+
+        # Return everything, don't create minibatches
+        if batch_size is None:
+            batch_size = self.buffer_size * self.n_envs
+
+        start_idx = 0
+        while start_idx < self.buffer_size * self.n_envs:
+            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            start_idx += batch_size
+
+    def _get_samples(
+        self,
+        batch_inds: np.ndarray,
+        env: Optional[VecNormalize] = None,
+    ) -> RolloutBufferSamples:  # type: ignore[signature-mismatch] #FIXME
+        data = (
+            self.observations[batch_inds],
+            self.actions[batch_inds],
+            self.values[batch_inds].flatten(),
+            self.log_probs[batch_inds].flatten(),
+            self.advantages[batch_inds].flatten(),
+            self.returns[batch_inds].flatten(),
+            self.compliances[batch_inds].flatten(),
+            self.user_actions[batch_inds].flatten(),
+        )
+        return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
 class CategoricalRolloutBuffer(BaseBuffer):
     """
@@ -78,6 +240,8 @@ class CategoricalRolloutBuffer(BaseBuffer):
     episode_starts: np.ndarray
     log_probs: np.ndarray
     values: np.ndarray
+    compliances: np.ndarray
+    user_actions: np.ndarray
 
     def __init__(
         self,
@@ -95,14 +259,20 @@ class CategoricalRolloutBuffer(BaseBuffer):
         self.gamma = gamma
         self.generator_ready = False
         self.is_mixed = is_mixed
+        self.logits_dim = get_action_dim(action_space)
+        if isinstance(action_space, gym.spaces.Discrete):
+            self.logits_dim = self.logits_dim*action_space.n
+        elif isinstance(action_space, gym.spaces.MultiDiscrete):
+            self.logits_dim = action_space.nvec.sum()
         self.reset()
 
+
     def reset(self) -> None:
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape),
-                                     dtype=object if self.is_mixed else categorical_dtype)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if self.is_mixed else categorical_dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.compliances = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.user_actions = np.zeros((self.buffer_size, self.n_envs, self.logits_dim), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -157,6 +327,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
         value: th.Tensor,
         log_prob: th.Tensor,
         compliance: Optional[np.ndarray] = None,
+        user_actions: Optional[np.ndarray] = None,
     ) -> None:
         """
         :param obs: Observation
@@ -191,6 +362,9 @@ class CategoricalRolloutBuffer(BaseBuffer):
         if compliance is not None:
             self.compliances[self.pos] = np.array(compliance).copy()
 
+        if user_actions is not None:
+            self.user_actions[self.pos] = np.array(user_actions).copy()
+
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -208,6 +382,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
                 "advantages",
                 "returns",
                 "compliances",
+                "user_actions",
             ]
 
             for tensor in _tensor_names:
@@ -254,6 +429,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
             self.compliances[batch_inds].flatten(),
+            self.user_actions[batch_inds].flatten(),
         )
         return CategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 
@@ -361,7 +537,7 @@ class MaskableCategoricalRolloutBuffer(CategoricalRolloutBuffer):
         return MaskableCategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 
 
-class MaskableRolloutBuffer(RolloutBuffer):
+class MaskableRolloutBuffer(SB3_RolloutBuffer):
     """
     Rollout buffer that also stores the invalid action masks associated with each observation.
 

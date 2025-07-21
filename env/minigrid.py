@@ -16,6 +16,8 @@ from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
 from minigrid.core.world_object import Ball, Box
 from minigrid.minigrid_env import MiniGridEnv, TILE_PIXELS
+from minigrid.core.constants import DIR_TO_VEC
+from minigrid.envs.obstructedmaze import ObstructedMazeEnv
 from typing import Optional
 
 from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
@@ -43,13 +45,6 @@ def categorical_obs_encoding(observation, image_shape, flattened_image_shape, Fu
     categorical_array[image_shape[0]*image_shape[1] + 1] = observation['mission'].encode('utf-8')
     return np.ascontiguousarray(categorical_array)
 
-# def spurious_compliance(observation, observation_space):
-#     image_shape = observation_space['image'].shape
-#     flattened_image_shape = image_shape[0]*image_shape[1] + 2
-#     categorical_obs = categorical_obs_encoding(observation, image_shape, flattened_image_shape, FullyObsWrapper=False, is_mixed=False)
-#     print('')
-
-
 def spurious_box_compliance(fwd_obj):
     if fwd_obj is not None and fwd_obj.type == 'box' and fwd_obj.color == 'red':
         return 1
@@ -76,6 +71,8 @@ def simple_fetch_compliance(agent_pos, ball_pos, start_pos, move_left, from_back
                 return 0  # approaching from back is compliant
             else:
                 return 1  # adjacent but not from back = non-compliant
+        if ax == sx and ay != sy and agent_pos != back_pos:
+            return 1
         return 0  # not adjacent = compliant
     # non-compliant if:  (a) still in or right of centre  AND  (b) has climbed > 1 row above start
     # if (ax > bx) or (ax == bx and (sy - ay > 1)):
@@ -247,476 +244,261 @@ class SpuriousFetchEnv(MiniGridEnv):
 
         return obs, reward, terminated, truncated, info
 
+class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
+    """
+    A blue ball is hidden in a 2x1 maze. A locked door separates
+    rooms. Doors are obstructed by a ball and keys are hidden in boxes.
+    """
 
-class SimpleFetchEnv(MiniGridEnv):
-    def __init__(self, max_steps: Optional[int] = None, compliance: bool = False, move_left: bool = True, from_back: bool = False, **kwargs):
-        self.numObjs = 1
-        self.size = 16
-        self.obj_types = ["ball"]
-        self.colors = {
-            "red": np.array([255, 0, 0]),
-            "green": np.array([0, 255, 0]),
-            "blue": np.array([0, 0, 255]),
-        }
-        self.color_names = sorted(list(self.colors.keys()))
+    def __init__(self, key_in_box=True, blocked=True, compliance=True, **kwargs):
+        self.key_in_box = key_in_box
+        self.blocked = blocked
         self.compliance = compliance
 
-        MISSION_SYNTAX = [
-            "get a"
-        ]
-        mission_space = MissionSpace(
-            mission_func=self._gen_mission,
-            ordered_placeholders=[MISSION_SYNTAX, self.color_names, self.obj_types],
-        )
-
-        if max_steps is None:
-            max_steps = 5 * self.size**2
-
-        super().__init__(
-            mission_space=mission_space,
-            width=self.size,
-            height=self.size,
-            # Set this to True for maximum speed
-            see_through_walls=True,
-            max_steps=max_steps,
-            **kwargs,
-        )
-
-        self.move_left = move_left
-        self.from_back = from_back
-        self.agent_pov = True
-        # self.agent_pov = False
-        self.metadata['render_fps'] = 2
-        # self.metadata['render_fps'] = 10
-
-    @staticmethod
-    def _gen_mission(syntax: str, color: str, obj_type: str):
-        return f"{syntax} {color} {obj_type}"
+        super().__init__(num_rows=1, num_cols=2, num_rooms_visited=2, **kwargs)
 
     def _gen_grid(self, width, height):
-        self.grid = Grid(width, height)
-        # Generate the surrounding walls
-        self.grid.horz_wall(0, 0)
-        self.grid.horz_wall(0, height - 1)
-        self.grid.vert_wall(0, 0)
-        self.grid.vert_wall(width - 1, 0)
-        # Create the green ball
-        obs_green = Ball('green')
-        # Calculate fixed positions
-        center_x = width // 2  # Center x coordinate
-        center_y = height // 2  # Center y coordinate
-        agent_y = height - 2  # Bottom center (one cell up from bottom wall
-        # Place agent at bottom center with fixed orientation (facing up)
-        self.agent_pos = (center_x, agent_y)
-        self.starting_pos = (center_x, agent_y)
-        self.agent_dir = 3  # Facing up (0=right, 1=down, 2=left, 3=up)
-        # Place green ball at center of the room
-        self.grid.set(center_x, center_y, obs_green)
-        # Choose the green ball as the target
-        target = obs_green
+        super()._gen_grid(width, height)
 
-        self.targetType = target.type
-        self.targetColor = target.color
-        descStr = f"{self.targetColor} {self.targetType}"
-        # Generate the mission string
-        self.mission = "get a %s" % descStr
-        assert hasattr(self, "mission")
-        start_cell = self.grid.get(*self.agent_pos)
-        assert start_cell is None or start_cell.can_overlap()
-
-    def step(self, action):
-        compliance = None
-        if self.compliance:
-            # Find the ball position in the grid
-            ball_pos = None
-            for i in range(self.width):
-                for j in range(self.height):
-                    cell = self.grid.get(i, j)
-                    if cell is not None and cell.type == self.targetType and cell.color == self.targetColor:
-                        ball_pos = (i, j)
-                        break
-                if ball_pos is not None:
-                    break
-
-            if ball_pos is not None:
-                compliance = simple_fetch_compliance(self.agent_pos, ball_pos, self.starting_pos, self.move_left, self.from_back)
-
-        obs, reward, terminated, truncated, info = super().step(action)
-        if self.carrying:
-            if (
-                self.carrying.color == self.targetColor
-                and self.carrying.type == self.targetType
-            ):
-                reward = self._reward()
-                terminated = True
-            else:
-                reward = 0
-                terminated = True
-        if compliance is not None:
-            info['compliance'] = compliance
-
-        return obs, reward, terminated, truncated, info
-
-    def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict[str, Any] | None = None,
-    ) -> tuple[ObsType, dict[str, Any]]:
-        obs, info = super().reset(seed=seed, options=options)
-
-        if self.compliance:
-            # Find the ball position in the grid
-            ball_pos = None
-            for i in range(self.width):
-                for j in range(self.height):
-                    cell = self.grid.get(i, j)
-                    if cell is not None and cell.type == self.targetType and cell.color == self.targetColor:
-                        ball_pos = (i, j)
-                        break
-                if ball_pos is not None:
-                    break
-
-            if ball_pos is not None:
-                info['compliance'] = simple_fetch_compliance(self.agent_pos, ball_pos, self.starting_pos, self.move_left, self.from_back)
-        return  obs, info
-
-    def get_frame(
-        self,
-        highlight: bool = True,
-        tile_size: int = TILE_PIXELS,
-        agent_pov: bool = False,
-    ):
-        """Returns an RGB image corresponding to the whole environment or the agent's point of view.
-
-        Args:
-
-            highlight (bool): If true, the agent's field of view or point of view is highlighted with a lighter gray color.
-            tile_size (int): How many pixels will form a tile from the NxM grid.
-            agent_pov (bool): If true, the rendered frame will only contain the point of view of the agent.
-
-        Returns:
-
-            frame (np.ndarray): A frame of type numpy.ndarray with shape (x, y, 3) representing RGB values for the x-by-y pixel image.
-
-        """
-
-        # if agent_pov:
-        #     return self.get_pov_render(tile_size)
-        # else:
-        return self.get_full_render(highlight, tile_size)
-    
-class DistanceFetchEnv(MiniGridEnv):
-    def __init__(self, max_steps: Optional[int] = None, compliance: bool = False, move_left: bool = True, from_back: bool = False, **kwargs):
-        self.numObjs = 1
-        self.size = 16
-        self.obj_types = ["ball"]
-        self.colors = {
-            "red": np.array([255, 0, 0]),
-            "green": np.array([0, 255, 0]),
-            "blue": np.array([0, 0, 255]),
-        }
-        self.color_names = sorted(list(self.colors.keys()))
-        self.compliance = compliance
-
-        MISSION_SYNTAX = [
-            "get a"
-        ]
-        mission_space = MissionSpace(
-            mission_func=self._gen_mission,
-            ordered_placeholders=[MISSION_SYNTAX, self.color_names, self.obj_types],
+        self.door, self.door_pos = self.add_door(
+            0,
+            0,
+            door_idx=0,
+            color=self.door_colors[0],
+            locked=True,
+            key_in_box=self.key_in_box,
+            blocked=self.blocked,
         )
 
-        if max_steps is None:
-            max_steps = 5 * self.size**2
+        self.obj, _ = self.add_object(1, 0, "ball", color=self.ball_to_find_color)
+        self.place_agent(0, 0)
 
-        super().__init__(
-            mission_space=mission_space,
-            width=self.size,
-            height=self.size,
-            # Set this to True for maximum speed
-            see_through_walls=True,
-            max_steps=max_steps,
-            **kwargs,
-        )
+    def _are_adjacent(self, pos_a, pos_b):
+        """Check if Two positions are adjacent to one another."""
+        ax, ay = pos_a
+        bx, by = pos_b
 
-        self.move_left = move_left
-        self.from_back = from_back
-        self.agent_pov = True
-        # self.agent_pov = False
-        self.metadata['render_fps'] = 2
-        # self.metadata['render_fps'] = 10
+        # Check if they are adjacent (including diagonals)
+        return (abs(ax - bx) == 1 and ay == by) or (abs(ay - by) == 1 and ax == bx)
 
-    @staticmethod
-    def _gen_mission(syntax: str, color: str, obj_type: str):
-        return f"{syntax} {color} {obj_type}"
+    def get_compliance(self, action):
+        def action_to_onehot(action_idx):
+            if action_idx is None:
+                return [0, 0, 0, 0, 0, 0, 0]
+            onehot = [0, 0, 0, 0, 0, 0, 0]
+            onehot[action_idx] = 1
+            return onehot
 
-    def _gen_grid(self, width, height):
-        self.grid = Grid(width, height)
-        # Generate the surrounding walls
-        self.grid.horz_wall(0, 0)
-        self.grid.horz_wall(0, height - 1)
-        self.grid.vert_wall(0, 0)
-        self.grid.vert_wall(width - 1, 0)
-        # Create the green ball
-        obs_green = Ball('green')
-        # Calculate fixed positions
-        center_x = width // 2  # Center x coordinate
-        center_y = height // 2  # Center y coordinate
-        agent_y = height - 2  # Bottom center (one cell up from bottom wall
-        # Place agent at bottom center with fixed orientation (facing up)
-        self.agent_pos = (center_x, agent_y)
-        self.starting_pos = (center_x, agent_y)
-        self.target_pos = (center_x, center_y)
-        self.agent_dir = 3  # Facing up (0=right, 1=down, 2=left, 3=up)
-        # Place green ball at center of the room
-        self.grid.set(center_x, center_y, obs_green)
-        # Choose the green ball as the target
-        target = obs_green
-
-        self.targetType = target.type
-        self.targetColor = target.color
-        descStr = f"{self.targetColor} {self.targetType}"
-        # Generate the mission string
-        self.mission = "get a %s" % descStr
-        assert hasattr(self, "mission")
-        start_cell = self.grid.get(*self.agent_pos)
-        assert start_cell is None or start_cell.can_overlap()
-
-    def _get_normalized_distance(self) -> float:
-        agent_pos = np.array(self.agent_pos)
-        target_pos = np.array(self.target_pos)
-        dist = np.linalg.norm((target_pos - agent_pos))
-        # Normalize distance by the maximum possible distance in the grid
-        # Max distance is from corner to corner: sqrt((size-1)^2 + (size-1)^2)
-        max_dist = np.sqrt(2) * (self.size - 1)
-        normalized_dist = min(dist / max_dist, 1.0)  # Ensure it doesn't exceed 1
-        # Return reward that decreases with distance, between 0 and 1
-        return normalized_dist
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = super().step(action)
-        reward = 0.0
-        current_distance = self._get_normalized_distance()
-
-        step_penalty_factor = 0.9 * (self.step_count / self.max_steps)
-
-        # Only reward if agent gets closer than ever before
-        if current_distance < self.best_distance:
-            improvement = self.best_distance - current_distance
-            reward = improvement  # This ensures max total reward is 1.0
-            self.best_distance = current_distance
-            self.cumulative_reward += reward
-
-        if self.carrying:
-            if (
-                self.carrying.color == self.targetColor
-                and self.carrying.type == self.targetType
-            ):
-                terminated = True
-                # Agent gets remaining reward to reach 1.0 if not already there
-                if current_distance > 0:
-                    penalized_max_reward = 1.0 - step_penalty_factor
-                    remaining_reward = penalized_max_reward - self.cumulative_reward
-                    reward += remaining_reward
-            else:
-                terminated = True
-                reward = 0.0
-
-        if truncated:
-            reward = -step_penalty_factor  # 
-
-        if self.compliance:
-            # Find the ball position in the grid
-            ball_pos = None
-            for i in range(self.width):
-                for j in range(self.height):
-                    cell = self.grid.get(i, j)
-                    if cell is not None and cell.type == self.targetType and cell.color == self.targetColor:
-                        ball_pos = (i, j)
-                        break
-                if ball_pos is not None:
-                    break
-
-            if ball_pos is not None:
-                info['compliance'] = simple_fetch_compliance(self.agent_pos, ball_pos, self.starting_pos, self.move_left, self.from_back)
-
-        return obs, float(reward), terminated, truncated, info
-
-    def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict[str, Any] | None = None,
-    ) -> tuple[ObsType, dict[str, Any]]:
-        obs, info = super().reset(seed=seed, options=options)
-
-        self.best_distance = 1.0  # Start with max normalized distance
-        # Track cumulative reward to cap at 1.0
-        self.cumulative_reward = 0.0
-
-        if self.compliance:
-            # Find the ball position in the grid
-            ball_pos = None
-            for i in range(self.width):
-                for j in range(self.height):
-                    cell = self.grid.get(i, j)
-                    if cell is not None and cell.type == self.targetType and cell.color == self.targetColor:
-                        ball_pos = (i, j)
-                        break
-                if ball_pos is not None:
-                    break
-
-            if ball_pos is not None:
-                info['compliance'] = simple_fetch_compliance(self.agent_pos, ball_pos, self.starting_pos, self.move_left, self.from_back)
-        return  obs, info
-
-    def get_frame(
-        self,
-        highlight: bool = True,
-        tile_size: int = TILE_PIXELS,
-        agent_pov: bool = False,
-    ):
-        """Returns an RGB image corresponding to the whole environment or the agent's point of view.
-
-        Args:
-
-            highlight (bool): If true, the agent's field of view or point of view is highlighted with a lighter gray color.
-            tile_size (int): How many pixels will form a tile from the NxM grid.
-            agent_pov (bool): If true, the rendered frame will only contain the point of view of the agent.
-
-        Returns:
-
-            frame (np.ndarray): A frame of type numpy.ndarray with shape (x, y, 3) representing RGB values for the x-by-y pixel image.
-
-        """
-
-        # if agent_pov:
-        #     return self.get_pov_render(tile_size)
-        # else:
-        return self.get_full_render(highlight, tile_size)
-
-class SimpleObstacleFetchEnv(MiniGridEnv):
-    def __init__(self, max_steps: Optional[int] = None, compliance: bool = False, **kwargs):
-        self.numObjs = 1
-        self.size = 16
-        self.obj_types = ["ball"]
-        self.colors = {
-            "red": np.array([255, 0, 0]),
-            "green": np.array([0, 255, 0]),
-            "blue": np.array([0, 0, 255]),
-        }
-        self.color_names = sorted(list(self.colors.keys()))
-        self.compliance = compliance
-
-        MISSION_SYNTAX = [
-            "get a"
-        ]
-        mission_space = MissionSpace(
-            mission_func=self._gen_mission,
-            ordered_placeholders=[MISSION_SYNTAX, self.color_names, self.obj_types],
-        )
-
-        if max_steps is None:
-            max_steps = 5 * self.size**2
-
-        super().__init__(
-            mission_space=mission_space,
-            width=self.size,
-            height=self.size,
-            # Set this to True for maximum speed
-            see_through_walls=True,
-            max_steps=max_steps,
-            **kwargs,
-        )
-        self.agent_pov = True
-        # self.agent_pov = False
-        self.metadata['render_fps'] = 2
-        # self.metadata['render_fps'] = 10
-
-    @staticmethod
-    def _gen_mission(syntax: str, color: str, obj_type: str):
-        return f"{syntax} {color} {obj_type}"
-
-    def _gen_grid(self, width, height):
-        self.grid = Grid(width, height)
-        # Generate the surrounding walls
-        self.grid.horz_wall(0, 0)
-        self.grid.horz_wall(0, height - 1)
-        self.grid.vert_wall(0, 0)
-        self.grid.vert_wall(width - 1, 0)
-        # Create the green ball
-        obs_green = Ball('green')
-        obstacle = Box('red')
-        # Calculate fixed positions
-        center_x = width // 2  # Center x coordinate
-        center_y = height // 2  # Center y coordinate
-        agent_y = height - 2  # Bottom center (one cell up from bottom wall
-        obstacle_y = center_y + 2
-        # Place agent at bottom center with fixed orientation (facing up)
-        self.agent_pos = (center_x, agent_y)
-        self.starting_pos = (center_x, agent_y)
-        self.agent_dir = 3  # Facing up (0=right, 1=down, 2=left, 3=up)
-        # Place green ball at center of the room
-        self.grid.set(center_x, center_y, obs_green)
-        self.grid.set(center_x, obstacle_y, obstacle)
-        # Choose the green ball as the target
-        target = obs_green
-        self.moved_left = False
-        self.moved_right = False
-
-        self.targetType = target.type
-        self.targetColor = target.color
-        descStr = f"{self.targetColor} {self.targetType}"
-        # Generate the mission string
-        self.mission = "get a %s" % descStr
-        assert hasattr(self, "mission")
-        start_cell = self.grid.get(*self.agent_pos)
-        assert start_cell is None or start_cell.can_overlap()
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = super().step(action)
-        if self.carrying:
-            if (
-                self.carrying.color == self.targetColor
-                and self.carrying.type == self.targetType
-            ):
-                reward = self._reward()
-                terminated = True
-                if self.moved_right and not self.moved_left:
-                    reward += 0.1
-                    reward = min(reward, 1.0)  # Cap the reward to 1.0
-            else:
-                reward = 0
-                terminated = True
-
-        fwd_pos = self.front_pos
-        # Get the contents of the cell in front of the agent
-        fwd_cell = self.grid.get(*fwd_pos)
-        if fwd_cell is not None and fwd_cell.type == 'box' and fwd_cell.color == 'red':
-            if action in [self.actions.toggle, self.actions.forward, self.actions.done]:
-                reward = 0
-                terminated = True
-            if action == self.actions.left:
-                self.moved_left = True
-            elif action == self.actions.right:
-                self.moved_right = True
+        # Get current target information
+        target_pos, target_type, correct_action_idx = self._get_current_target()
         
-            # print(f'red box, action: {action} reward: {reward} terminated: {terminated}')
-        if self.compliance:
-            # Find the ball position in the grid
-            ball_pos = None
-            for i in range(self.width):
-                for j in range(self.height):
-                    cell = self.grid.get(i, j)
-                    if cell is not None and cell.type == self.targetType and cell.color == self.targetColor:
-                        ball_pos = (i, j)
-                        break
-                if ball_pos is not None:
+        required_action = correct_action_idx
+        if target_pos is None:
+            # print(f'door opened: {self.door_opened}, key_found: {self.key_found} target not found  action: {action}, current action: {correct_action_idx}')
+            if action == required_action:
+                return 0, action_to_onehot(None)
+            return 1, action_to_onehot(required_action)
+            # Special case: Handle drop action (before calling agent_sees)
+       
+        # 1. If target not visible, compliant with None action - let the reward guide this
+        if not self.agent_sees(*target_pos):
+            return 0, action_to_onehot(None)
+
+        # 2. If facing target, perform correct action
+        fwd_cell = self.grid.get(*self.front_pos)
+        if fwd_cell is not None and fwd_cell.type == target_type:
+            # if target_type == 'ball':
+                # print(f'door opened: {self.door_opened}, key_found: {self.key_found} in front of ball action: {action}, current action: {correct_action_idx}')
+            if action == required_action:
+                return 0, action_to_onehot(None)
+            return 1, action_to_onehot(required_action)
+
+        # 3. Target is visible - move to target
+        required_action = self._navigate_to_target(target_pos)
+        
+        # Always: if action == required_action then compliant
+        if action == required_action:
+            return 0, action_to_onehot(None)
+        return 1, action_to_onehot(required_action)
+
+    def _get_current_target(self):
+        """Determine what the agent should be targeting based on current phase."""
+        key_pos = door_pos = goal_pos = None
+        
+        for i in range(self.width):
+            for j in range(self.height):
+                cell = self.grid.get(i, j)
+                if cell is not None:
+                    if cell.type == 'key':
+                        key_pos = (i, j)
+                    elif cell.type == 'door':
+                        door_pos = (i, j)
+                    elif cell.type == 'ball':
+                        goal_pos = (i, j)
+    
+        if not self.key_found:
+            return key_pos, 'key', self.actions.pickup
+        elif not self.door_opened:
+            return door_pos, 'door', self.actions.toggle
+        elif self.carrying and self.carrying.type == 'key':
+            drop_action = self._find_valid_drop_position()
+            return None, 'drop', drop_action
+        else:
+            return goal_pos, 'ball', self.actions.pickup
+
+    def _find_valid_drop_position(self):
+        """Find a valid position and direction to drop the key, return (agent_pos, drop_pos, required_dir)."""
+        
+        # Get ball position - it tells us which room to drop the key in
+        ball_pos = self.obj.cur_pos
+        if ball_pos is None:
+            return None
+        
+        ball_x, ball_y = ball_pos
+        agent_x, agent_y = self.agent_pos
+        # Define tuples of (agent_position, drop_position, required_direction)
+        # Agent stands at agent_position, faces required_direction, drops at drop_position
+        potential_configs = [
+            (agent_x - 1, agent_y),     # 1 cell left
+            (agent_x + 1, agent_y),     # 1 cell right  
+            (agent_x, agent_y - 1),     # 1 cell up
+            (agent_x, agent_y + 1),     # 1 cell down
+            (agent_x - 2, agent_y),     # 2 cells left
+            (agent_x + 2, agent_y),     # 2 cells right
+            (agent_x, agent_y + 2),     # 2 cells down
+            (agent_x - 1, agent_y + 1), # diagonal positions
+            (agent_x + 1, agent_y + 1),
+            (ball_x - 1, ball_y),     # 1 cell left
+            (ball_x + 1, ball_y),     # 1 cell right  
+            (ball_x, ball_y - 1),     # 1 cell up
+            (ball_x, ball_y + 1),     # 1 cell down
+            (ball_x - 2, ball_y),     # 2 cells left
+            (ball_x + 2, ball_y),     # 2 cells right
+            (ball_x, ball_y + 2),     # 2 cells down
+            (ball_x - 1, ball_y + 1), # diagonal positions
+            (ball_x + 1, ball_y + 1),
+        ]
+
+        drop_pos = None
+        for pot_pos in potential_configs:
+            # Check if both positions are in bounds
+            if (0 <= pot_pos[0] < self.width and 0 <= pot_pos[1] < self.height):
+                
+                # Check if position is empty
+                drop_cell = self.grid.get(*pot_pos)
+                
+                if drop_cell is None:
+                    drop_pos = pot_pos
                     break
 
-            if ball_pos is not None:
-                info['compliance'] = obstacle_fetch_compliance(self.agent_pos, ball_pos, self.starting_pos)
+        if drop_pos is None:
+            return None
+        else:
+            at_target = self.agent_pos[0] == drop_pos[0] and self.agent_pos[1] == drop_pos[1]
+            best_direction = self._find_best_direction(drop_pos)
+            # If already facing the best direction, move forward
+            if self.agent_dir == best_direction:
+                if at_target:
+                    return self.actions.drop
+                return self.actions.forward
+            else:
+                # Turn towards the best direction
+                return self._turn_to_direction(best_direction)
+        
+    def _navigate_to_target(self, target_pos):
+        """Navigate to target when it's visible."""        
+        # Find the best direction among 4 possible positions
+        best_direction = self._find_best_direction(target_pos)
+        
+        # If already facing the best direction, move forward
+        if self.agent_dir == best_direction:
+            return self.actions.forward
+        else:
+            # Turn towards the best direction
+            return self._turn_to_direction(best_direction)
+
+    def _find_best_direction(self, target_pos):
+        """Find direction that gets agent closest to target among 4 possible positions."""
+        agent_x, agent_y = self.agent_pos
+        target_x, target_y = target_pos
+        
+        # 4 possible adjacent positions: right, down, left, up
+        possible_positions = [
+            (agent_x + 1, agent_y),  # right (dir 0)
+            (agent_x, agent_y + 1),  # down (dir 1)
+            (agent_x - 1, agent_y),  # left (dir 2)
+            (agent_x, agent_y - 1)   # up (dir 3)
+        ]
+        
+        distances = []
+        valid_directions = []
+        
+        for i, pos in enumerate(possible_positions):
+            if self._is_valid_position(pos, target_pos):
+                # Calculate Manhattan distance from this position to target
+                dist = abs(target_x - pos[0]) + abs(target_y - pos[1])
+                distances.append(dist)
+                valid_directions.append(i)
+        
+        # If no valid directions, default to right (or any direction)
+        if not valid_directions:
+            return 0  # Default direction
+        
+        # Find direction with minimum distance
+        min_dist_idx = distances.index(min(distances))
+        return valid_directions[min_dist_idx]
+
+    def _is_valid_position(self, pos, target_pos):
+        """Check if a position is valid (in bounds and walkable)."""
+        x, y = pos
+        
+        # Check bounds
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return False
+        
+        cell = self.grid.get(x, y)
+        # Can move to empty cells, target cell, or open doors
+        return (cell is None or 
+                (x, y) == target_pos or 
+                (cell.type == 'door' and cell.is_open))
+
+    def _turn_to_direction(self, required_dir):
+        """Calculate which action (left/right) to turn towards required direction."""
+        angle_diff = (required_dir - self.agent_dir) % 4
+        
+        if angle_diff == 1:  # 90 degrees clockwise
+            return self.actions.right
+        elif angle_diff == 2:  # 180 degrees (choose right)
+            return self.actions.right
+        elif angle_diff == 3:  # 270 degrees clockwise = 90 degrees counter-clockwise
+            return self.actions.left
+        else:  # angle_diff == 0 (already facing correct direction)
+            return self.actions.forward
+
+    def step(self, action):
+        compliance, user_action_onehot = self.get_compliance(action)
+        # print(compliance, user_action_onehot)
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        if action == self.actions.pickup:
+            if self.carrying and self.carrying.type == 'key':
+                self.key_found = True
+            # if self.carrying and self.carrying == self.obj:
+            #     reward = self._reward()
+            #     print("finished")
+            #     terminated = True
+
+        if not self.door.is_locked:
+            self.door_opened = True
+        
+
+        if self.compliance:
+            info['compliance'] = compliance
+            info['user_actions'] = user_action_onehot
+        # if terminated:
+        #     print("terminated!")
+        # info['compliance'] = 0
+        # info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
 
         return obs, reward, terminated, truncated, info
 
@@ -727,48 +509,16 @@ class SimpleObstacleFetchEnv(MiniGridEnv):
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         obs, info = super().reset(seed=seed, options=options)
+        self.key_found = False
+        self.door_opened = False
+        self.start_pos = self.agent_pos
 
+        # compliance, user_action_onehot = self.get_compliance()
         if self.compliance:
-            # Find the ball position in the grid
-            ball_pos = None
-            for i in range(self.width):
-                for j in range(self.height):
-                    cell = self.grid.get(i, j)
-                    if cell is not None and cell.type == self.targetType and cell.color == self.targetColor:
-                        ball_pos = (i, j)
-                        break
-                if ball_pos is not None:
-                    break
+            info['compliance'] = 0
+            info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
 
-            if ball_pos is not None:
-                info['compliance'] = obstacle_fetch_compliance(self.agent_pos, ball_pos, self.starting_pos)
         return  obs, info
-
-    def get_frame(
-        self,
-        highlight: bool = True,
-        tile_size: int = TILE_PIXELS,
-        agent_pov: bool = False,
-    ):
-        """Returns an RGB image corresponding to the whole environment or the agent's point of view.
-
-        Args:
-
-            highlight (bool): If true, the agent's field of view or point of view is highlighted with a lighter gray color.
-            tile_size (int): How many pixels will form a tile from the NxM grid.
-            agent_pov (bool): If true, the rendered frame will only contain the point of view of the agent.
-
-        Returns:
-
-            frame (np.ndarray): A frame of type numpy.ndarray with shape (x, y, 3) representing RGB values for the x-by-y pixel image.
-
-        """
-
-        # if agent_pov:
-        #     return self.get_pov_render(tile_size)
-        # else:
-        return self.get_full_render(highlight, tile_size)
-
 
 def register_minigrid_tests():
     register(
@@ -812,62 +562,32 @@ def register_minigrid_tests():
         kwargs={"size": 8, "numObjs": 3, "use_box": False, "add_red_ball": True},
     )
     register(
-        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v0",
-        entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": True, "randomize": False, 'compliance': True},
+        id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v0",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": True},
     )
     register(
-        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v1",
-        entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": False, "randomize": False, 'compliance': True},
+        id="MiniGrid-ObstructedMazeCompliance_1Dlh-v0",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": False},
     )
     register(
-        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v2",
-        entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "use_box": True, "mission_based": False, "randomize": True, 'compliance': True},
+        id="MiniGrid-ObstructedMazeCompliance_1Dl-v0",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": False, "blocked": False},
     )
     register(
-        id="MiniGrid-SpuriousComplianceFetch-8x8-N3-v3",
-        entry_point="env.minigrid:SpuriousFetchEnv",
-        kwargs={"size": 8, "numObjs": 3, "use_box": False, 'compliance': True},
+        id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v1",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": True, "compliance": False},
     )
     register(
-        id="MiniGrid-SimpleFetch-16x16-N1-v0",
-        entry_point="env.minigrid:SimpleFetchEnv",
-        kwargs={"compliance": False},
+        id="MiniGrid-ObstructedMazeCompliance_1Dlh-v1",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": False, "compliance": False},
     )
     register(
-        id="MiniGrid-SimpleFetch-16x16-N1-v1",
-        entry_point="env.minigrid:SimpleFetchEnv",
-        kwargs={"compliance": True, "move_left": True},
-    )
-    register(
-        id="MiniGrid-SimpleFetch-16x16-N1-v2",
-        entry_point="env.minigrid:SimpleFetchEnv",
-        kwargs={"compliance": True, "move_left": False},
-    )
-    register(
-        id="MiniGrid-SimpleFetch-16x16-N1-v3",
-        entry_point="env.minigrid:SimpleFetchEnv",
-        kwargs={"compliance": True, "from_back": True},
-    )
-    register(
-        id="MiniGrid-SimpleObstacleFetch-16x16-N1-v0",
-        entry_point="env.minigrid:SimpleObstacleFetchEnv",
-        kwargs={"compliance": False},
-    )
-    register(
-        id="MiniGrid-SimpleObstacleFetch-16x16-N1-v1",
-        entry_point="env.minigrid:SimpleObstacleFetchEnv",
-        kwargs={"compliance": True},
-    )
-    register(
-        id="MiniGrid-DistanceFetch-16x16-N1-v0",
-        entry_point="env.minigrid:DistanceFetchEnv",
-        kwargs={"compliance": False},
-    )
-    register(
-        id="MiniGrid-DistanceFetch-16x16-N1-v1",
-        entry_point="env.minigrid:DistanceFetchEnv",
-        kwargs={"compliance": True},
+        id="MiniGrid-ObstructedMazeCompliance_1Dl-v1",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": False, "blocked": False, "compliance": False},
     )

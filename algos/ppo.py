@@ -18,7 +18,6 @@ import torch as th
 from gymnasium import spaces
 
 
-from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.distributions import DiagGaussianDistribution
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
@@ -36,7 +35,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
-from buffers.rollout_buffer import CategoricalRolloutBuffer, MaskableCategoricalRolloutBuffer, MaskableRolloutBuffer
+from buffers.rollout_buffer import RolloutBuffer, CategoricalRolloutBuffer, MaskableCategoricalRolloutBuffer, MaskableRolloutBuffer
 from policies.actor_critic_policy import ActorCriticPolicy
 from utils.io_util import load_from_zip_file, save_to_zip_file
 
@@ -418,7 +417,10 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     break
 
                 # Fit GBRL model on gradients - Optimization step
-                self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm, compliance=rollout_data.compliances)
+                self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
+                                 value_grad_clip=self.max_value_grad_norm,
+                                 compliance=rollout_data.compliances,
+                                 user_actions=rollout_data.user_actions)
                 params, grads = self.policy.get_params()
                 if isinstance(grads, tuple):
                     theta_grad, values_grad = grads
@@ -430,6 +432,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     theta = params
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
+                # print(f'compliances: {rollout_data.compliances}, user_actions: {rollout_data.user_actions.reshape(len(rollout_data.compliances), 7)}')
                 # if 
                 # exit()
 
@@ -586,8 +589,10 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 kwargs['action_masks'] = action_masks
 
             compliances = [info.get('compliance', None) for info in infos]
+            user_action_onehot = [info.get('user_actions', None) for info in infos]
             if compliances[0] is not None:
-                kwargs['compliance'] = compliances
+                kwargs['compliance'] = compliances if compliances[0] is not None else None
+                kwargs['user_actions'] = user_action_onehot if user_action_onehot[0] is not None else None
             
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
