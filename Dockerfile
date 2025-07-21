@@ -20,8 +20,11 @@ RUN apt-get update && apt-get --no-install-recommends install -yq git cmake buil
 RUN apt-get update && \
     apt-get install -y wget && \
     apt-get install -y unzip && \
-    apt-get install -y swig
+    apt-get install -y swig && \
+    apt-get install golang-go -y
 
+  
+RUN pip install git+https://github.com/wandb/wandb.git@kyle/forward-agent-signals
 # # Create the directory where Mujoco will be installed
 # RUN mkdir -p ~/.mujoco
 # # Download and extract Mujoco
