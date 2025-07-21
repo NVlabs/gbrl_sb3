@@ -20,9 +20,19 @@ RUN apt-get update && apt-get --no-install-recommends install -yq git cmake buil
 RUN apt-get update && \
     apt-get install -y wget && \
     apt-get install -y unzip && \
-    apt-get install -y swig && \
-    apt-get install golang-go -y
+    apt-get install -y swig 
 
+RUN set -eux; \
+  GO_VER=1.23.9 ;  \
+  ARCH=amd64 ;     \
+  wget -q https://go.dev/dl/go${GO_VER}.linux-${ARCH}.tar.gz -O /tmp/go.tgz && \
+  rm -rf /usr/local/go &&                      # remove any old toolchain
+  tar -C /usr/local -xzf /tmp/go.tgz && \
+  rm /tmp/go.tgz
+
+# make the binaries visible
+ENV PATH="/usr/local/go/bin:${PATH}"
+RUN go version
   
 RUN pip install git+https://github.com/wandb/wandb.git@kyle/forward-agent-signals
 # # Create the directory where Mujoco will be installed
