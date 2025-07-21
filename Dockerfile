@@ -33,6 +33,15 @@ RUN set -eux; \
 # make the binaries visible
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN go version
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        cargo rustc pkg-config libssl-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+# --------------------------------------------------------------------
+
+# optional: confirm
+RUN cargo --version && rustc --version
   
 RUN pip install git+https://github.com/wandb/wandb.git@kyle/forward-agent-signals
 # # Create the directory where Mujoco will be installed
