@@ -26,7 +26,7 @@ RUN set -eux; \
   GO_VER=1.23.9 ;  \
   ARCH=amd64 ;     \
   wget -q https://go.dev/dl/go${GO_VER}.linux-${ARCH}.tar.gz -O /tmp/go.tgz && \
-  rm -rf /usr/local/go &&                      # remove any old toolchain
+  rm -rf /usr/local/go &&  \
   tar -C /usr/local -xzf /tmp/go.tgz && \
   rm /tmp/go.tgz
 
