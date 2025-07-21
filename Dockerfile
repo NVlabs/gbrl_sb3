@@ -34,10 +34,14 @@ RUN set -eux; \
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN go version
 
-RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends \
-        cargo rustc pkg-config libssl-dev && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# RUN apt-get update -qq && \
+#     apt-get install -y --no-install-recommends \
+#         cargo rustc pkg-config libssl-dev && \
+#     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSf https://sh.rustup.rs \
+      | bash -s -- -y --profile minimal --default-toolchain 1.79.0
+ENV PATH="/root/.cargo/bin:${PATH}"
 # --------------------------------------------------------------------
 
 # optional: confirm
