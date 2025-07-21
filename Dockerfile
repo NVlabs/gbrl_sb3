@@ -40,7 +40,7 @@ RUN go version
 #     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sSf https://sh.rustup.rs \
-      | bash -s -- -y --profile minimal --default-toolchain 1.79.0
+      | bash -s -- -y --profile minimal --default-toolchain 1.88.0
 ENV PATH="/root/.cargo/bin:${PATH}"
 # --------------------------------------------------------------------
 
