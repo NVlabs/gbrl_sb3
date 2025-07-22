@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 import json
 
-ROOT_PATH = Path(__file__).parent.parent
+ROOT_PATH = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT_PATH))
 
 from wandb.integration.sb3 import WandbCallback
