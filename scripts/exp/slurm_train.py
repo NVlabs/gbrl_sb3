@@ -181,7 +181,7 @@ if __name__ == '__main__':
     print(f"Running slurm job {job_id}")
 
     args.save_path = os.path.join(args.save_path, job_id)
-    ckpt_dir = Path(args.save_dir)
+    ckpt_dir = Path(args.save_path)
     ckpt_dir.mkdir(exist_ok=True, parents=True)
 
     callback_list = []
