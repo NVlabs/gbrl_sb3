@@ -72,7 +72,7 @@ def process_slurm_logging(args, callback_list):
         return tensorboard_log, None
 
     print(f'args.wand: {args.wandb}')
-    save_dir = os.path.join(args.save_path, f'{args.env_type}/' f'{args.env_name}/{args.algo_type}')
+    save_dir = args.save_path
     wandb_run_id_file = Path(save_dir, "wandb_run_id.json")
     wandb_run_id = json.loads(wandb_run_id_file.read_text())["wandb_run_id"] if \
         wandb_run_id_file.exists() else None
@@ -260,9 +260,7 @@ if __name__ == '__main__':
             eval_env = VecNormalize(eval_env, **args.wrapper_kwargs)
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
         callback_list.append(SLURMCheckpointCallback(save_freq=int(args.save_every / args.num_envs),
-                                                save_path=os.path.join(args.save_path,
-                                                                       f'{args.env_type}/'
-                                                                       f'{args.env_name}/{args.algo_type}'),
+                                                save_path=args.save_path,
                                                 name_prefix=f'{args.save_name}_seed_{args.seed}',
                                                 verbose=1,
                                                 save_vecnormalize=True if args.env_type != 'football' else False,
