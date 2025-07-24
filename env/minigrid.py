@@ -349,61 +349,65 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
     def _find_valid_drop_position(self):
         """Find a valid position and direction to drop the key, return (agent_pos, drop_pos, required_dir)."""
         
-        # Get ball position - it tells us which room to drop the key in
-        ball_pos = self.obj.cur_pos
-        if ball_pos is None:
-            return None
+        # # Get ball position - it tells us which room to drop the key in
+        # ball_pos = self.obj.cur_pos
+        # if ball_pos is None:
+        #     return None
         
-        ball_x, ball_y = ball_pos
-        agent_x, agent_y = self.agent_pos
-        # Define tuples of (agent_position, drop_position, required_direction)
-        # Agent stands at agent_position, faces required_direction, drops at drop_position
-        potential_configs = [
-            (agent_x - 1, agent_y),     # 1 cell left
-            (agent_x + 1, agent_y),     # 1 cell right  
-            (agent_x, agent_y - 1),     # 1 cell up
-            (agent_x, agent_y + 1),     # 1 cell down
-            (agent_x - 2, agent_y),     # 2 cells left
-            (agent_x + 2, agent_y),     # 2 cells right
-            (agent_x, agent_y + 2),     # 2 cells down
-            (agent_x - 1, agent_y + 1), # diagonal positions
-            (agent_x + 1, agent_y + 1),
-            (ball_x - 1, ball_y),     # 1 cell left
-            (ball_x + 1, ball_y),     # 1 cell right  
-            (ball_x, ball_y - 1),     # 1 cell up
-            (ball_x, ball_y + 1),     # 1 cell down
-            (ball_x - 2, ball_y),     # 2 cells left
-            (ball_x + 2, ball_y),     # 2 cells right
-            (ball_x, ball_y + 2),     # 2 cells down
-            (ball_x - 1, ball_y + 1), # diagonal positions
-            (ball_x + 1, ball_y + 1),
-        ]
+        # ball_x, ball_y = ball_pos
+        # agent_x, agent_y = self.agent_pos
+        # # Define tuples of (agent_position, drop_position, required_direction)
+        # # Agent stands at agent_position, faces required_direction, drops at drop_position
+        # potential_configs = [
+        #     (agent_x - 1, agent_y),     # 1 cell left
+        #     (agent_x + 1, agent_y),     # 1 cell right  
+        #     (agent_x, agent_y - 1),     # 1 cell up
+        #     (agent_x, agent_y + 1),     # 1 cell down
+        #     (ball_x - 1, ball_y),     # 1 cell left
+        #     (ball_x + 1, ball_y),     # 1 cell right  
+        #     (ball_x, ball_y - 1),     # 1 cell up
+        #     (ball_x, ball_y + 1),     # 1 cell down
+        #     (ball_x - 2, ball_y),     # 2 cells left
+        #     (ball_x + 2, ball_y),     # 2 cells right
+        #     (ball_x, ball_y + 2),     # 2 cells down
+        #     (ball_x, ball_y - 2),     # 2 cells down
+        # ]
 
-        drop_pos = None
-        for pot_pos in potential_configs:
-            # Check if both positions are in bounds
-            if (0 <= pot_pos[0] < self.width and 0 <= pot_pos[1] < self.height):
+        # drop_pos = None
+        # for pot_pos in potential_configs:
+        #     # Check if both positions are in bounds
+        #     if (0 <= pot_pos[0] < self.width and 0 <= pot_pos[1] < self.height):
                 
-                # Check if position is empty
-                drop_cell = self.grid.get(*pot_pos)
+        #         # Check if position is empty
+        #         drop_cell = self.grid.get(*pot_pos)
                 
-                if drop_cell is None:
-                    drop_pos = pot_pos
-                    break
+        #         if drop_cell is None:
+        #             drop_pos = pot_pos
+        #             break
 
-        if drop_pos is None:
-            return None
+        # if drop_pos is None:
+        #     return None
+        # else:
+        #     at_target = self.agent_pos[0] == drop_pos[0] and self.agent_pos[1] == drop_pos[1]
+        #     best_direction = self._find_best_direction(drop_pos)
+        #     # If already facing the best direction, move forward
+        #     if self.agent_dir == best_direction:
+        #         if at_target:
+        #             return self.actions.drop
+        #         return self.actions.forward
+        #     else:
+        #         # Turn towards the best direction
+        #         return self._turn_to_direct
+        # ion(best_direction)
+            # Check if the cell in front of the agent is empty
+        fwd_cell = self.grid.get(*self.front_pos)
+        
+        if fwd_cell is None:
+            # Front cell is empty - can drop
+            return self.actions.drop
         else:
-            at_target = self.agent_pos[0] == drop_pos[0] and self.agent_pos[1] == drop_pos[1]
-            best_direction = self._find_best_direction(drop_pos)
-            # If already facing the best direction, move forward
-            if self.agent_dir == best_direction:
-                if at_target:
-                    return self.actions.drop
-                return self.actions.forward
-            else:
-                # Turn towards the best direction
-                return self._turn_to_direction(best_direction)
+            # Front cell is occupied - can't drop, need to turn or move
+            return None
         
     def _navigate_to_target(self, target_pos):
         """Navigate to target when it's visible."""        
@@ -483,10 +487,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         if action == self.actions.pickup:
             if self.carrying and self.carrying.type == 'key':
                 self.key_found = True
-            # if self.carrying and self.carrying == self.obj:
-            #     reward = self._reward()
-            #     print("finished")
-            #     terminated = True
 
         if not self.door.is_locked:
             self.door_opened = True
@@ -495,10 +495,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         if self.compliance:
             info['compliance'] = compliance
             info['user_actions'] = user_action_onehot
-        # if terminated:
-        #     print("terminated!")
-        # info['compliance'] = 0
-        # info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
 
         return obs, reward, terminated, truncated, info
 
@@ -513,7 +509,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         self.door_opened = False
         self.start_pos = self.agent_pos
 
-        # compliance, user_action_onehot = self.get_compliance()
         if self.compliance:
             info['compliance'] = 0
             info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
@@ -564,17 +559,17 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v0",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": True, "blocked": True},
+        kwargs={"key_in_box": True, "blocked": True, "compliance": True},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dlh-v0",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": True, "blocked": False},
+        kwargs={"key_in_box": True, "blocked": False, "compliance": True},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dl-v0",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": False, "blocked": False},
+        kwargs={"key_in_box": False, "blocked": False, "compliance": True},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v1",
