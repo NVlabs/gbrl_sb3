@@ -14,7 +14,7 @@ import numpy as np
 from gymnasium.envs.registration import register
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import Ball, Box
+from minigrid.core.world_object import Ball, Box, Key
 from minigrid.minigrid_env import MiniGridEnv, TILE_PIXELS
 from minigrid.core.constants import DIR_TO_VEC
 from minigrid.envs.obstructedmaze import ObstructedMazeEnv
@@ -257,6 +257,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
         super().__init__(num_rows=1, num_cols=2, num_rooms_visited=2, **kwargs)
 
+    
     def _gen_grid(self, width, height):
         super()._gen_grid(width, height)
 
@@ -349,65 +350,80 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
     def _find_valid_drop_position(self):
         """Find a valid position and direction to drop the key, return (agent_pos, drop_pos, required_dir)."""
         
-        # # Get ball position - it tells us which room to drop the key in
-        # ball_pos = self.obj.cur_pos
-        # if ball_pos is None:
-        #     return None
-        
-        # ball_x, ball_y = ball_pos
-        # agent_x, agent_y = self.agent_pos
-        # # Define tuples of (agent_position, drop_position, required_direction)
-        # # Agent stands at agent_position, faces required_direction, drops at drop_position
-        # potential_configs = [
-        #     (agent_x - 1, agent_y),     # 1 cell left
-        #     (agent_x + 1, agent_y),     # 1 cell right  
-        #     (agent_x, agent_y - 1),     # 1 cell up
-        #     (agent_x, agent_y + 1),     # 1 cell down
-        #     (ball_x - 1, ball_y),     # 1 cell left
-        #     (ball_x + 1, ball_y),     # 1 cell right  
-        #     (ball_x, ball_y - 1),     # 1 cell up
-        #     (ball_x, ball_y + 1),     # 1 cell down
-        #     (ball_x - 2, ball_y),     # 2 cells left
-        #     (ball_x + 2, ball_y),     # 2 cells right
-        #     (ball_x, ball_y + 2),     # 2 cells down
-        #     (ball_x, ball_y - 2),     # 2 cells down
-        # ]
-
-        # drop_pos = None
-        # for pot_pos in potential_configs:
-        #     # Check if both positions are in bounds
-        #     if (0 <= pot_pos[0] < self.width and 0 <= pot_pos[1] < self.height):
-                
-        #         # Check if position is empty
-        #         drop_cell = self.grid.get(*pot_pos)
-                
-        #         if drop_cell is None:
-        #             drop_pos = pot_pos
-        #             break
-
-        # if drop_pos is None:
-        #     return None
-        # else:
-        #     at_target = self.agent_pos[0] == drop_pos[0] and self.agent_pos[1] == drop_pos[1]
-        #     best_direction = self._find_best_direction(drop_pos)
-        #     # If already facing the best direction, move forward
-        #     if self.agent_dir == best_direction:
-        #         if at_target:
-        #             return self.actions.drop
-        #         return self.actions.forward
-        #     else:
-        #         # Turn towards the best direction
-        #         return self._turn_to_direct
-        # ion(best_direction)
-            # Check if the cell in front of the agent is empty
-        fwd_cell = self.grid.get(*self.front_pos)
-        
-        if fwd_cell is None:
-            # Front cell is empty - can drop
-            return self.actions.drop
-        else:
-            # Front cell is occupied - can't drop, need to turn or move
+        # Get ball position
+        ball_pos = self.obj.cur_pos
+        if ball_pos is None:
             return None
+        ball_x, ball_y = ball_pos
+        
+        # Get door position  
+        door_pos = None
+        for i in range(self.width):
+            for j in range(self.height):
+                cell = self.grid.get(i, j)
+                if cell is not None and cell.type == 'door':
+                    door_pos = (i, j)
+                    break
+        
+        if door_pos is None:
+            return None 
+        
+        door_x, door_y = door_pos
+        
+        # Check if ball is blocking the entrance (adjacent to door)
+        ball_blocks_entrance = self._are_adjacent(ball_pos, door_pos)
+        
+        if ball_blocks_entrance:
+            # Drop key in first room (around the door, but in starting room)
+            potential_positions = [
+                (door_x - 1, door_y),      # left of door (starting room side)
+                (door_x - 2, door_y),      # 2 cells left of door
+                (door_x - 1, door_y - 1),  # diagonal from door
+                (door_x - 1, door_y + 1),  # diagonal from door
+            ]
+        else:
+            # Ball doesn't block - drop in ball's room as before
+            # Try positions in the ball's room that are away from both ball and door
+            potential_positions = [
+                (ball_x + 1, ball_y + 1),  # diagonal from ball
+                (ball_x - 1, ball_y + 1),  # diagonal from ball
+                (ball_x + 2, ball_y),      # 2 cells away from ball
+                (ball_x, ball_y + 2),      # 2 cells away from ball
+                (ball_x + 1, ball_y),      # 1 cell away from ball
+                (ball_x, ball_y + 1),      # 1 cell away from ball
+            ]
+        
+        for drop_target in potential_positions:
+            x, y = drop_target
+            
+            # Check if position is in bounds and empty
+            if (0 <= x < self.width and 0 <= y < self.height):
+                cell = self.grid.get(x, y)
+                if cell is None:
+                    # Check it's not too close to door (unless we're intentionally dropping near door)
+                    if not ball_blocks_entrance and door_pos is not None and self._are_adjacent(drop_target, door_pos):
+                        continue
+                    # Check it's not too close to ball
+                    if not self._are_adjacent(drop_target, ball_pos):
+                        # Found a good spot - now check if we can drop there
+                        if (self.front_pos[0] == x and self.front_pos[1] == y):
+                            # Facing the drop spot - can drop
+                            return self.actions.drop
+                        else:
+                            # Navigate to position where we can drop there
+                            best_direction = self._find_best_direction(drop_target)
+                            if self.agent_dir == best_direction:
+                                fwd_cell = self.grid.get(*self.front_pos)
+                                if fwd_cell is None:
+                                    return self.actions.forward
+                            return self._turn_to_direction(best_direction)
+        # If no good positions found, just drop in front wherever we are
+        fwd_cell = self.grid.get(*self.front_pos)
+        if fwd_cell is None:
+            return self.actions.drop
+
+        return None 
+
         
     def _navigate_to_target(self, target_pos):
         """Navigate to target when it's visible."""        
@@ -439,8 +455,8 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         
         for i, pos in enumerate(possible_positions):
             if self._is_valid_position(pos, target_pos):
-                # Calculate Manhattan distance from this position to target
-                dist = abs(target_x - pos[0]) + abs(target_y - pos[1])
+                # Calculate Euclidean distance from this position to target
+                dist = np.sqrt((target_x - pos[0])**2 + (target_y - pos[1])**2)
                 distances.append(dist)
                 valid_directions.append(i)
         
@@ -513,6 +529,13 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
             info['compliance'] = 0
             info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
 
+        for i in range(self.width):
+            for j in range(self.height):
+                cell = self.grid.get(i, j)
+                if cell is not None:
+                    if cell.type == 'key':
+                        key_pos = (i, j)
+                        self.key_pos = key_pos
         return  obs, info
 
 def register_minigrid_tests():
