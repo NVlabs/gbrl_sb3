@@ -32,7 +32,7 @@ from callback.callbacks import (OffPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
 from env.equation import register_equation_tests
 from env.minigrid import register_minigrid_tests
-# from env.rickety_bridge import register_rickety_bridge_tests
+
 from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper)
 from utils.helpers import make_ram_atari_env, set_seed
@@ -156,21 +156,39 @@ class SLURMCheckpointCallback(CheckpointCallback):
 
 
     def _on_step(self) -> bool:
-        response = super()._on_step()
+        if self.n_calls % self.save_freq == 0 or AutoResume.termination_requested():
+            model_path = self._checkpoint_path(extension="zip")
+            self.model.save(model_path)
+            if self.verbose >= 2:
+                print(f"Saving model checkpoint to {model_path}")
 
-        if AutoResume.termination_requested:
-            print("Received preemption indication, requesting resume...")
-            AutoResume.request_resume(user_dict={'job_id': os.environ.get("SLURM_JOB_ID"), 'reason': 'timelimit'})
-            SIGTERM_SIGNAL = 15
-            # SIGTERM inspired exit code, indicates job is preempting, just for wandb!
-            PREEMTING_EXIT_CODE = 128 + SIGTERM_SIGNAL
+            if self.save_replay_buffer and hasattr(self.model, "replay_buffer") and self.model.replay_buffer is not None:
+                # If model has a replay buffer, save it too
+                replay_buffer_path = self._checkpoint_path("replay_buffer_", extension="pkl")
+                self.model.save_replay_buffer(replay_buffer_path)
+                if self.verbose > 1:
+                    print(f"Saving model replay buffer checkpoint to {replay_buffer_path}")
 
-            if self.run is not None:
-                print("Mark preempting for wandb.")
-                self.run.mark_preempting()
-                self.run.finish(exit_code=PREEMTING_EXIT_CODE)
-                # Kill wandb agent processes before exiting
-            exit(PREEMTING_EXIT_CODE)  # exit with 0 for auto-resume to launch next slurm job
+            if self.save_vecnormalize and self.model.get_vec_normalize_env() is not None:
+                # Save the VecNormalize statistics
+                vec_normalize_path = self._checkpoint_path("vecnormalize_", extension="pkl")
+                self.model.get_vec_normalize_env().save(vec_normalize_path)
+                if self.verbose >= 2:
+                    print(f"Saving model VecNormalize to {vec_normalize_path}")
+
+            if AutoResume.termination_requested():
+                print("Received preemption indication, requesting resume...")
+                AutoResume.request_resume(user_dict={'job_id': os.environ.get("SLURM_JOB_ID"), 'reason': 'timelimit'})
+                SIGTERM_SIGNAL = 15
+                # SIGTERM inspired exit code, indicates job is preempting, just for wandb!
+                PREEMTING_EXIT_CODE = 128 + SIGTERM_SIGNAL
+
+                if self.run is not None:
+                    print("Mark preempting for wandb.")
+                    self.run.mark_preempting()
+                    self.run.finish(exit_code=PREEMTING_EXIT_CODE)
+                    # Kill wandb agent processes before exiting
+                exit(PREEMTING_EXIT_CODE)  # exit with 0 for auto-resume to launch next slurm job
 
         return response
 
@@ -239,13 +257,6 @@ if __name__ == '__main__':
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type == 'equation':
         register_equation_tests()
-        vec_env_cls = DummyVecEnv
-        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
-                           vec_env_cls=vec_env_cls)
-        if args.evaluate:
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
-    elif args.env_type == 'rickety_bridge':
-        register_rickety_bridge_tests()
         vec_env_cls = DummyVecEnv
         env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
                            vec_env_cls=vec_env_cls)
