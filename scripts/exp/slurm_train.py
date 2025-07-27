@@ -94,11 +94,11 @@ def process_slurm_logging(args, callback_list):
     wandb_run_id_file.write_text(json.dumps({"wandb_run_id": run.id}))
     print(f"WandB run initialized with run id: {run.id}, entity: {run.entity}, project: {run.project}, sweep_id: {run.sweep_id}")
 
-    print("Requesting autoresume.")
-    AutoResume.request_resume(user_dict={'job_id': os.environ.get("SLURM_JOB_ID"), 'reason': 'logger'})
-    if run is not None:
-        print("Mark preempting for wandb.")
-        run.mark_preempting()
+    # print("Requesting autoresume.")
+    # AutoResume.request_resume(user_dict={'job_id': os.environ.get("SLURM_JOB_ID"), 'reason': 'logger'})
+    # if run is not None:
+    #     print("Mark preempting for wandb.")
+    #     run.mark_preempting()
 
     callback_list.append(WandbCallback(
                          gradient_save_freq=0,
@@ -158,19 +158,19 @@ class SLURMCheckpointCallback(CheckpointCallback):
     def _on_step(self) -> bool:
         response = super()._on_step()
 
-        print("Received preemption indication, requesting resume...")
-        AutoResume.request_resume(user_dict={'job_id': os.environ.get("SLURM_JOB_ID"), 'reason': 'timelimit'})
+        if AutoResume.termination_requested:
+            print("Received preemption indication, requesting resume...")
+            AutoResume.request_resume(user_dict={'job_id': os.environ.get("SLURM_JOB_ID"), 'reason': 'timelimit'})
+            SIGTERM_SIGNAL = 15
+            # SIGTERM inspired exit code, indicates job is preempting, just for wandb!
+            PREEMTING_EXIT_CODE = 128 + SIGTERM_SIGNAL
 
-        SIGTERM_SIGNAL = 15
-        # SIGTERM inspired exit code, indicates job is preempting, just for wandb!
-        PREEMTING_EXIT_CODE = 128 + SIGTERM_SIGNAL
-
-        if self.run is not None:
-            print("Mark preempting for wandb.")
-            self.run.mark_preempting()
-            self.run.finish(exit_code=PREEMTING_EXIT_CODE)
-            # Kill wandb agent processes before exiting
-        exit(PREEMTING_EXIT_CODE)  # exit with 0 for auto-resume to launch next slurm job
+            if self.run is not None:
+                print("Mark preempting for wandb.")
+                self.run.mark_preempting()
+                self.run.finish(exit_code=PREEMTING_EXIT_CODE)
+                # Kill wandb agent processes before exiting
+            exit(PREEMTING_EXIT_CODE)  # exit with 0 for auto-resume to launch next slurm job
 
         return response
 
