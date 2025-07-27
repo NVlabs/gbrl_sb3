@@ -190,7 +190,7 @@ class SLURMCheckpointCallback(CheckpointCallback):
                     # Kill wandb agent processes before exiting
                 exit(PREEMTING_EXIT_CODE)  # exit with 0 for auto-resume to launch next slurm job
 
-        return response
+        return True
 
 if __name__ == '__main__':
     args = parse_args()
