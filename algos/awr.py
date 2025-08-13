@@ -66,8 +66,8 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_', '')), min_log_std_lr, 1)
             else:
                 log_std_lr = float(log_std_lr)
-        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and
-                                                                         env.categorical)
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (
+            hasattr(env, 'is_categorical') and env.is_categorical)
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         self.is_categorical = is_categorical
         self.is_mixed = is_mixed

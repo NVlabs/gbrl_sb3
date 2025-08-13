@@ -107,7 +107,8 @@ class DQN_GBRL(OffPolicyAlgorithm):
         tau = 1.0
         stats_window_size = 100
         policy_kwargs['tree_optimizer']['device'] = device
-        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and env.categorical) 
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (
+            hasattr(env, 'is_categorical') and env.is_categorical)
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         self.is_categorical = is_categorical
         self.is_mixed = is_mixed
