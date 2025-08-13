@@ -37,16 +37,20 @@ params:
   generator_type: "Quantile"
   shared_tree_struct: True
   feature_weights: null
-  compliance_weight: 100000.0
-  compliance_exp: 6
+  compliance_weight: 10000.0
+  # compliance_weight: 0.0
+  compliance_exp: 1.0
+  compliance_scale: 0.01
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
-    lr: 5.0e-2
+    # lr: 5.0e-2
+    lr: 0.18029126569249365
     # lr: 1.0e-3
   value_optimizer: # PPO / AWR
     algo: 'SGD'
-    lr: 0.005
+    # lr: 0.005
+    lr: 0.006
   mu_optimizer: # SAC 
     algo: 'SGD'
     lr: 5.0e-4
@@ -63,7 +67,7 @@ tree_optimizer:
     algo: "SGD"
     lr: 1.0e-1
 tree_struct:
-  max_depth: 4
+  max_depth: 6
   grow_policy: oblivious
   n_bins: 250
   # n_bins: 100
@@ -76,7 +80,7 @@ ppo_gbrl:
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-  n_steps: 128
+  n_steps: 256
   gamma: 0.99
   nn_critic: False
   gae_lambda: 0.95
@@ -85,12 +89,12 @@ ppo_gbrl:
   target_kl: null
   normalize_value_grads: False
   batch_size: 128
-  n_epochs: 10
-  clip_range: 0.2
+  n_epochs: 20
+  clip_range: 0.62
   clip_range_vf: null
   log_std_lr: lin_0.0017
   min_log_std_lr: 0.000475
-  ent_coef: 0.0
+  ent_coef: 0.08
   vf_coef: 0.871923
   max_policy_grad_norm: null
   max_value_grad_norm: null

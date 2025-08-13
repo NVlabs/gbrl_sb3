@@ -113,13 +113,6 @@ if __name__ == '__main__':
                            vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
-    elif args.env_type == 'rickety_bridge':
-        register_rickety_bridge_tests()
-        vec_env_cls = DummyVecEnv
-        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
-                           vec_env_cls=vec_env_cls)
-        if args.evaluate:
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
     else:
         print("Invalid env_type!")
     if args.wrapper == 'normalize':

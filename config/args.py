@@ -304,6 +304,7 @@ def parse_args():
     parser.add_argument('--feature_weights', type=json_string_to_list)
     parser.add_argument('--compliance_weight', type=float)
     parser.add_argument('--compliance_exp', type=float)
+    parser.add_argument('--compliance_scale', type=float)
     # Saving params
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
@@ -343,11 +344,14 @@ def parse_args():
 def get_defaults(args, defaults):
     # Set hardcoded defaults
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
-    args.env_type = args.env_type if args.env_type else 'minigrid'
+    args.env_type = args.env_type if args.env_type else 'equation'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
+    # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
+    # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
+    # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
+    args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'RicketyBridge-v0'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']
@@ -529,6 +533,8 @@ def get_defaults(args, defaults):
         gbrl_param_defaults.get('compliance_weight', 1.0)
     args.compliance_exp = args.compliance_exp if args.compliance_exp is not None else \
         gbrl_param_defaults.get('compliance_exp', 0.0)
+    args.compliance_scale = args.compliance_scale if args.compliance_scale is not None else \
+        gbrl_param_defaults.get('compliance_scale', 1.0)
     # SAC GBRL Params
     sac_gbrl_defaults = defaults.get('sac_gbrl', {})
     args.ent_lr = args.ent_lr if args.ent_lr is not None else sac_gbrl_defaults.get('ent_lr', 1.0e-3)
@@ -603,6 +609,7 @@ def process_policy_kwargs(args):
                     "feature_weights": args.feature_weights,
                     "compliance_weight": args.compliance_weight,
                     "compliance_exp": args.compliance_exp,
+                    "compliance_scale": args.compliance_scale,
                     }
     algo_kwargs = {}
     if args.algo_type == 'ppo_gbrl':

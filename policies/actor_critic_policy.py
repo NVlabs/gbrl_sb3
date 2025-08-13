@@ -236,6 +236,11 @@ class ActorCriticPolicy(BasePolicy):
         if self.logits_dim == 1 and mean_actions.ndim == 1:
             mean_actions = mean_actions.reshape((len(mean_actions), self.logits_dim))
 
+        self.mean_actions = mean_actions
+
+        # if obs[:, 0].any() == 0 and obs[:, 2].any() == 0:
+        #     idx = (obs[:, 0] == 0) & (obs[:, 2] == 0)
+        #     print(f'y = {obs[idx, 1]} and action: {mean_actions[idx]}')
         if isinstance(self.action_dist, SquashedDiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, DiagGaussianDistribution):
@@ -395,6 +400,9 @@ class ActorCriticPolicy(BasePolicy):
              compliance: Optional[Union[np.ndarray, th.Tensor]] = None,
              user_actions: Optional[Union[np.ndarray, th.Tensor]] = None,
              ) -> None:
+        # if user_actions is not None:
+        #     user_actions = (user_actions.reshape(self.mean_actions.shape) - self.mean_actions.detach()).flatten()
+
         if self.nn_critic:
             self.value_optimizer.step()
             return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip, compliance=compliance, user_actions=user_actions)
