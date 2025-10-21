@@ -344,14 +344,15 @@ def parse_args():
 def get_defaults(args, defaults):
     # Set hardcoded defaults
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
-    args.env_type = args.env_type if args.env_type else 'equation'
+    # args.env_type = args.env_type if args.env_type else 'equation'
+    args.env_type = args.env_type if args.env_type else 'minigrid'
     args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
-    # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
-    args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
+    # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'RicketyBridge-v0'
     # Set defaults from YAML
     args.seed = args.seed if args.seed is not None else defaults['env']['seed']

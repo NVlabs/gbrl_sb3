@@ -143,6 +143,7 @@ class ActorCriticPolicy(BasePolicy):
         self.log_std_init = log_std_init
         self.log_std_optimizer = None
         self.use_masking = use_masking
+        self.policy_device = tree_optimizer.get('device', 'cpu')
 
         # Action distribution
         if use_masking:
@@ -183,7 +184,7 @@ class ActorCriticPolicy(BasePolicy):
                                          output_dim=self.logits_dim,
                                          policy_optimizer=policy_optimizer,
                                          params=tree_optimizer['params'],
-                                         device=tree_optimizer.get('device', 'cpu'))
+                                         device=self.device)
             # Setup optimizer with initial learning rate
             self.value_optimizer = self.optimizer_class(self.value_net.parameters(),
                                                         lr=lr_schedule(1), **self.optimizer_kwargs)
@@ -195,7 +196,7 @@ class ActorCriticPolicy(BasePolicy):
                                      policy_optimizer=policy_optimizer,
                                      value_optimizer=value_optimizer,
                                      params=tree_optimizer['params'],
-                                     device=tree_optimizer.get('device', 'cpu'))
+                                     device=self.policy_device)
 
     def forward(self, obs: Union[th.Tensor, np.ndarray], deterministic: bool = False,
                 requires_grad: bool = False, action_masks: Optional[np.ndarray] = None,
@@ -235,30 +236,28 @@ class ActorCriticPolicy(BasePolicy):
                 mean_actions, values = self.model(obs, requires_grad, tensor=True)
         if self.logits_dim == 1 and mean_actions.ndim == 1:
             mean_actions = mean_actions.reshape((len(mean_actions), self.logits_dim))
-
         self.mean_actions = mean_actions
 
-        # if obs[:, 0].any() == 0 and obs[:, 2].any() == 0:
-        #     idx = (obs[:, 0] == 0) & (obs[:, 2] == 0)
-        #     print(f'y = {obs[idx, 1]} and action: {mean_actions[idx]}')
         if isinstance(self.action_dist, SquashedDiagGaussianDistribution):
-            return self.action_dist.proba_distribution(mean_actions, self.log_std), values
+            dist = self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, DiagGaussianDistribution):
-            return self.action_dist.proba_distribution(mean_actions, self.log_std), values
+            dist = self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, CategoricalDistribution):
-            return self.action_dist.proba_distribution(action_logits=mean_actions), values
+            dist = self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, MaskableCategoricalDistribution):
-            return self.action_dist.proba_distribution(action_logits=mean_actions), values
+            dist = self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, MultiCategoricalDistribution):
-            return self.action_dist.proba_distribution(action_logits=mean_actions), values
+            dist = self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, BernoulliDistribution):
-            return self.action_dist.proba_distribution(action_logits=mean_actions), values
+            dist = self.action_dist.proba_distribution(action_logits=mean_actions), values
         elif isinstance(self.action_dist, StateDependentNoiseDistribution):
             raise NotImplementedError
             # return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
             # return self.action_dist.proba_distribution(mean_actions, self.log_std, mean_actions)
         else:
             raise ValueError("Invalid action distribution")
+        self.distribution = dist
+        return dist
 
     def get_schedule_learning_rates(self):
         lrs = self.model.get_schedule_learning_rates()
@@ -399,15 +398,18 @@ class ActorCriticPolicy(BasePolicy):
              value_grad_clip: float = None,
              compliance: Optional[Union[np.ndarray, th.Tensor]] = None,
              user_actions: Optional[Union[np.ndarray, th.Tensor]] = None,
+             log_probs: Optional[Union[np.ndarray, th.Tensor]] = None
              ) -> None:
-        # if user_actions is not None:
-        #     user_actions = (user_actions.reshape(self.mean_actions.shape) - self.mean_actions.detach()).flatten()
+
+        expert_grads = None
+        if user_actions is not None:
+            expert_grads = th.nn.functional.softmax(self.mean_actions, dim=-1) - user_actions.reshape(self.mean_actions.shape)
 
         if self.nn_critic:
             self.value_optimizer.step()
-            return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip, compliance=compliance, user_actions=user_actions)
+            return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip, compliance=compliance, user_actions=expert_grads)
         return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
-                               value_grad_clip=value_grad_clip, compliance=compliance, user_actions=user_actions)
+                               value_grad_clip=value_grad_clip, compliance=compliance, user_actions=expert_grads)
 
     def actor_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
                    policy_grad_clip: float = None,

@@ -420,7 +420,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
                                  value_grad_clip=self.max_value_grad_norm,
                                  compliance=rollout_data.compliances,
-                                 user_actions=rollout_data.user_actions)
+                                 user_actions=rollout_data.user_actions,
+                                 log_probs=log_prob)
                 params, grads = self.policy.get_params()
                 if isinstance(grads, tuple):
                     theta_grad, values_grad = grads
