@@ -8,25 +8,24 @@
 ##############################################################################
 from __future__ import annotations
 
-from typing import Any, Iterable, SupportsFloat, TypeVar
-from gymnasium.core import ActType, ObsType
+from typing import Any
+
 import numpy as np
+from gbrl.common.utils import categorical_dtype
+from gymnasium.core import ActType, ObsType
 from gymnasium.envs.registration import register
+from minigrid.core.constants import (IDX_TO_COLOR, IDX_TO_OBJECT,
+                                     STATE_TO_IDX)
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
 from minigrid.core.world_object import Ball, Box, Key
-from minigrid.minigrid_env import MiniGridEnv, TILE_PIXELS
-from minigrid.core.constants import DIR_TO_VEC
 from minigrid.envs.obstructedmaze import ObstructedMazeEnv
-from typing import Optional
-
-from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
-from gbrl.common.utils import categorical_dtype
+from minigrid.minigrid_env import TILE_PIXELS, MiniGridEnv
 
 IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 
 
-def categorical_obs_encoding(observation, image_shape, flattened_image_shape, FullyObsWrapper = False, is_mixed = False):
+def categorical_obs_encoding(observation, image_shape, flattened_image_shape, FullyObsWrapper=False, is_mixed=False):
     # Transform the observation in some way
     categorical_array = np.empty(flattened_image_shape, dtype=categorical_dtype if not is_mixed else object)
     for i in range(image_shape[0]):
@@ -44,6 +43,7 @@ def categorical_obs_encoding(observation, image_shape, flattened_image_shape, Fu
     categorical_array[image_shape[0]*image_shape[1]] = str(observation['direction']).encode('utf-8')
     categorical_array[image_shape[0]*image_shape[1] + 1] = observation['mission'].encode('utf-8')
     return np.ascontiguousarray(categorical_array)
+
 
 def spurious_box_compliance(fwd_obj):
     if fwd_obj is not None and fwd_obj.type == 'box' and fwd_obj.color == 'red':
@@ -82,6 +82,7 @@ def simple_fetch_compliance(agent_pos, ball_pos, start_pos, move_left, from_back
         return 1
     return 0
 
+
 def obstacle_fetch_compliance(agent_pos, ball_pos, start_pos):
     ax, ay = agent_pos
     bx, by = ball_pos
@@ -93,10 +94,11 @@ def obstacle_fetch_compliance(agent_pos, ball_pos, start_pos):
         return 1
     return 0
 
+
 class SpuriousFetchEnv(MiniGridEnv):
     def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False,
                  purple_ball: bool = False, purple_box: bool = False, add_red_ball: bool = False,
-                 grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None, 
+                 grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None,
                  compliance: bool = False, **kwargs):
         self.numObjs = 3
         self.size = 8
@@ -222,7 +224,7 @@ class SpuriousFetchEnv(MiniGridEnv):
 
         # Get the contents of the cell in front of the agent
         fwd_cell = self.grid.get(*fwd_pos)
-        
+
         obs, reward, terminated, truncated, info = super().step(action)
         if self.carrying:
             if (
@@ -241,8 +243,8 @@ class SpuriousFetchEnv(MiniGridEnv):
         if self.compliance:
             info['compliance'] = spurious_box_compliance(fwd_cell)
 
-
         return obs, reward, terminated, truncated, info
+
 
 class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
     """
@@ -257,7 +259,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
         super().__init__(num_rows=1, num_cols=2, num_rooms_visited=2, **kwargs)
 
-    
     def _gen_grid(self, width, height):
         super()._gen_grid(width, height)
 
@@ -292,7 +293,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
         # Get current target information
         target_pos, target_type, correct_action_idx = self._get_current_target()
-        
+
         required_action = correct_action_idx
         if target_pos is None:
             # print(f'door opened: {self.door_opened}, key_found: {self.key_found} target not found  action: {action}, current action: {correct_action_idx}')
@@ -300,7 +301,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                 return 0, action_to_onehot(None)
             return 1, action_to_onehot(required_action)
             # Special case: Handle drop action (before calling agent_sees)
-       
+
         # 1. If target not visible, compliant with None action - let the reward guide this
         if not self.agent_sees(*target_pos):
             return 0, action_to_onehot(None)
@@ -316,7 +317,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
         # 3. Target is visible - move to target
         required_action = self._navigate_to_target(target_pos)
-        
+
         # Always: if action == required_action then compliant
         if action == required_action:
             return 0, action_to_onehot(None)
@@ -324,8 +325,9 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
     def _get_current_target(self):
         """Determine what the agent should be targeting based on current phase."""
-        key_pos = door_pos = goal_pos = None
-        
+        key_pos = door_pos = goal_pos = box_pos = None
+        key_in_box = False
+
         for i in range(self.width):
             for j in range(self.height):
                 cell = self.grid.get(i, j)
@@ -336,7 +338,14 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                         door_pos = (i, j)
                     elif cell.type == 'ball':
                         goal_pos = (i, j)
-    
+                    elif cell.type == 'box':
+                        box_pos = (i, j)
+                        # Check if box contains key
+                        if cell.contains is not None and cell.contains.type == 'key':
+                            key_in_box = True
+        if key_in_box:
+            # Must open box first
+            return box_pos, 'box', self.actions.toggle
         if not self.key_found:
             return key_pos, 'key', self.actions.pickup
         elif not self.door_opened:
@@ -349,14 +358,14 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
     def _find_valid_drop_position(self):
         """Find a valid position and direction to drop the key, return (agent_pos, drop_pos, required_dir)."""
-        
+
         # Get ball position
         ball_pos = self.obj.cur_pos
         if ball_pos is None:
             return None
         ball_x, ball_y = ball_pos
-        
-        # Get door position  
+
+        # Get door position
         door_pos = None
         for i in range(self.width):
             for j in range(self.height):
@@ -364,15 +373,12 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                 if cell is not None and cell.type == 'door':
                     door_pos = (i, j)
                     break
-        
         if door_pos is None:
-            return None 
-        
+            return None
         door_x, door_y = door_pos
-        
         # Check if ball is blocking the entrance (adjacent to door)
         ball_blocks_entrance = self._are_adjacent(ball_pos, door_pos)
-        
+
         if ball_blocks_entrance:
             # Drop key in first room (around the door, but in starting room)
             potential_positions = [
@@ -392,10 +398,10 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                 (ball_x + 1, ball_y),      # 1 cell away from ball
                 (ball_x, ball_y + 1),      # 1 cell away from ball
             ]
-        
+
         for drop_target in potential_positions:
             x, y = drop_target
-            
+
             # Check if position is in bounds and empty
             if (0 <= x < self.width and 0 <= y < self.height):
                 cell = self.grid.get(x, y)
@@ -422,14 +428,13 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         if fwd_cell is None:
             return self.actions.drop
 
-        return None 
+        return None
 
-        
     def _navigate_to_target(self, target_pos):
         """Navigate to target when it's visible."""        
         # Find the best direction among 4 possible positions
         best_direction = self._find_best_direction(target_pos)
-        
+
         # If already facing the best direction, move forward
         if self.agent_dir == best_direction:
             return self.actions.forward
@@ -441,7 +446,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         """Find direction that gets agent closest to target among 4 possible positions."""
         agent_x, agent_y = self.agent_pos
         target_x, target_y = target_pos
-        
+
         # 4 possible adjacent positions: right, down, left, up
         possible_positions = [
             (agent_x + 1, agent_y),  # right (dir 0)
@@ -449,21 +454,21 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
             (agent_x - 1, agent_y),  # left (dir 2)
             (agent_x, agent_y - 1)   # up (dir 3)
         ]
-        
+
         distances = []
         valid_directions = []
-        
+
         for i, pos in enumerate(possible_positions):
             if self._is_valid_position(pos, target_pos):
                 # Calculate Euclidean distance from this position to target
                 dist = np.sqrt((target_x - pos[0])**2 + (target_y - pos[1])**2)
                 distances.append(dist)
                 valid_directions.append(i)
-        
+
         # If no valid directions, default to right (or any direction)
         if not valid_directions:
             return 0  # Default direction
-        
+
         # Find direction with minimum distance
         min_dist_idx = distances.index(min(distances))
         return valid_directions[min_dist_idx]
@@ -471,21 +476,21 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
     def _is_valid_position(self, pos, target_pos):
         """Check if a position is valid (in bounds and walkable)."""
         x, y = pos
-        
+
         # Check bounds
         if not (0 <= x < self.width and 0 <= y < self.height):
             return False
-        
+
         cell = self.grid.get(x, y)
         # Can move to empty cells, target cell, or open doors
-        return (cell is None or 
-                (x, y) == target_pos or 
-                (cell.type == 'door' and cell.is_open))
+        return (cell is None or
+                (x, y) == target_pos or
+                (cell.type == 'door' and cell.is_open))  # type:ignore
 
     def _turn_to_direction(self, required_dir):
         """Calculate which action (left/right) to turn towards required direction."""
         angle_diff = (required_dir - self.agent_dir) % 4
-        
+
         if angle_diff == 1:  # 90 degrees clockwise
             return self.actions.right
         elif angle_diff == 2:  # 180 degrees (choose right)
@@ -506,7 +511,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
         if not self.door.is_locked:
             self.door_opened = True
-        
 
         if self.compliance:
             info['compliance'] = compliance
@@ -519,7 +523,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[ObsType, dict[str, Any]]:
+    ) -> tuple[ObsType, dict[str, Any]]:  # type:ignore
         obs, info = super().reset(seed=seed, options=options)
         self.key_found = False
         self.door_opened = False
@@ -536,7 +540,8 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                     if cell.type == 'key':
                         key_pos = (i, j)
                         self.key_pos = key_pos
-        return  obs, info
+        return obs, info
+
 
 def register_minigrid_tests():
     register(
