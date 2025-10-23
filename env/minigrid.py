@@ -256,6 +256,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         self.key_in_box = key_in_box
         self.blocked = blocked
         self.compliance = compliance
+        self.still_blocking = True
 
         super().__init__(num_rows=1, num_cols=2, num_rooms_visited=2, **kwargs)
 
@@ -309,8 +310,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         # 2. If facing target, perform correct action
         fwd_cell = self.grid.get(*self.front_pos)
         if fwd_cell is not None and fwd_cell.type == target_type:
-            # if target_type == 'ball':
-                # print(f'door opened: {self.door_opened}, key_found: {self.key_found} in front of ball action: {action}, current action: {correct_action_idx}')
             if action == required_action:
                 return 0, action_to_onehot(None)
             return 1, action_to_onehot(required_action)
@@ -325,9 +324,9 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
     def _get_current_target(self):
         """Determine what the agent should be targeting based on current phase."""
-        key_pos = door_pos = goal_pos = box_pos = None
+        key_pos = door_pos = box_pos = blocking_ball_pos = None
         key_in_box = False
-
+        goal_pos = self.obj.cur_pos
         for i in range(self.width):
             for j in range(self.height):
                 cell = self.grid.get(i, j)
@@ -336,13 +335,30 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                         key_pos = (i, j)
                     elif cell.type == 'door':
                         door_pos = (i, j)
-                    elif cell.type == 'ball':
-                        goal_pos = (i, j)
                     elif cell.type == 'box':
                         box_pos = (i, j)
                         # Check if box contains key
                         if cell.contains is not None and cell.contains.type == 'key':
                             key_in_box = True
+
+        # Identify blocking ball: any ball at (door_x - 1, door_y)
+        if self.blocked and door_pos is not None and self.still_blocking:
+            candidate_pos = (door_pos[0] - 1, door_pos[1])
+            cell = self.grid.get(*candidate_pos)
+            if cell is not None and cell.type == 'ball':
+                blocking_ball_pos = candidate_pos
+
+            if blocking_ball_pos is not None:
+                # print(f'Going to pick up ball {blocking_ball_pos}, door_pos: {door_pos}, box_pos: {box_pos}, key_pos: {key_pos}, goal_pos: {goal_pos}')
+                return blocking_ball_pos, 'ball', self.actions.pickup
+            elif self.carrying and self.carrying.type == 'ball':
+                drop_action = self._find_valid_drop_position_for_blocking_ball(box_pos, door_pos)
+                # print(f'Carrying ball {blocking_ball_pos}, door_pos: {door_pos}, box_pos: {box_pos}, key_pos: {key_pos}, goal_pos: {goal_pos}')
+                return None, 'drop', drop_action
+            elif blocking_ball_pos is not None and blocking_ball_pos[0] != door_pos[0] - 1:
+                self.still_blocking = False
+                # print(f'Blocking ball moved away from door at {blocking_ball_pos}, door_pos: {door_pos}, box_pos: {box_pos}, key_pos: {key_pos}, goal_pos: {goal_pos}')
+
         if key_in_box:
             # Must open box first
             return box_pos, 'box', self.actions.toggle
@@ -351,12 +367,68 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         elif not self.door_opened:
             return door_pos, 'door', self.actions.toggle
         elif self.carrying and self.carrying.type == 'key':
-            drop_action = self._find_valid_drop_position()
+            drop_action = self._find_valid_key_drop_position()
             return None, 'drop', drop_action
         else:
             return goal_pos, 'ball', self.actions.pickup
 
-    def _find_valid_drop_position(self):
+    def _find_valid_drop_position_for_blocking_ball(self, box_pos, door_pos):
+        """
+        Find a valid position to drop the blocking ball:
+        - In the initial room (left of the door)
+        - Prefer near the box
+        - Not adjacent to the door
+        - Prefer empty cells
+        """
+        candidates = []
+        for x in range(self.width):
+            for y in range(self.height):
+                pos = (x, y)
+                # Only allow positions in the initial room (assume initial room is left of the door)
+                if pos[0] >= door_pos[0]:
+                    continue
+                if pos[0] == door_pos[0] - 1 and pos[1] == door_pos[1]:
+                    continue
+                # Not adjacent to the door
+                if self._are_adjacent(pos, door_pos):
+                    continue
+                # Prefer near the box
+                if box_pos and self._are_adjacent(pos, box_pos):
+                    cell = self.grid.get(x, y)
+                    if cell is None:
+                        candidates.append(pos)
+        # If no adjacent-to-box positions, allow any empty cell in initial room not adjacent to door
+        if not candidates:
+            for x in range(self.width):
+                for y in range(self.height):
+                    pos = (x, y)
+                    if pos[0] >= door_pos[0]:
+                        continue
+                    if self._are_adjacent(pos, door_pos):
+                        continue
+                    if pos[0] == door_pos[0] - 1 and pos[1] == door_pos[1]:
+                        continue
+                    cell = self.grid.get(x, y)
+                    if cell is None:
+                        candidates.append(pos)
+        # Choose the first candidate that is in front of the agent, otherwise navigate to the first
+        for pos in candidates:
+            if (self.front_pos[0], self.front_pos[1]) == pos:
+                return self.actions.drop
+        if candidates:
+            best_direction = self._find_best_direction(candidates[0])
+            if self.agent_dir == best_direction:
+                fwd_cell = self.grid.get(*self.front_pos)
+                if fwd_cell is None:
+                    return self.actions.forward
+            return self._turn_to_direction(best_direction)
+        # If no good position, just drop in front if possible
+        fwd_cell = self.grid.get(*self.front_pos)
+        if fwd_cell is None:
+            return self.actions.drop
+        return None
+    
+    def _find_valid_key_drop_position(self):
         """Find a valid position and direction to drop the key, return (agent_pos, drop_pos, required_dir)."""
 
         # Get ball position
@@ -528,6 +600,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         self.key_found = False
         self.door_opened = False
         self.start_pos = self.agent_pos
+        # print('new episode')
 
         if self.compliance:
             info['compliance'] = 0
