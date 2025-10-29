@@ -675,6 +675,7 @@ def process_policy_kwargs(args):
             "device": args.device,
             "seed": args.seed,
             "verbose": args.verbose,
+            "guidance": args.guidance,
         }
     elif args.algo_type == 'a2c_gbrl':
         algo_kwargs = {

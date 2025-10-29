@@ -353,7 +353,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                 return blocking_ball_pos, 'ball', self.actions.pickup
             elif self.carrying and self.carrying.type == 'ball':
                 drop_action = self._find_valid_drop_position_for_blocking_ball(box_pos, door_pos)
-                # print(f'Carrying ball {blocking_ball_pos}, door_pos: {door_pos}, box_pos: {box_pos}, key_pos: {key_pos}, goal_pos: {goal_pos}')
                 return None, 'drop', drop_action
             elif blocking_ball_pos is not None and blocking_ball_pos[0] != door_pos[0] - 1:
                 self.still_blocking = False
@@ -588,14 +587,18 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         info['user_actions'] = user_action_onehot
 
         if self.guided_reward:
-            # if terminated or truncated:
-            #     reward -= self.accum_reward  # type: ignore
-            if guidance_label == 0:
-                reward += 1.0 / self.max_steps  # type: ignore
-                # self.accum_reward += 0.1  # type: ignore
+            def action_from_onehot(action_one_hot):
+                if 1 not in action_one_hot:
+                    return None
+                return action_one_hot.index(1)
+
+            guided_action = action_from_onehot(user_action_onehot)
+            # print('guided_action:', guided_action, 'action:', action, 'user_action_onehot:', user_action_onehot)
+            if guided_action is None:
+                reward += 1 / self.max_steps  # type: ignore
 
         # print(f'reward: {reward}, compliance: {guidance_label}, accum_reward: {self.accum_reward}')
-
+        # print(terminated)
         return obs, reward, terminated, truncated, info
 
     def reset(
@@ -621,7 +624,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                         key_pos = (i, j)
                         self.key_pos = key_pos
 
-        self.accum_reward = 0.0
         return obs, info
 
 
