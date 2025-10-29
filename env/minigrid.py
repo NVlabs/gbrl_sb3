@@ -427,7 +427,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         if fwd_cell is None:
             return self.actions.drop
         return None
-    
+
     def _find_valid_key_drop_position(self):
         """Find a valid position and direction to drop the key, return (agent_pos, drop_pos, required_dir)."""
 
@@ -588,11 +588,11 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         info['user_actions'] = user_action_onehot
 
         if self.guided_reward:
-            if terminated or truncated:
-                reward -= self.accum_reward  # type: ignore
-            elif guidance_label == 0:
-                reward += 0.1  # type: ignore
-                self.accum_reward += 0.1  # type: ignore
+            # if terminated or truncated:
+            #     reward -= self.accum_reward  # type: ignore
+            if guidance_label == 0:
+                reward += 1.0 / self.max_steps  # type: ignore
+                # self.accum_reward += 0.1  # type: ignore
 
         # print(f'reward: {reward}, compliance: {guidance_label}, accum_reward: {self.accum_reward}')
 
