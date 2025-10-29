@@ -252,10 +252,10 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
     rooms. Doors are obstructed by a ball and keys are hidden in boxes.
     """
 
-    def __init__(self, key_in_box=True, blocked=True, compliance=True, **kwargs):
+    def __init__(self, key_in_box=True, blocked=True, compliance=True, guided_reward=False, **kwargs):
         self.key_in_box = key_in_box
         self.blocked = blocked
-        self.compliance = compliance
+        self.guided_reward = guided_reward
         self.still_blocking = True
 
         super().__init__(num_rows=1, num_cols=2, num_rooms_visited=2, **kwargs)
@@ -284,7 +284,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         # Check if they are adjacent (including diagonals)
         return (abs(ax - bx) == 1 and ay == by) or (abs(ay - by) == 1 and ax == bx)
 
-    def get_compliance(self, action):
+    def get_guidance(self, action):
         def action_to_onehot(action_idx):
             if action_idx is None:
                 return [0, 0, 0, 0, 0, 0, 0]
@@ -573,7 +573,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
             return self.actions.forward
 
     def step(self, action):
-        compliance, user_action_onehot = self.get_compliance(action)
+        guidance_label, user_action_onehot = self.get_guidance(action)
         # print(compliance, user_action_onehot)
         obs, reward, terminated, truncated, info = super().step(action)
 
@@ -584,9 +584,17 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         if not self.door.is_locked:
             self.door_opened = True
 
-        if self.compliance:
-            info['compliance'] = compliance
-            info['user_actions'] = user_action_onehot
+        info['compliance'] = guidance_label
+        info['user_actions'] = user_action_onehot
+
+        if self.guided_reward:
+            if terminated or truncated:
+                reward -= self.accum_reward  # type: ignore
+            elif guidance_label == 0:
+                reward += 0.1  # type: ignore
+                self.accum_reward += 0.1  # type: ignore
+
+        # print(f'reward: {reward}, compliance: {guidance_label}, accum_reward: {self.accum_reward}')
 
         return obs, reward, terminated, truncated, info
 
@@ -602,9 +610,8 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         self.start_pos = self.agent_pos
         # print('new episode')
 
-        if self.compliance:
-            info['compliance'] = 0
-            info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
+        info['compliance'] = 0
+        info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
 
         for i in range(self.width):
             for j in range(self.height):
@@ -613,6 +620,8 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
                     if cell.type == 'key':
                         key_pos = (i, j)
                         self.key_pos = key_pos
+
+        self.accum_reward = 0.0
         return obs, info
 
 
@@ -660,30 +669,30 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v0",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": True, "blocked": True, "compliance": True},
+        kwargs={"key_in_box": True, "blocked": True, "guided_reward": False},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dlh-v0",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": True, "blocked": False, "compliance": True},
+        kwargs={"key_in_box": True, "blocked": False, "guided_reward": False},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dl-v0",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": False, "blocked": False, "compliance": True},
+        kwargs={"key_in_box": False, "blocked": False, "guided_reward": False},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v1",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": True, "blocked": True, "compliance": False},
+        kwargs={"key_in_box": True, "blocked": True, "guided_reward": True},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dlh-v1",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": True, "blocked": False, "compliance": False},
+        kwargs={"key_in_box": True, "blocked": False, "guided_reward": True},
     )
     register(
         id="MiniGrid-ObstructedMazeCompliance_1Dl-v1",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
-        kwargs={"key_in_box": False, "blocked": False, "compliance": False},
+        kwargs={"key_in_box": False, "blocked": False, "guided_reward": True},
     )

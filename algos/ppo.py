@@ -147,6 +147,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  verbose: int = 1,
                  tensorboard_log: str = None,
                  use_masking: bool = False,
+                 guidance: bool = False,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -213,6 +214,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         self.rollout_cntr = 0
         self.prev_timesteps = 0
         self.policy_bound_loss_weight = policy_bound_loss_weight
+        self.guidance = guidance
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -415,13 +417,19 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 if self.target_kl is not None and self.target_kl > 0 and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
                     break
+                
+                if self.guidance:
+                    guidance = {'compliance': rollout_data.compliances,
+                               'user_actions': rollout_data.user_actions}
+                else:
+                    guidance = {}
+                
 
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
                                  value_grad_clip=self.max_value_grad_norm,
-                                 compliance=rollout_data.compliances,
-                                 user_actions=rollout_data.user_actions,
-                                 log_probs=log_prob)
+                                 log_probs=log_prob,
+                                 **guidance)
                 params, grads = self.policy.get_params()
                 if isinstance(grads, tuple):
                     theta_grad, values_grad = grads

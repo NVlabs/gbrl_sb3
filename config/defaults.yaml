@@ -81,6 +81,7 @@ ppo_gbrl:
   atari_wrapper_kwargs:
     clip_reward: True
   n_steps: 256
+  guidance: False
   gamma: 0.99
   nn_critic: False
   gae_lambda: 0.95

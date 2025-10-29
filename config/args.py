@@ -334,6 +334,8 @@ def parse_args():
     parser.add_argument('--rollouts_player', type=int)
     # openspiel
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
+    # guidance
+    parser.add_argument('--guidance', type=str2bool)
     args = parser.parse_args()
 
     defaults = load_yaml_defaults()
@@ -346,11 +348,11 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
     # args.env_type = args.env_type if args.env_type else 'equation'
     args.env_type = args.env_type if args.env_type else 'minigrid'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dlh-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
     # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
@@ -537,6 +539,8 @@ def get_defaults(args, defaults):
         gbrl_param_defaults.get('compliance_exp', 0.0)
     args.compliance_scale = args.compliance_scale if args.compliance_scale is not None else \
         gbrl_param_defaults.get('compliance_scale', 1.0)
+    args.guidance = args.guidance if args.guidance is not None else \
+        gbrl_param_defaults.get('guidance', False)
     # SAC GBRL Params
     sac_gbrl_defaults = defaults.get('sac_gbrl', {})
     args.ent_lr = args.ent_lr if args.ent_lr is not None else sac_gbrl_defaults.get('ent_lr', 1.0e-3)
