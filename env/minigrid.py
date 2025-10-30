@@ -296,9 +296,16 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         # Get current target information
         target_pos, target_type, correct_action_idx, is_goal = self._get_current_target()
 
-        if self.partial_guidance is not None and self.partial_guidance == 'before_goal' and is_goal:
-            # No guidance when going for goal
-            return 0, action_to_onehot(None)
+        if self.partial_guidance is not None:
+            if self.partial_guidance == 'before_goal' and is_goal:
+                # No guidance when going for goal
+                return 0, action_to_onehot(None)
+            elif self.partial_guidance == 'after_door' and self.door_opened:
+                # No guidance after door opened
+                return 0, action_to_onehot(None)
+            elif self.partial_guidance == 'before_door' and self.key_found:
+                # No guidance before door opened
+                return 0, action_to_onehot(None)
 
         required_action = correct_action_idx
         if target_pos is None:
@@ -732,4 +739,34 @@ def register_minigrid_tests():
         id="MiniGrid-ObstructedMazeCompliance_1Dl-v2",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
         kwargs={"key_in_box": False, "blocked": False, "guided_reward": False, "partial_guidance": 'before_goal'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v3r",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": True, "guided_reward": True, "partial_guidance": 'before_door'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlh-v3r",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": False, "guided_reward": True, "partial_guidance": 'before_door'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dl-v3r",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": False, "blocked": False, "guided_reward": True, "partial_guidance": 'before_door'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v3",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": True, "guided_reward": False, "partial_guidance": 'before_door'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlh-v3",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": False, "guided_reward": False, "partial_guidance": 'before_door'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dl-v3",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": False, "blocked": False, "guided_reward": False, "partial_guidance": 'before_door'},
     )
