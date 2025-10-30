@@ -303,8 +303,8 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         required_action = correct_action_idx
         if target_pos is None:
             # print(f'door opened: {self.door_opened}, key_found: {self.key_found} target not found  action: {action}, current action: {correct_action_idx}')
-            if action == required_action:
-                return 0, action_to_onehot(None)
+            # if action == required_action:
+                # return 0, action_to_onehot(None)
             return 1, action_to_onehot(required_action)
             # Special case: Handle drop action (before calling agent_sees)
 
@@ -315,16 +315,16 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         # 2. If facing target, perform correct action
         fwd_cell = self.grid.get(*self.front_pos)
         if fwd_cell is not None and fwd_cell.type == target_type:
-            if action == required_action:
-                return 0, action_to_onehot(None)
+            # if action == required_action:
+            #     return 0, action_to_onehot(None)
             return 1, action_to_onehot(required_action)
 
         # 3. Target is visible - move to target
         required_action = self._navigate_to_target(target_pos)
 
         # Always: if action == required_action then compliant
-        if action == required_action:
-            return 0, action_to_onehot(None)
+        # if action == required_action:
+        #     return 0, action_to_onehot(None)
         return 1, action_to_onehot(required_action)
 
     def _get_current_target(self):
@@ -599,7 +599,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
             guided_action = action_from_onehot(user_action_onehot)
             # print('guided_action:', guided_action, 'action:', action, 'user_action_onehot:', user_action_onehot)
-            if guided_action is None:
+            if guidance_label and guided_action is not None and guided_action == action:
                 reward += 1 / self.max_steps  # type: ignore
 
         # print(f'reward: {reward}, compliance: {guidance_label}, accum_reward: {self.accum_reward}')
