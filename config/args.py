@@ -352,7 +352,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v1'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v2r'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
     # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'

@@ -40,6 +40,7 @@ params:
   compliance_weight: 100000.0
   # compliance_weight: 0.0
   compliance_exp: 1.0
+  guidance: False
   compliance_scale: 1.0
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
@@ -81,7 +82,6 @@ ppo_gbrl:
   atari_wrapper_kwargs:
     clip_reward: True
   n_steps: 256
-  guidance: False
   gamma: 0.99
   nn_critic: False
   gae_lambda: 0.95

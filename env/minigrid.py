@@ -252,10 +252,11 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
     rooms. Doors are obstructed by a ball and keys are hidden in boxes.
     """
 
-    def __init__(self, key_in_box=True, blocked=True, compliance=True, guided_reward=False, **kwargs):
+    def __init__(self, key_in_box=True, blocked=True, guided_reward=False, partial_guidance=None, **kwargs):
         self.key_in_box = key_in_box
         self.blocked = blocked
         self.guided_reward = guided_reward
+        self.partial_guidance = partial_guidance
         self.still_blocking = True
 
         super().__init__(num_rows=1, num_cols=2, num_rooms_visited=2, **kwargs)
@@ -293,7 +294,11 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
             return onehot
 
         # Get current target information
-        target_pos, target_type, correct_action_idx = self._get_current_target()
+        target_pos, target_type, correct_action_idx, is_goal = self._get_current_target()
+
+        if self.partial_guidance is not None and self.partial_guidance == 'before_goal' and is_goal:
+            # No guidance when going for goal
+            return 0, action_to_onehot(None)
 
         required_action = correct_action_idx
         if target_pos is None:
@@ -350,26 +355,26 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
             if blocking_ball_pos is not None:
                 # print(f'Going to pick up ball {blocking_ball_pos}, door_pos: {door_pos}, box_pos: {box_pos}, key_pos: {key_pos}, goal_pos: {goal_pos}')
-                return blocking_ball_pos, 'ball', self.actions.pickup
+                return blocking_ball_pos, 'ball', self.actions.pickup, False
             elif self.carrying and self.carrying.type == 'ball':
                 drop_action = self._find_valid_drop_position_for_blocking_ball(box_pos, door_pos)
-                return None, 'drop', drop_action
+                return None, 'drop', drop_action, False
             elif blocking_ball_pos is not None and blocking_ball_pos[0] != door_pos[0] - 1:
                 self.still_blocking = False
                 # print(f'Blocking ball moved away from door at {blocking_ball_pos}, door_pos: {door_pos}, box_pos: {box_pos}, key_pos: {key_pos}, goal_pos: {goal_pos}')
 
         if key_in_box:
             # Must open box first
-            return box_pos, 'box', self.actions.toggle
+            return box_pos, 'box', self.actions.toggle, False
         if not self.key_found:
-            return key_pos, 'key', self.actions.pickup
+            return key_pos, 'key', self.actions.pickup, False
         elif not self.door_opened:
-            return door_pos, 'door', self.actions.toggle
+            return door_pos, 'door', self.actions.toggle, False
         elif self.carrying and self.carrying.type == 'key':
             drop_action = self._find_valid_key_drop_position()
-            return None, 'drop', drop_action
+            return None, 'drop', drop_action, False
         else:
-            return goal_pos, 'ball', self.actions.pickup
+            return goal_pos, 'ball', self.actions.pickup, True
 
     def _find_valid_drop_position_for_blocking_ball(self, box_pos, door_pos):
         """
@@ -697,4 +702,34 @@ def register_minigrid_tests():
         id="MiniGrid-ObstructedMazeCompliance_1Dl-v1",
         entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
         kwargs={"key_in_box": False, "blocked": False, "guided_reward": True},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v2r",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": True, "guided_reward": True, "partial_guidance": 'before_goal'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlh-v2r",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": False, "guided_reward": True, "partial_guidance": 'before_goal'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dl-v2r",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": False, "blocked": False, "guided_reward": True, "partial_guidance": 'before_goal'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlhb-v2",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": True, "guided_reward": False, "partial_guidance": 'before_goal'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dlh-v2",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": True, "blocked": False, "guided_reward": False, "partial_guidance": 'before_goal'},
+    )
+    register(
+        id="MiniGrid-ObstructedMazeCompliance_1Dl-v2",
+        entry_point="env.minigrid:ObstructedMazeCompliance_1Dl",
+        kwargs={"key_in_box": False, "blocked": False, "guided_reward": False, "partial_guidance": 'before_goal'},
     )
