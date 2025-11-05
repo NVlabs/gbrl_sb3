@@ -302,9 +302,8 @@ def parse_args():
     parser.add_argument('--generator_type', type=str, choices=['Quantile', 'quantile', 'l2', 'Uniform', 'uniform'])
     parser.add_argument('--grow_policy', type=str, choices=['Oblivious', 'Greedy', 'greedy', 'oblivious'])
     parser.add_argument('--feature_weights', type=json_string_to_list)
-    parser.add_argument('--compliance_weight', type=float)
-    parser.add_argument('--compliance_exp', type=float)
-    parser.add_argument('--compliance_scale', type=float)
+    parser.add_argument('--guidance_weight', type=float)
+    parser.add_argument('--guidance_scale', type=float)
     # Saving params
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
@@ -348,11 +347,11 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
     # args.env_type = args.env_type if args.env_type else 'equation'
     args.env_type = args.env_type if args.env_type else 'minigrid'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_nn'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v2r'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
     # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
@@ -533,12 +532,10 @@ def get_defaults(args, defaults):
         gbrl_param_defaults['shared_tree_struct']
     args.feature_weights = args.feature_weights if args.feature_weights is not None else \
         gbrl_param_defaults['feature_weights']
-    args.compliance_weight = args.compliance_weight if args.compliance_weight is not None else \
-        gbrl_param_defaults.get('compliance_weight', 1.0)
-    args.compliance_exp = args.compliance_exp if args.compliance_exp is not None else \
-        gbrl_param_defaults.get('compliance_exp', 0.0)
-    args.compliance_scale = args.compliance_scale if args.compliance_scale is not None else \
-        gbrl_param_defaults.get('compliance_scale', 1.0)
+    args.guidance_weight = args.guidance_weight if args.guidance_weight is not None else \
+        gbrl_param_defaults.get('guidance_weight', 1.0)
+    args.guidance_scale = args.guidance_scale if args.guidance_scale is not None else \
+        gbrl_param_defaults.get('guidance_scale', 1.0)
     args.guidance = args.guidance if args.guidance is not None else \
         gbrl_param_defaults.get('guidance', False)
     # SAC GBRL Params
@@ -613,9 +610,8 @@ def process_policy_kwargs(args):
                     'control_variates': args.control_variates,
                     "generator_type": args.generator_type,
                     "feature_weights": args.feature_weights,
-                    "compliance_weight": args.compliance_weight,
-                    "compliance_exp": args.compliance_exp,
-                    "compliance_scale": args.compliance_scale,
+                    "guidance_weight": args.guidance_weight,
+                    "guidance_scale": args.guidance_scale,
                     }
     algo_kwargs = {}
     if args.algo_type == 'ppo_gbrl':

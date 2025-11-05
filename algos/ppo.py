@@ -417,14 +417,13 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 if self.target_kl is not None and self.target_kl > 0 and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
                     break
-                
+    
                 if self.guidance:
-                    guidance = {'compliance': rollout_data.compliances,
-                               'user_actions': rollout_data.user_actions}
+                    guidance = {'guidance_labels': rollout_data.guidance_labels,
+                                'guidance_actions': rollout_data.guidance_actions}
                 else:
                     guidance = {}
                 
-
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
                                  value_grad_clip=self.max_value_grad_norm,
@@ -441,9 +440,6 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     theta = params
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
-                # print(f'compliances: {rollout_data.compliances}, user_actions: {rollout_data.user_actions.reshape(len(rollout_data.compliances), 7)}')
-                # if 
-                # exit()
 
                 theta_maxs.append(theta.max().item())
                 theta_mins.append(theta.min().item())
@@ -597,12 +593,12 @@ class PPO_GBRL(OnPolicyAlgorithm):
             if self.use_masking:
                 kwargs['action_masks'] = action_masks
 
-            compliances = [info.get('compliance', None) for info in infos]
-            user_action_onehot = [info.get('user_actions', None) for info in infos]
-            if compliances[0] is not None:
-                kwargs['compliance'] = compliances if compliances[0] is not None else None
-                kwargs['user_actions'] = user_action_onehot if user_action_onehot[0] is not None else None
-            
+            guidance_labels = [info.get('guidance_labels', None) for info in infos]
+            guidance_actions = [info.get('guidance_actions', None) for info in infos]
+            if guidance_labels[0] is not None:
+                kwargs['guidance_labels'] = guidance_labels if guidance_labels[0] is not None else None
+                kwargs['guidance_actions'] = guidance_actions if guidance_actions[0] is not None else None
+
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,

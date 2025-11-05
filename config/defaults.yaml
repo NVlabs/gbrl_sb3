@@ -37,11 +37,10 @@ params:
   generator_type: "Quantile"
   shared_tree_struct: True
   feature_weights: null
-  compliance_weight: 100000.0
-  # compliance_weight: 0.0
-  compliance_exp: 1.0
-  guidance: False
-  compliance_scale: 1.0
+  guidance_weight: 100000.0
+  # guidance_weight: 0.0
+  guidance: True
+  guidance_scale: 1.0
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'

@@ -45,61 +45,11 @@ def categorical_obs_encoding(observation, image_shape, flattened_image_shape, Fu
     return np.ascontiguousarray(categorical_array)
 
 
-def spurious_box_compliance(fwd_obj):
-    if fwd_obj is not None and fwd_obj.type == 'box' and fwd_obj.color == 'red':
-        return 1
-    return 0
-
-
-def simple_fetch_compliance(agent_pos, ball_pos, start_pos, move_left, from_back):
-    ax, ay = agent_pos
-    bx, by = ball_pos
-    sx, sy = start_pos
-
-    if from_back:
-        # Get all four adjacent positions around the ball
-        neighbors = [(bx - 1, by), (bx + 1, by), (bx, by - 1), (bx, by + 1)]
-
-        # Determine the "back" position based on start and ball
-        back = (sx, sy)
-        dx = bx - sx
-        dy = by - sy
-        back_pos = (bx, by - 1)
-
-        if agent_pos in neighbors:
-            if agent_pos == back_pos:
-                return 0  # approaching from back is compliant
-            else:
-                return 1  # adjacent but not from back = non-compliant
-        if ax == sx and ay != sy and agent_pos != back_pos:
-            return 1
-        return 0  # not adjacent = compliant
-    # non-compliant if:  (a) still in or right of centre  AND  (b) has climbed > 1 row above start
-    # if (ax > bx) or (ax == bx and (sy - ay > 1)):
-    if (ax == sx and ay == sy):
-        return 0
-    elif (move_left and ax >= bx) or (not move_left and ax <= bx):
-        return 1
-    return 0
-
-
-def obstacle_fetch_compliance(agent_pos, ball_pos, start_pos):
-    ax, ay = agent_pos
-    bx, by = ball_pos
-    sx, sy = start_pos
-
-    # non-compliant if:  (a) still in or right of centre  AND  (b) has climbed > 1 row above start
-    # if (ax > bx) or (ax == bx and (sy - ay > 1)):
-    if (ax > bx):
-        return 1
-    return 0
-
-
 class SpuriousFetchEnv(MiniGridEnv):
     def __init__(self, size=8, numObjs=3, max_steps: int | None = None, use_box: bool = True, randomize: bool = False,
                  purple_ball: bool = False, purple_box: bool = False, add_red_ball: bool = False,
                  grey_ball: bool = False, mission_based: bool = True, test_box_idx: int = None,
-                 compliance: bool = False, **kwargs):
+                 **kwargs):
         self.numObjs = 3
         self.size = 8
         self.obj_types = ["ball"]
@@ -119,7 +69,6 @@ class SpuriousFetchEnv(MiniGridEnv):
         self.mission_based = mission_based
         self.purple_box = purple_box
         self.add_red_ball = add_red_ball
-        self.compliance = compliance
         MISSION_SYNTAX = [
             "get a"
         ]
@@ -237,12 +186,6 @@ class SpuriousFetchEnv(MiniGridEnv):
                 reward = 0
                 terminated = True
 
-        # if self.compliance:
-        #     spurious_compliance(obs, self.observation_space)
-                # Get the position in front of the agent
-        if self.compliance:
-            info['compliance'] = spurious_box_compliance(fwd_cell)
-
         return obs, reward, terminated, truncated, info
 
 
@@ -295,7 +238,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
 
         # Get current target information
         target_pos, target_type, correct_action_idx, is_goal = self._get_current_target()
-
+        # print('pratial', self.partial_guidance)
         if self.partial_guidance is not None:
             if self.partial_guidance == 'before_goal' and is_goal:
                 # No guidance when going for goal
@@ -311,7 +254,7 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         if target_pos is None:
             # print(f'door opened: {self.door_opened}, key_found: {self.key_found} target not found  action: {action}, current action: {correct_action_idx}')
             # if action == required_action:
-                # return 0, action_to_onehot(None)
+            # return 0, action_to_onehot(None)
             return 1, action_to_onehot(required_action)
             # Special case: Handle drop action (before calling agent_sees)
 
@@ -595,8 +538,8 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         if not self.door.is_locked:
             self.door_opened = True
 
-        info['compliance'] = guidance_label
-        info['user_actions'] = user_action_onehot
+        info['guidance_labels'] = guidance_label
+        info['guidance_actions'] = user_action_onehot
 
         if self.guided_reward:
             def action_from_onehot(action_one_hot):
@@ -609,8 +552,6 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
             if guidance_label and guided_action is not None and guided_action == action:
                 reward += 1 / self.max_steps  # type: ignore
 
-        # print(f'reward: {reward}, compliance: {guidance_label}, accum_reward: {self.accum_reward}')
-        # print(terminated)
         return obs, reward, terminated, truncated, info
 
     def reset(
@@ -625,8 +566,8 @@ class ObstructedMazeCompliance_1Dl(ObstructedMazeEnv):
         self.start_pos = self.agent_pos
         # print('new episode')
 
-        info['compliance'] = 0
-        info['user_actions'] = [0, 0, 0, 0, 0, 0, 0]
+        info['guidance_labels'] = 0
+        info['guidance_actions'] = [0, 0, 0, 0, 0, 0, 0]
 
         for i in range(self.width):
             for j in range(self.height):

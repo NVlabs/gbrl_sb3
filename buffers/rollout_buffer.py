@@ -26,8 +26,8 @@ class RolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
-    compliances: th.Tensor
-    user_actions: th.Tensor
+    guidance_labels: th.Tensor
+    guidance_actions: th.Tensor
 
 class CategoricalRolloutBufferSamples(NamedTuple):
     observations: np.ndarray
@@ -36,8 +36,8 @@ class CategoricalRolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
-    compliances: th.Tensor
-    user_actions: th.Tensor
+    guidance_labels: th.Tensor
+    guidance_actions: th.Tensor
 
 
 class MaskableCategoricalRolloutBufferSamples(NamedTuple):
@@ -90,8 +90,8 @@ class RolloutBuffer(SB3_RolloutBuffer):
     episode_starts: np.ndarray
     log_probs: np.ndarray
     values: np.ndarray
-    compliances: np.ndarray
-    user_actions: np.ndarray
+    guidance_labels: np.ndarray
+    guidance_actions: np.ndarray
 
     def __init__(
         self,
@@ -112,8 +112,8 @@ class RolloutBuffer(SB3_RolloutBuffer):
 
     def reset(self) -> None:
         super().reset()
-        self.compliances = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.user_actions = np.zeros((self.buffer_size, self.n_envs, self.logits_dim), dtype=np.float32)
+        self.guidance_labels = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.guidance_actions = np.zeros((self.buffer_size, self.n_envs, self.logits_dim), dtype=np.float32)
 
     def add(
         self,
@@ -123,8 +123,8 @@ class RolloutBuffer(SB3_RolloutBuffer):
         episode_start: np.ndarray,
         value: th.Tensor,
         log_prob: th.Tensor,
-        compliance: Optional[np.ndarray] = None,
-        user_actions: Optional[np.ndarray] = None,
+        guidance_labels: Optional[np.ndarray] = None,
+        guidance_actions: Optional[np.ndarray] = None,
     ) -> None:
         """
         :param obs: Observation
@@ -154,11 +154,11 @@ class RolloutBuffer(SB3_RolloutBuffer):
         self.episode_starts[self.pos] = np.array(episode_start).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
-        if compliance is not None:
-            self.compliances[self.pos] = np.array(compliance).copy()
+        if guidance_labels is not None:
+            self.guidance_labels[self.pos] = np.array(guidance_labels).copy()
 
-        if user_actions is not None:
-            self.user_actions[self.pos] = np.array(user_actions).copy()
+        if guidance_actions is not None:
+            self.guidance_actions[self.pos] = np.array(guidance_actions).copy()
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -175,8 +175,8 @@ class RolloutBuffer(SB3_RolloutBuffer):
                 "log_probs",
                 "advantages",
                 "returns",
-                "compliances",
-                "user_actions",
+                "guidance_labels",
+                "guidance_actions",
             ]
 
             for tensor in _tensor_names:
@@ -204,8 +204,8 @@ class RolloutBuffer(SB3_RolloutBuffer):
             self.log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
-            self.compliances[batch_inds].flatten(),
-            self.user_actions[batch_inds].flatten(),
+            self.guidance_labels[batch_inds].flatten(),
+            self.guidance_actions[batch_inds].flatten(),
         )
         return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
@@ -240,8 +240,8 @@ class CategoricalRolloutBuffer(BaseBuffer):
     episode_starts: np.ndarray
     log_probs: np.ndarray
     values: np.ndarray
-    compliances: np.ndarray
-    user_actions: np.ndarray
+    guidance_labels: np.ndarray
+    guidance_actions: np.ndarray
 
     def __init__(
         self,
@@ -271,8 +271,8 @@ class CategoricalRolloutBuffer(BaseBuffer):
         self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if self.is_mixed else categorical_dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.compliances = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.user_actions = np.zeros((self.buffer_size, self.n_envs, self.logits_dim), dtype=np.float32)
+        self.guidance_labels = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.guidance_actions = np.zeros((self.buffer_size, self.n_envs, self.logits_dim), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -326,8 +326,8 @@ class CategoricalRolloutBuffer(BaseBuffer):
         episode_start: np.ndarray,
         value: th.Tensor,
         log_prob: th.Tensor,
-        compliance: Optional[np.ndarray] = None,
-        user_actions: Optional[np.ndarray] = None,
+        guidance_labels: Optional[np.ndarray] = None,
+        guidance_actions: Optional[np.ndarray] = None,
     ) -> None:
         """
         :param obs: Observation
@@ -338,7 +338,7 @@ class CategoricalRolloutBuffer(BaseBuffer):
             following the current policy.
         :param log_prob: log probability of the action
             following the current policy.
-        :param compliance: does the state complie with the guidelines.
+        :param guidance_labels: does the state complie with the guidelines.
         """
         if len(log_prob.shape) == 0:
             # Reshape 0-d tensor to avoid error
@@ -359,11 +359,11 @@ class CategoricalRolloutBuffer(BaseBuffer):
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
 
-        if compliance is not None:
-            self.compliances[self.pos] = np.array(compliance).copy()
+        if guidance_labels is not None:
+            self.guidance_labels[self.pos] = np.array(guidance_labels).copy()
 
-        if user_actions is not None:
-            self.user_actions[self.pos] = np.array(user_actions).copy()
+        if guidance_actions is not None:
+            self.guidance_actions[self.pos] = np.array(guidance_actions).copy()
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -381,8 +381,8 @@ class CategoricalRolloutBuffer(BaseBuffer):
                 "log_probs",
                 "advantages",
                 "returns",
-                "compliances",
-                "user_actions",
+                "guidance_labels",
+                "guidance_actions",
             ]
 
             for tensor in _tensor_names:
@@ -428,8 +428,8 @@ class CategoricalRolloutBuffer(BaseBuffer):
             self.log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
-            self.compliances[batch_inds].flatten(),
-            self.user_actions[batch_inds].flatten(),
+            self.guidance_labels[batch_inds].flatten(),
+            self.guidance_actions[batch_inds].flatten(),
         )
         return CategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 
