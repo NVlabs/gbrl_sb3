@@ -143,6 +143,7 @@ class ActorCriticPolicy(BasePolicy):
         self.log_std_init = log_std_init
         self.log_std_optimizer = None
         self.use_masking = use_masking
+        self.lr_schedule = lr_schedule
 
         # Action distribution
         if use_masking:
@@ -225,9 +226,11 @@ class ActorCriticPolicy(BasePolicy):
         """
         if self.nn_critic:
             mean_actions = self.model(obs, requires_grad, tensor=True, stop_idx=stop_idx)
-            values = self.value_net(obs)
+            values = self.value_net(obs.float())
         else:
             mean_actions, values = self.model(obs, requires_grad, tensor=True)
+
+        mean_actions = mean_actions.reshape(-1, self.logits_dim)
         if isinstance(self.action_dist, SquashedDiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std), values
         elif isinstance(self.action_dist, DiagGaussianDistribution):
@@ -247,13 +250,14 @@ class ActorCriticPolicy(BasePolicy):
         else:
             raise ValueError("Invalid action distribution")
 
-    def get_schedule_learning_rates(self):
+    def get_schedule_learning_rates(self, lr_schedule: Schedule = None,
+                                    progress_remaining: float = None) -> Tuple[float, float]:
         lrs = self.model.get_schedule_learning_rates()
         # lrs is a numpy array for each optimizer
         if len(lrs) == 1:
             policy_lr = lrs[0]
             if self.nn_critic:
-                value_lr = self.lr_schedule(self._current_progress_remaining)
+                value_lr = lr_schedule(progress_remaining)
             else:
                 value_lr = 0.0
         else:
@@ -372,7 +376,7 @@ class ActorCriticPolicy(BasePolicy):
         if self.nn_critic:
             if not isinstance(obs, th.Tensor):
                 obs = th.tensor(obs, device=self.device)
-            return self.value_net(obs)
+            return self.value_net(obs.float())
         return self.model.predict_values(obs, requires_grad, tensor=True, stop_idx=stop_idx)
 
     def critic(self, obs: Union[th.Tensor, np.ndarray]) -> th.Tensor:
@@ -380,6 +384,9 @@ class ActorCriticPolicy(BasePolicy):
 
     def get_params(self):
         return self.model.get_params()
+    
+    def get_grads(self):    
+        return self.model.get_grads()
 
     def step(self, observations: Optional[Union[np.array, th.Tensor]] = None, policy_grad_clip: float = None,
              value_grad_clip: float = None) -> None:
@@ -393,7 +400,7 @@ class ActorCriticPolicy(BasePolicy):
                    policy_grad_clip: float = None) -> None:
         self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip)
 
-    def critic_step(self, observations: Optional[Union[th.Tensor, np.ndarray]],
+    def critic_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
                     value_grad_clip: float = None) -> None:
         self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip)
 

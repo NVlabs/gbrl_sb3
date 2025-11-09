@@ -31,6 +31,7 @@ from stable_baselines3.common.utils import (check_for_correct_spaces,
                                             get_schedule_fn, get_system_info,
                                             obs_as_tensor, safe_mean,
                                             update_learning_rate)
+
 from sb3_contrib.common.maskable.utils import (get_action_masks)
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
@@ -322,7 +323,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.logger.record("train/nn_critic", "True")
         else:
             self.logger.record("train/nn_critic", "False")
-        policy_lr, value_lr = self.policy.get_schedule_learning_rates()
+        policy_lr, value_lr = self.policy.get_schedule_learning_rates(lr_schedule=self.lr_schedule,
+                                                                      progress_remaining=self._current_progress_remaining)
         self.logger.record("train/policy_learning_rate", policy_lr)
         self.logger.record("train/value_learning_rate", value_lr)
 
@@ -381,12 +383,16 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     entropy_loss = -th.mean(entropy)
 
                 loss = policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss
+
                 if self.policy.nn_critic:
                     self.policy.value_optimizer.zero_grad()
+
                 loss.backward()
+
                 if self.policy.nn_critic:
                     # Clip grad norm
-                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    if self.max_grad_norm is not None:
+                        th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 # Entropy loss favor exploration
                 entropy_losses.append(entropy_loss.item())
                 # Logging
@@ -419,15 +425,19 @@ class PPO_GBRL(OnPolicyAlgorithm):
 
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
-                params, grads = self.policy.get_params()
+                params = self.policy.get_params()
+
+                theta = params if not isinstance(params, tuple) else params[0]
+                            
+                grads = self.policy.get_grads()
+
                 if isinstance(grads, tuple):
                     theta_grad, values_grad = grads
-                    theta, values = params
                     values_grad_maxs.append(values_grad.max().item())
                     values_grad_mins.append(values_grad.min().item())
                 else:
                     theta_grad = grads
-                    theta = params
+
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
 
@@ -591,6 +601,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 log_probs,
                 **kwargs
             )
+
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
 

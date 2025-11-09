@@ -296,9 +296,9 @@ class SAC_GBRL(OffPolicyAlgorithm):
                 # Copy running stats, see GH issue #996
                 polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
 
-            actor_params, actor_grads = self.actor.model.get_params()
+            actor_params = self.actor.model.get_params()
             mu, log_std = actor_params
-            mu_grad, log_std_grad = actor_grads
+            mu_grad, log_std_grad = self.actor.model.get_grads()
 
             mu_maxs.append(mu.max().item())
             mu_mins.append(mu.min().item())

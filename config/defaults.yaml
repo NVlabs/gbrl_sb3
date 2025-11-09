@@ -14,8 +14,7 @@ env:
     n_eval_episodes: 100
   wrapper: null
   log_interval: 10
-  total_n_steps: 1500000
-  # total_n_steps: 20000
+  total_n_steps: 1000000
   device: 'cuda'
   no_improvement_kwargs: null
 save:
@@ -33,28 +32,27 @@ params:
   control_variates: False
   split_score_func: "cosine"
   generator_type: "Quantile"
-  shared_tree_struct: True
+  shared_tree_struct: False
   feature_weights: null
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
     lr: 5.0e-2
-    # lr: 1.0e-3
   value_optimizer: # PPO / AWR
     algo: 'SGD'
     lr: 0.005
   mu_optimizer: # SAC 
     algo: 'SGD'
-    lr: 5.0e-4
+    lr: 5.0e-3
   std_optimizer: # SAC 
     algo: 'SGD'
     lr: 1.0e-4
   weights_optimizer: # SAC 
     algo: 'SGD'
-    lr: 1.0e-2
+    lr: 5.0e-5
   bias_optimizer: # SAC
     algo: 'SGD'
-    lr: 1.0e-4
+    lr: 1.0e-5
   critic_optimizer: # DQN
     algo: "SGD"
     lr: 1.0e-1
@@ -161,15 +159,15 @@ a2c_nn:
 sac_gbrl:
   wrapper_kwargs:     
     training: True
-    norm_obs: True
+    norm_obs: False
     norm_reward: True
-  train_freq: 1
+  train_freq: 50
   gamma: 0.99
   tau: 0.005
-  target_update_interval: 1
+  target_update_interval: 250
   atari_wrapper_kwargs: null
   ent_lr: 3.0e-3 # also NN critic learning rate when using an NN-based q-function
-  gradient_steps: 1
+  gradient_steps: 100
   buffer_size: 1000000
   learning_starts: 100
   batch_size: 256
@@ -177,7 +175,7 @@ sac_gbrl:
   target_entropy: auto
   max_policy_grad_norm: 0.0 
   max_q_grad_norm: 0.0
-  q_func_type: 'nn'
+  q_func_type: 'linear'
   n_critics: 2
 awr_gbrl:
   wrapper_kwargs:
@@ -244,12 +242,12 @@ dqn_gbrl:
     norm_reward: True
   atari_wrapper_kwargs:
     clip_reward: True
-  train_freq: 40
+  train_freq: 128
   gamma: 0.99
   normalize_q_grads: False
   target_update_interval: 250
   max_q_grad_norm: 0.0
-  gradient_steps: 10
+  gradient_steps: 50
   buffer_size: 100000
   learning_starts: 1000
   batch_size: 512
