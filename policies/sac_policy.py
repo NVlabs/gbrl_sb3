@@ -110,9 +110,14 @@ class ContinuousCritic(BaseModel):
                 bias_optimizer['start_idx'] = action_dim
                 bias_optimizer['stop_idx'] = action_dim + self.theta_dim
             weights_optimizer['stop_idx'] = action_dim
+
+            rng = np.random.default_rng()
             for _ in range(n_critics):
-                bias = np.random.randn(action_dim + self.theta_dim) * np.sqrt(2.0 / action_dim)
-                bias[-self.theta_dim:] = 0
+                bias = np.zeros(action_dim + self.theta_dim)
+                bias[:action_dim] = rng.normal(0, 0.1/np.sqrt(action_dim), size=action_dim)  # << replaces your √(2/d_a)
+                # bias[-d_θ:] stays 0
+                # tiny per-critic jitter for diversity:
+                bias += rng.normal(0, 1e-3, size=bias.size)
                 q_model = GBRLContinuousCritic(tree_struct=tree_struct,
                                                input_dim=features_extractor.features_dim,
                                                output_dim=action_dim + self.theta_dim,

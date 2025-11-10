@@ -66,8 +66,8 @@ class AWR_GBRL(OffPolicyAlgorithm):
                 log_std_lr = get_linear_fn(float(log_std_lr.replace('lin_', '')), min_log_std_lr, 1)
             else:
                 log_std_lr = float(log_std_lr)
-        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (hasattr(env, 'categorical') and
-                                                                         env.categorical)
+        is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (
+            hasattr(env, 'is_categorical') and env.is_categorical)
         is_mixed = (hasattr(env, 'is_mixed') and env.is_mixed)
         self.is_categorical = is_categorical
         self.is_mixed = is_mixed
@@ -264,7 +264,8 @@ class AWR_GBRL(OffPolicyAlgorithm):
             entropy_losses.append(entropy_loss.item())
 
             self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
-            params, grads = self.policy.model.get_params()
+            params = self.policy.get_params()
+            grads = self.policy.get_grads()
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                 if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
                     th.nn.utils.clip_grad_norm_(self.policy.log_std, max_norm=self.max_policy_grad_norm,

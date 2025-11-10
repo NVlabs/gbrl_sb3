@@ -240,8 +240,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
             value_losses.append(value_loss.item())
 
             self.policy.step(policy_grad_clip=self.max_policy_grad_norm, value_grad_clip=self.max_value_grad_norm)
-            params, grads = self.policy.model.get_params()
-            theta_grad, values_grad = grads
+            params = self.policy.get_params()
+            theta_grad, values_grad = self.policy.get_grads()
             theta = params[0]
             if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                 if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
