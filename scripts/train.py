@@ -25,7 +25,7 @@ from callback.callbacks import (OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
                                 StopTrainingOnNoImprovementInTraining)
 from env.equation import register_equation_tests
-from env.minigrid import register_minigrid_tests
+from env.register_minigrid import register_minigrid_tests
 from env.rickety_bridge import register_rickety_bridge_tests
 from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper)

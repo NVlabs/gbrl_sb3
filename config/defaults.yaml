@@ -34,7 +34,7 @@ params:
   control_variates: False
   split_score_func: "cosine"
   generator_type: "Quantile"
-  shared_tree_struct: False
+  shared_tree_struct: True
   feature_weights: null
   guidance_weight: 100000.0
   # guidance_weight: 0.0

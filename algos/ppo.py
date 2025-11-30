@@ -423,13 +423,13 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 if self.target_kl is not None and self.target_kl > 0 and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
                     break
-    
+
                 if self.guidance:
                     guidance = {'guidance_labels': rollout_data.guidance_labels,
                                 'guidance_actions': rollout_data.guidance_actions}
                 else:
                     guidance = {}
-                
+
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
                                  value_grad_clip=self.max_value_grad_norm,
@@ -442,6 +442,11 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     values_grad_mins.append(values_grad.min().item())
                 else:
                     theta_grad = grads
+
+                if isinstance(params, tuple):
+                    theta, _ = params
+                else:
+                    theta = params
 
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
