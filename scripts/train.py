@@ -23,19 +23,18 @@ from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
 
 from callback.callbacks import (OffPolicyDistillationCallback,
                                 OnPolicyDistillationCallback,
-                                StopTrainingOnNoImprovementInTraining)
+                                StopTrainingOnNoImprovementInTraining,
+                                SafetyEvalCallback)
 from env.equation import register_equation_tests
 from env.register_minigrid import register_minigrid_tests
-from env.rickety_bridge import register_rickety_bridge_tests
 from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper)
-from utils.helpers import make_ram_atari_env, set_seed
+from utils.helpers import make_ram_atari_env, set_seed, make_cost_vec_env
 
 warnings.filterwarnings("ignore")
 
 from stable_baselines3.a2c.a2c import A2C
 from stable_baselines3.dqn.dqn import DQN
-from stable_baselines3.ppo.ppo import PPO
 
 from algos.a2c import A2C_GBRL
 from algos.awr import AWR_GBRL
@@ -43,12 +42,19 @@ from algos.awr_nn import AWR
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
 from algos.sac import SAC_GBRL
+from algos.cost_ppo import Cost_PPO_GBRL
+from algos.safety.ppo import PPO
+
 from config.args import parse_args, process_logging, process_policy_kwargs
 
-NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,
-                'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN}
+SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0']
+NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'cost_gbrl': Cost_PPO_GBRL,
+                'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL,
+                'awr_gbrl': AWR_GBRL, 'ppo_nn': PPO,
+                'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL,
+                'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
-ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl']
+ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl', 'cost_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
 
 if __name__ == '__main__':
@@ -87,11 +93,12 @@ if __name__ == '__main__':
         from minigrid.wrappers import FlatObsWrapper
         wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
         vec_env_cls = CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
+        vec_env_fnc = make_cost_vec_env if args.env_name in SAFETY_ENVS else make_vec_env
+        env = vec_env_fnc(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
                            wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env_kwargs = args.env_kwargs.copy()
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class,
+            eval_env = vec_env_fnc(args.env_name, n_envs=1, env_kwargs=eval_env_kwargs, wrapper_class=wrapper_class,
                                     vec_env_cls=vec_env_cls)
     elif args.env_type == 'football':
         try:
@@ -151,7 +158,8 @@ if __name__ == '__main__':
                                         name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                                         video_length=args.eval_kwargs.get('video_length', 2000))
 
-        callback_list.append(EvalCallback(
+        eval_callback = EvalCallback if args.env_name not in SAFETY_ENVS else SafetyEvalCallback
+        callback_list.append(eval_callback(
                                     eval_env,
                                     callback_on_new_best=None,
                                     callback_after_eval=stop_train_callback,

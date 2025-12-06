@@ -36,12 +36,12 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
-from buffers.rollout_buffer import RolloutBuffer, CategoricalRolloutBuffer, MaskableCategoricalRolloutBuffer, MaskableRolloutBuffer
-from policies.actor_critic_policy import ActorCriticPolicy
+from buffers.rollout_buffer import CostRolloutBuffer, CostCategoricalRolloutBuffer
+from policies.cost_actor_critic import CostActorCriticPolicy
 from utils.io_util import load_from_zip_file, save_to_zip_file
 
 
-class PPO_GBRL(OnPolicyAlgorithm):
+class Cost_PPO_GBRL(OnPolicyAlgorithm):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
 
@@ -98,11 +98,12 @@ class PPO_GBRL(OnPolicyAlgorithm):
     def __init__(self, env: Union[GymEnv, str],
                  clip_range: float = 0.2,
                  clip_range_vf: float = None,
-                 policy: Type[BasePolicy] = ActorCriticPolicy,
+                 policy: Type[BasePolicy] = CostActorCriticPolicy,
                  normalize_advantage: bool = True,
                  target_kl: float = None,
                  max_policy_grad_norm: float = None,
                  max_value_grad_norm: float = None,
+                 max_cost_grad_norm: float = None,
                  vf_coef: float = 0.5,
                  ent_coef: float = 0.0,
                  batch_size: int = 256,
@@ -137,6 +138,11 @@ class PPO_GBRL(OnPolicyAlgorithm):
                             'value_lr': 0.009038987598789402,
                             'value_shrinkage': 0,  # CPU only
                         },
+                        'cost_optimizer': {
+                            'cost_algo': 'SGD',
+                            'cost_lr': 0.009038987598789402,
+                            'cost_shrinkage': 0,  # CPU only
+                        },
                     }
                  },
                  fixed_std: bool = False,
@@ -147,8 +153,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                  seed: Optional[int] = None,
                  verbose: int = 1,
                  tensorboard_log: str = None,
-                 use_masking: bool = False,
-                 guidance: bool = False,
+                 safety_mode: bool = False,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -158,6 +163,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.target_kl = None
         self.max_policy_grad_norm = max_policy_grad_norm
         self.max_value_grad_norm = max_value_grad_norm
+        self.max_cost_grad_norm = max_cost_grad_norm
         self.batch_size = batch_size
         num_envs = 1 if isinstance(env, str) else env.num_envs
         updates_per_rollout = ((n_steps * num_envs) / batch_size) * n_epochs
@@ -168,8 +174,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
             "params must be a dictionary within policy_kwargs['tree_optimizer]"
         policy_kwargs['tree_optimizer']['policy_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
+        policy_kwargs['tree_optimizer']['cost_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['device'] = device
-        policy_kwargs['use_masking'] = use_masking
         self.fixed_std = fixed_std
         is_categorical = (hasattr(env, 'is_mixed') and env.is_mixed) or (
             hasattr(env, 'is_categorical') and env.is_categorical)
@@ -215,7 +221,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         self.rollout_cntr = 0
         self.prev_timesteps = 0
         self.policy_bound_loss_weight = policy_bound_loss_weight
-        self.guidance = guidance
+        self.safety_mode = safety_mode
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -249,13 +255,11 @@ class PPO_GBRL(OnPolicyAlgorithm):
         self.bound_min = self.get_action_bound_min()
         self.bound_max = self.get_action_bound_max()
 
-        self.rollout_buffer_class = MaskableRolloutBuffer if use_masking else RolloutBuffer
+        self.rollout_buffer_class = CostRolloutBuffer
         self.rollout_buffer_kwargs = {}
 
-        self.use_masking = use_masking
         if self.is_categorical or self.is_mixed:
-            self.rollout_buffer_class = MaskableCategoricalRolloutBuffer if use_masking else \
-                CategoricalRolloutBuffer
+            self.rollout_buffer_class = CostCategoricalRolloutBuffer
             self.rollout_buffer_kwargs['is_mixed'] = self.is_mixed
 
         if _init_setup_model:
@@ -324,13 +328,14 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.logger.record("train/nn_critic", "True")
         else:
             self.logger.record("train/nn_critic", "False")
-        policy_lr, value_lr = self.policy.get_schedule_learning_rates(lr_schedule=self.lr_schedule,
+        policy_lr, value_lr, cost_lr = self.policy.get_schedule_learning_rates(lr_schedule=self.lr_schedule,
                                                                       progress_remaining=self._current_progress_remaining)
         self.logger.record("train/policy_learning_rate", policy_lr)
         self.logger.record("train/value_learning_rate", value_lr)
+        self.logger.record("train/cost_learning_rate", cost_lr)
 
         entropy_losses = []
-        policy_losses, value_losses = [], []
+        policy_losses, value_losses, cost_losses = [], [], []
         clip_fractions = []
 
         continue_training = True
@@ -338,6 +343,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
         theta_grad_maxs, theta_grad_mins = [], []
         values_maxs, values_mins = [], []
         values_grad_maxs, values_grad_mins = [], []
+        cost_maxs, cost_mins = [], []
+        cost_grad_maxs, cost_grad_mins = [], []
+        safety_grads_maxs, safety_grads_mins = [], []
         log_std_s = []
         approx_kl_divs = []
         # train for n_epochs epochs
@@ -345,18 +353,22 @@ class PPO_GBRL(OnPolicyAlgorithm):
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
-                action_masks = None if not self.use_masking else rollout_data.action_masks
+                action_masks = None
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
                     actions = actions.long().flatten()
 
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions,
+                costs, values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions,
                                                                          action_masks=action_masks)
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                advantages_costs = rollout_data.advantages_costs
+                if self.normalize_advantage and len(advantages_costs) > 1:
+                    advantages_costs = (advantages_costs - advantages_costs.mean()) / (advantages_costs.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -376,6 +388,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     )
                 # Value loss using the TD(gae_lambda) target
                 value_loss = 0.5*F.mse_loss(rollout_data.returns, values_pred)
+                cost_loss = 0.5*F.mse_loss(rollout_data.cost_returns, costs)
 
                 if entropy is None:
                     # Approximate entropy when no analytical form
@@ -383,7 +396,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 else:
                     entropy_loss = -th.mean(entropy)
 
-                loss = policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss
+                loss = policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss + cost_loss
 
                 if self.policy.nn_critic:
                     self.policy.value_optimizer.zero_grad()
@@ -399,6 +412,37 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 # Logging
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
+
+                policy_grad = None
+                value_grad = None,
+                cost_grad = None
+                safety = {}
+
+                params = self.policy.get_params()
+
+                if self.safety_mode:
+                    policy_grad, value_grad, cost_grad = self.policy.model.extract_grads()
+
+                    n_samples = len(rollout_data.observations)
+                    policy_grad = policy_grad * n_samples
+                    value_grad = value_grad * n_samples
+                    cost_grad = cost_grad * n_samples
+                    _, _, log_prob, _ = self.policy.evaluate_actions(rollout_data.observations, actions,
+                                                        action_masks=action_masks)
+                    ratio = th.exp(log_prob - rollout_data.old_log_prob)
+                    # clipped surrogate loss
+                    safety_policy_loss_1 = advantages_costs * ratio
+                    safety_policy_loss_2 = advantages_costs * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                    safety_policy_loss = -th.min(safety_policy_loss_1, safety_policy_loss_2).mean()
+                    safety_policy_loss.backward()
+
+                    safety_grads, _, _ = self.policy.model.extract_grads()
+                    safety_grads = safety_grads * n_samples
+                    if self.safety_mode:
+                        safety_grads_maxs.append(safety_grads.max().item())
+                        safety_grads_mins.append(safety_grads.min().item())
+                    safety = {'safety_grads': safety_grads,
+                              'safety_labels': rollout_data.safety_labels}
 
                 if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                     if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
@@ -424,37 +468,36 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     continue_training = False
                     break
 
-                if self.guidance:
-                    guidance = {'guidance_labels': rollout_data.guidance_labels,
-                                'guidance_actions': rollout_data.guidance_actions}
-                else:
-                    guidance = {}
-
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
                                  value_grad_clip=self.max_value_grad_norm,
-                                 log_probs=log_prob,
-                                 **guidance)
-                params, grads = self.policy.get_params()
-                if isinstance(grads, tuple):
-                    theta_grad, values_grad = grads
-                    values_grad_maxs.append(values_grad.max().item())
-                    values_grad_mins.append(values_grad.min().item())
-                else:
-                    theta_grad = grads
+                                 policy_grads=policy_grad,
+                                 value_grads=value_grad,
+                                 cost_grads=cost_grad,
+                                 observations=rollout_data.observations,
+                                 **safety)
 
-                if isinstance(params, tuple):
-                    theta, _ = params
-                else:
-                    theta = params
+                if not self.safety_mode:
+                    policy_grad, value_grad, cost_grad = self.policy.get_grads()
+
+                    values_grad_maxs.append(value_grad.max().item())
+                    values_grad_mins.append(value_grad.min().item())
+                    cost_grad_maxs.append(cost_grad.max().item())
+                    cost_grad_mins.append(cost_grad.min().item())
+
+                theta = params if not isinstance(params, tuple) else params[0]
 
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
+                values_maxs.append(values.max().item())
+                values_mins.append(values.min().item())
+                cost_maxs.append(costs.max().item())
+                cost_mins.append(costs.min().item())
 
                 theta_maxs.append(theta.max().item())
                 theta_mins.append(theta.min().item())
-                theta_grad_maxs.append(theta_grad.max().item())
-                theta_grad_mins.append(theta_grad.min().item())
+                theta_grad_maxs.append(policy_grad.max().item())
+                theta_grad_mins.append(policy_grad.min().item())
 
                 self._n_updates += 1
                 # Logging
@@ -478,7 +521,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 iteration, value_iteration = iteration
             value_num_trees = 0
             if isinstance(num_trees, tuple):
-                num_trees, value_num_trees = num_trees
+                num_trees, value_num_trees, cost_num_trees = num_trees
 
             self.logger.record("train/entropy_loss", np.mean(entropy_losses))
             self.logger.record("train/policy_gradient_loss", np.mean(policy_losses))
@@ -487,11 +530,16 @@ class PPO_GBRL(OnPolicyAlgorithm):
             self.logger.record("param/theta_min", np.mean(theta_mins))
             self.logger.record("param/value_max", np.mean(values_maxs))
             self.logger.record("param/value_min", np.mean(values_mins))
-            self.logger.record("param/theta_grad_max", np.mean(theta_grad_maxs))
-            self.logger.record("param/theta_grad_min", np.mean(theta_grad_mins))
+            self.logger.record("param/cost_max", np.mean(cost_maxs))
+            self.logger.record("param/cost_min", np.mean(cost_mins))
+            self.logger.record("grad/theta_grad_max", np.mean(theta_grad_maxs))
+            self.logger.record("grad/theta_grad_min", np.mean(theta_grad_mins))
             if values_grad_maxs:
-                self.logger.record("param/value_grad_max", np.mean(values_grad_maxs))
-                self.logger.record("param/value_grad_min", np.mean(values_grad_mins))
+                self.logger.record("grad/value_grad_max", np.mean(values_grad_maxs))
+                self.logger.record("grad/value_grad_min", np.mean(values_grad_mins))
+            if safety_grads_maxs:
+                self.logger.record("grad/safety_grad_max", np.mean(safety_grads_maxs))
+                self.logger.record("grad/safety_grad_min", np.mean(safety_grads_mins))
             self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
             self.logger.record("train/clip_fraction", np.mean(clip_fractions))
             self.logger.record("train/explained_variance", explained_var)
@@ -517,7 +565,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
         self,
         env: VecEnv,
         callback: BaseCallback,
-        rollout_buffer: Union[RolloutBuffer, CategoricalRolloutBuffer, MaskableRolloutBuffer],
+        rollout_buffer: Union[CostRolloutBuffer, CostCategoricalRolloutBuffer],
         n_rollout_steps: int,
     ) -> bool:
         """
@@ -533,11 +581,6 @@ class PPO_GBRL(OnPolicyAlgorithm):
         :return: True if function returned with at least `n_rollout_steps`
             collected, False if callback terminated rollout prematurely.
         """
-        if self.use_masking:
-            assert isinstance(
-                            rollout_buffer, (MaskableRolloutBuffer,
-                                             MaskableCategoricalRolloutBuffer)
-                             ), "RolloutBuffer doesn't support action masking"
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -558,8 +601,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = self._last_obs if self.is_categorical else obs_as_tensor(self._last_obs, self.device)
-                action_masks = get_action_masks(env) if self.use_masking else None
-                actions, values, log_probs = self.policy(obs_tensor, action_masks=action_masks, requires_grad=False)
+                action_masks = None
+                actions, value_costs, values, log_probs = self.policy(obs_tensor, action_masks=action_masks, requires_grad=False)
 
             actions = actions.cpu().numpy()
 
@@ -600,22 +643,20 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     rewards[idx] += self.gamma * terminal_value
 
             kwargs = {}
-            if self.use_masking:
-                kwargs['action_masks'] = action_masks
 
-            guidance_labels = [info.get('guidance_labels', None) for info in infos]
-            guidance_actions = [info.get('guidance_actions', None) for info in infos]
-            if guidance_labels[0] is not None:
-                kwargs['guidance_labels'] = guidance_labels if guidance_labels[0] is not None else None
-                kwargs['guidance_actions'] = guidance_actions if guidance_actions[0] is not None else None
-
+            safety_labels = [info.get('safety_label', None) for info in infos]
+            safety_cost = th.tensor([info.get('cost', 0.0) for info in infos])
+            if safety_labels[0] is not None:
+                kwargs['safety_label'] = safety_labels if safety_labels[0] is not None else None
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,
                 rewards,
                 self._last_episode_starts,  # type: ignore[arg-type]
                 values,
+                value_costs,
                 log_probs,
+                safety_cost,
                 **kwargs
             )
 
@@ -625,8 +666,9 @@ class PPO_GBRL(OnPolicyAlgorithm):
         with th.no_grad():
             # Compute value for the last timestep
             values = self.policy.predict_values(new_obs, requires_grad=False)  # type: ignore[arg-type]
+            value_costs = self.policy.predict_costs(new_obs, requires_grad=False)  # type: ignore[arg-type]
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, last_value_costs=value_costs, dones=dones)
 
         callback.on_rollout_end()
 
@@ -674,11 +716,10 @@ class PPO_GBRL(OnPolicyAlgorithm):
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     self.logger.record("rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_cost_mean",
+                                       safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                    if "c" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_cost_mean",
-                            safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")

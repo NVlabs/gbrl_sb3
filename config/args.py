@@ -154,7 +154,7 @@ def parse_args():
     # mandatory arguments
     parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
                                                          'football', 'equation', 'rickety_bridge'])
-    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl',
+    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'cost_gbrl'
                                                           'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn'])
     parser.add_argument('--env_name', type=str)
     # env args
@@ -220,11 +220,20 @@ def parse_args():
     parser.add_argument('--value_eps', type=float)
     parser.add_argument('--value_shrinkage', type=float)
 
+    parser.add_argument('--cost_algo', type=str)
+    parser.add_argument('--cost_lr', type=str)
+    parser.add_argument('--stop_cost_lr', type=float)
+    parser.add_argument('--cost_beta_1', type=float)
+    parser.add_argument('--cost_beta_2', type=float)
+    parser.add_argument('--cost_eps', type=float)
+    parser.add_argument('--cost_shrinkage', type=float)
+
     parser.add_argument('--log_std_lr', type=str)
     parser.add_argument('--min_log_std_lr', type=float)
 
     parser.add_argument('--max_value_grad_norm', type=float)
     parser.add_argument('--max_policy_grad_norm', type=float)
+    parser.add_argument('--max_cost_grad_norm', type=float)
     parser.add_argument('--vf_coef', type=float)
     parser.add_argument('--clip_range')
     parser.add_argument('--clip_range_vf')
@@ -334,7 +343,7 @@ def parse_args():
     # openspiel
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
     # guidance
-    parser.add_argument('--guidance', type=str2bool)
+    parser.add_argument('--safety_mode', type=str2bool)
     args = parser.parse_args()
 
     defaults = load_yaml_defaults()
@@ -347,12 +356,12 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
     # args.env_type = args.env_type if args.env_type else 'equation'
     args.env_type = args.env_type if args.env_type else 'minigrid'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'cost_gbrl'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-GuidedLockedRoom-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-DynamicCrossing-v0'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
     # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
@@ -397,6 +406,7 @@ def get_defaults(args, defaults):
     args.squash = args.squash if args.squash is not None else algo_defaults.get('squash', False)
     args.nn_critic = args.nn_critic if args.nn_critic is not None else algo_defaults.get('nn_critic', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
+    args.safety_mode = args.safety_mode if args.safety_mode is not None else algo_defaults.get('safety_mode', False)
     args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else \
         algo_defaults.get('clip_range', 0.2)
     args.clip_range_vf = convert_clip_range(args.clip_range_vf) if args.clip_range_vf is not None else \
@@ -405,6 +415,8 @@ def get_defaults(args, defaults):
         algo_defaults.get('max_policy_grad_norm', 150.0)
     args.max_value_grad_norm = args.max_value_grad_norm if args.max_value_grad_norm is not None else \
         algo_defaults.get('max_value_grad_norm', 100.0)
+    args.max_cost_grad_norm = args.max_cost_grad_norm if args.max_cost_grad_norm is not None else \
+        algo_defaults.get('max_cost_grad_norm', 100.0)
     args.fixed_std = args.fixed_std if args.fixed_std is not None else algo_defaults.get('fixed_std', False)
     args.policy_bound_loss_weight = args.policy_bound_loss_weight if args.policy_bound_loss_weight is not None else \
         algo_defaults.get('policy_bound_loss_weight', None)
@@ -468,6 +480,15 @@ def get_defaults(args, defaults):
         tree_optimizer_defaults['value_optimizer'].get('beta_2', 0.999)
     args.value_eps = args.value_eps if args.value_eps is not None else \
         tree_optimizer_defaults['value_optimizer'].get('eps', 1.0e-5)
+    args.cost_algo = args.cost_algo if args.cost_algo is not None else \
+        tree_optimizer_defaults['cost_optimizer']['algo']
+    args.cost_lr = args.cost_lr if args.cost_lr is not None else tree_optimizer_defaults['cost_optimizer']['lr']
+    args.cost_beta_1 = args.cost_beta_1 if args.cost_beta_1 is not None else \
+        tree_optimizer_defaults['cost_optimizer'].get('beta_1', 0.9)
+    args.cost_beta_2 = args.cost_beta_2 if args.cost_beta_2 is not None else \
+        tree_optimizer_defaults['cost_optimizer'].get('beta_2', 0.999)
+    args.cost_eps = args.cost_eps if args.cost_eps is not None else \
+        tree_optimizer_defaults['cost_optimizer'].get('eps', 1.0e-5)
     args.mu_algo = args.mu_algo if args.mu_algo is not None else tree_optimizer_defaults['mu_optimizer']['algo']
     args.mu_lr = args.mu_lr if args.mu_lr is not None else tree_optimizer_defaults['mu_optimizer']['lr']
     args.mu_beta_1 = args.mu_beta_1 if args.mu_beta_1 is not None else \
@@ -537,8 +558,6 @@ def get_defaults(args, defaults):
         gbrl_param_defaults.get('guidance_weight', 1.0)
     args.guidance_scale = args.guidance_scale if args.guidance_scale is not None else \
         gbrl_param_defaults.get('guidance_scale', 1.0)
-    args.guidance = args.guidance if args.guidance is not None else \
-        gbrl_param_defaults.get('guidance', False)
     # SAC GBRL Params
     sac_gbrl_defaults = defaults.get('sac_gbrl', {})
     args.ent_lr = args.ent_lr if args.ent_lr is not None else sac_gbrl_defaults.get('ent_lr', 1.0e-3)
@@ -672,7 +691,74 @@ def process_policy_kwargs(args):
             "device": args.device,
             "seed": args.seed,
             "verbose": args.verbose,
-            "guidance": args.guidance,
+        }
+    elif args.algo_type == 'cost_gbrl':
+        algo_kwargs = {
+            "clip_range": args.clip_range,
+            "clip_range_vf": args.clip_range_vf,
+            "normalize_advantage": args.normalize_advantage,
+            "target_kl": args.target_kl,
+            "n_epochs": args.n_epochs,
+            "max_policy_grad_norm": args.max_policy_grad_norm,
+            "max_value_grad_norm": args.max_value_grad_norm,
+            "max_cost_grad_norm": args.max_cost_grad_norm,
+            "ent_coef": args.ent_coef,
+            "vf_coef": args.vf_coef,
+            "n_steps": args.n_steps,
+            "batch_size": args.batch_size,
+            "gae_lambda": args.gae_lambda,
+            "gamma": args.gamma,
+            "total_n_steps": args.total_n_steps,
+            "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
+                "log_std_init": args.log_std_init,
+                "squash": args.squash,
+                "nn_critic": args.nn_critic,
+                "shared_tree_struct": args.shared_tree_struct,
+                "tree_struct": {
+                    "max_depth": args.max_depth,
+                    "n_bins": args.n_bins,
+                    "min_data_in_leaf": args.min_data_in_leaf,
+                    "par_th": args.par_th,
+                    "grow_policy": args.grow_policy,
+                },
+                "tree_optimizer": {
+                    "params": tree_params,
+                    "policy_optimizer": {
+                        "policy_algo": args.policy_algo,
+                        "policy_lr": args.policy_lr,
+                        # Adam optimizer
+                        "policy_beta_1": args.policy_beta_1,
+                        "policy_beta_2": args.policy_beta_2,
+                        "policy_eps": args.policy_eps,
+                        "policy_shrinkage": args.policy_shrinkage,
+                    },
+                    "value_optimizer": {
+                        "value_algo": args.value_algo,
+                        "value_lr": args.value_lr,
+                        "value_beta_1": args.value_beta_1,
+                        "value_beta_2": args.value_beta_2,
+                        "value_eps": args.value_eps,
+                        "value_shrinkage": args.value_shrinkage,
+                    },
+                    "cost_optimizer": {
+                        "cost_algo": args.cost_algo,
+                        "cost_lr": args.cost_lr,
+                        "cost_beta_1": args.cost_beta_1,
+                        "cost_beta_2": args.cost_beta_2,
+                        "cost_eps": args.cost_eps,
+                        "cost_shrinkage": args.cost_shrinkage,
+                    },
+                },
+            },
+            "fixed_std": args.fixed_std,
+            "log_std_lr": args.log_std_lr,
+            "learning_rate": args.learning_rate,
+            "min_log_std_lr": args.min_log_std_lr,
+            "policy_bound_loss_weight": args.policy_bound_loss_weight,
+            "device": args.device,
+            "seed": args.seed,
+            "verbose": args.verbose,
+            "safety_mode": args.safety_mode,
         }
     elif args.algo_type == 'a2c_gbrl':
         algo_kwargs = {

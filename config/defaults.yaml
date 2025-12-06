@@ -37,9 +37,7 @@ params:
   shared_tree_struct: True
   feature_weights: null
   guidance_weight: 100000.0
-  # guidance_weight: 0.0
-  guidance: True
-  guidance_scale: 1.0
+  guidance_scale: 0.1
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
@@ -47,6 +45,10 @@ tree_optimizer:
     lr: 0.17
     # lr: 1.0e-3
   value_optimizer: # PPO / AWR
+    algo: 'SGD'
+    # lr: 0.005
+    lr: 0.01
+  cost_optimizer: # Cost PPO
     algo: 'SGD'
     # lr: 0.005
     lr: 0.01
@@ -64,7 +66,7 @@ tree_optimizer:
     lr: 1.0e-5
   critic_optimizer: # DQN
     algo: "SGD"
-    lr: 1.0e-1
+    lr: 0.01
 tree_struct:
   max_depth: 4
   grow_policy: oblivious
@@ -99,6 +101,36 @@ ppo_gbrl:
   max_value_grad_norm: null
   policy_bound_loss_weight: null
   fixed_std: False
+  log_std_init: -2
+cost_gbrl:
+  wrapper_kwargs:
+    training: True
+    norm_obs: False
+    norm_reward: True
+  atari_wrapper_kwargs:
+    clip_reward: True
+  n_steps: 256
+  gamma: 0.99
+  nn_critic: False
+  gae_lambda: 0.95
+  normalize_advantage: True
+  learning_rate: 3.0e-4
+  target_kl: null
+  normalize_value_grads: False
+  batch_size: 128
+  n_epochs: 20
+  clip_range: 0.62
+  clip_range_vf: null
+  log_std_lr: lin_0.0017
+  min_log_std_lr: 0.000475
+  ent_coef: 0.08
+  vf_coef: 0.871923
+  max_policy_grad_norm: null
+  max_value_grad_norm: null
+  max_cost_grad_norm: null
+  policy_bound_loss_weight: null
+  fixed_std: False
+  safety_mode: True
   log_std_init: -2
 ppo_nn:
   wrapper_kwargs:

@@ -137,3 +137,13 @@ def register_minigrid_tests():
         entry_point="env.guidance.locked_room:GuidedLockedRoomEnv",
         kwargs={"guided_reward": False, "action_masking": False},
     )
+    register(
+        id="MiniGrid-DynamicCrossing-v0",
+        entry_point="env.safety.dynamic_lava_room:DynamicCrossing",
+        kwargs={},
+    )
+    register(
+        id="MiniGrid-DynamicCrossing-v1",
+        entry_point="env.safety.dynamic_lava_room:DynamicCrossing",
+        kwargs={"reward_penalty": True},
+    )

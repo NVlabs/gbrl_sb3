@@ -29,6 +29,18 @@ class RolloutBufferSamples(NamedTuple):
     guidance_labels: th.Tensor
     guidance_actions: th.Tensor
 
+class CostRolloutBufferSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    old_values: th.Tensor
+    old_value_costs: th.Tensor
+    old_log_prob: th.Tensor
+    advantages: th.Tensor
+    advantages_costs: th.Tensor
+    returns: th.Tensor
+    cost_returns: th.Tensor
+    safety_labels: th.Tensor
+
 class CategoricalRolloutBufferSamples(NamedTuple):
     observations: np.ndarray
     actions: th.Tensor
@@ -38,7 +50,17 @@ class CategoricalRolloutBufferSamples(NamedTuple):
     returns: th.Tensor
     guidance_labels: th.Tensor
     guidance_actions: th.Tensor
-
+class CostCategoricalRolloutBufferSamples(NamedTuple):
+    observations: np.ndarray
+    actions: th.Tensor
+    old_values: th.Tensor
+    old_value_costs: th.Tensor
+    old_log_prob: th.Tensor
+    advantages: th.Tensor
+    advantages_costs: th.Tensor
+    returns: th.Tensor
+    cost_returns: th.Tensor
+    safety_labels: th.Tensor
 
 class MaskableCategoricalRolloutBufferSamples(NamedTuple):
     observations: np.ndarray
@@ -208,6 +230,214 @@ class RolloutBuffer(SB3_RolloutBuffer):
             self.guidance_actions[batch_inds].flatten(),
         )
         return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+
+
+
+class CostRolloutBuffer(RolloutBuffer):
+    """
+    Rollout buffer used in on-policy algorithms like A2C/PPO.
+    It corresponds to ``buffer_size`` transitions collected
+    using the current policy.
+    This experience will be discarded after the policy update.
+    In order to use PPO objective, we also store the current value of each state
+    and the log probability of each taken action.
+
+    The term rollout here refers to the model-free notion and should not
+    be used with the concept of rollout used in model-based RL or planning.
+    Hence, it is only involved in policy and value function training but not action selection.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: AcFtion space
+    :param device: PyTorch device
+    :param gae_lambda: Factor for trade-off of bias vs variance for Generalized Advantage Estimator
+        Equivalent to classic advantage when set to 1.
+    :param gamma: Discount factor
+    :param n_envs: Number of parallel environments
+    """
+
+    observations: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    advantages: np.ndarray
+    advantages_costs: np.ndarray
+    returns: np.ndarray
+    cost_returns: np.ndarray
+    episode_starts: np.ndarray
+    log_probs: np.ndarray
+    values: np.ndarray
+    value_costs: np.ndarray
+    safety_labels: np.ndarray
+    costs: np.ndarray
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        gae_lambda: float = 1,
+        gamma: float = 0.99,
+        n_envs: int = 1,
+    ):
+        self.logits_dim = get_action_dim(action_space)
+        if isinstance(action_space, gym.spaces.Discrete):
+            self.logits_dim = self.logits_dim*action_space.n
+        elif isinstance(action_space, gym.spaces.MultiDiscrete):
+            self.logits_dim = action_space.nvec.sum()
+        super().__init__(buffer_size, observation_space, action_space, device, gae_lambda=gae_lambda, gamma=gamma,n_envs=n_envs)
+
+    def reset(self) -> None:
+        super().reset()
+        self.safety_labels = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.value_costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.advantages_costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+
+    def add(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        episode_start: np.ndarray,
+        value: th.Tensor,
+        value_cost: th.Tensor,
+        log_prob: th.Tensor,
+        cost: th.Tensor,
+        safety_label: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        :param obs: Observation
+        :param action: Action
+        :param reward:
+        :param episode_start: Start of episode signal.
+        :param value: estimated value of the current state
+            following the current policy.
+        :param log_prob: log probability of the action
+            following the current policy.
+        """
+        if len(log_prob.shape) == 0:
+            # Reshape 0-d tensor to avoid error
+            log_prob = log_prob.reshape(-1, 1)
+
+        # Reshape needed when using multiple envs with discrete observations
+        # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
+        if isinstance(self.observation_space, spaces.Discrete):
+            obs = obs.reshape((self.n_envs, *self.obs_shape))
+
+        # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
+        action = action.reshape((self.n_envs, self.action_dim))
+
+        self.observations[self.pos] = np.array(obs).copy()
+        self.actions[self.pos] = np.array(action).copy()
+        self.rewards[self.pos] = np.array(reward).copy()
+        self.episode_starts[self.pos] = np.array(episode_start).copy()
+        self.value_costs[self.pos] = value_cost.clone().cpu().numpy().flatten()
+        self.values[self.pos] = value.clone().cpu().numpy().flatten()
+        self.costs[self.pos] = cost.clone().cpu().numpy().flatten()
+        self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
+        if safety_label is not None:
+            self.safety_labels[self.pos] = np.array(safety_label).copy()
+
+        self.pos += 1
+        if self.pos == self.buffer_size:
+            self.full = True
+
+    def compute_returns_and_advantage(self, last_values: th.Tensor, last_value_costs: th.Tensor, dones: np.ndarray) -> None:
+        """
+        Post-processing step: compute the lambda-return (TD(lambda) estimate)
+        and GAE(lambda) advantage.
+
+        Uses Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
+        to compute the advantage. To obtain Monte-Carlo advantage estimate (A(s) = R - V(S))
+        where R is the sum of discounted reward with value bootstrap
+        (because we don't always have full episode), set ``gae_lambda=1.0`` during initialization.
+
+        The TD(lambda) estimator has also two special cases:
+        - TD(1) is Monte-Carlo estimate (sum of discounted rewards)
+        - TD(0) is one-step estimate with bootstrapping (r_t + gamma * v(s_{t+1}))
+
+        For more information, see discussion in https://github.com/DLR-RM/stable-baselines3/pull/375.
+
+        :param last_values: state value estimation for the last step (one for each env)
+        :param dones: if the last step was a terminal step (one bool for each env).
+        """
+        # Convert to numpy
+        last_values = last_values.clone().cpu().numpy().flatten()
+        last_value_costs = last_value_costs.clone().cpu().numpy().flatten()
+
+        last_gae_lam = 0
+        last_gae_lam_costs = 0
+        for step in reversed(range(self.buffer_size)):
+            if step == self.buffer_size - 1:
+                next_non_terminal = 1.0 - dones
+                next_values = last_values
+                next_value_costs = last_value_costs
+            else:
+                next_non_terminal = 1.0 - self.episode_starts[step + 1]
+                next_values = self.values[step + 1]
+                next_value_costs = self.value_costs[step + 1]
+            delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
+            delta_costs = self.costs[step] + self.gamma * next_value_costs * next_non_terminal - self.value_costs[step]
+            last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
+            last_gae_lam_costs = delta_costs + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam_costs
+            self.advantages[step] = last_gae_lam
+            self.advantages_costs[step] = last_gae_lam_costs
+        # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
+        # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
+        self.returns = self.advantages + self.values
+        self.cost_returns = self.advantages_costs + self.costs
+
+    def get(self, batch_size: Optional[int] = None) -> Generator[CostRolloutBufferSamples, None, None]:
+        assert self.full, ""
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+        # Prepare the data
+        if not self.generator_ready:
+            _tensor_names = [
+                "observations",
+                "actions",
+                "values",
+                "value_costs",
+                "log_probs",
+                "advantages",
+                "advantages_costs",
+                "returns",
+                "cost_returns",
+                "safety_labels",
+            ]
+
+            for tensor in _tensor_names:
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+            self.generator_ready = True
+
+        # Return everything, don't create minibatches
+        if batch_size is None:
+            batch_size = self.buffer_size * self.n_envs
+
+        start_idx = 0
+        while start_idx < self.buffer_size * self.n_envs:
+            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            start_idx += batch_size
+
+    def _get_samples(
+        self,
+        batch_inds: np.ndarray,
+        env: Optional[VecNormalize] = None,
+    ) -> CostRolloutBufferSamples:  # type: ignore[signature-mismatch] #FIXME
+        data = (
+            self.observations[batch_inds],
+            self.actions[batch_inds],
+            self.values[batch_inds].flatten(),
+            self.value_costs[batch_inds].flatten(),
+            self.log_probs[batch_inds].flatten(),
+            self.advantages[batch_inds].flatten(),
+            self.advantages_costs[batch_inds].flatten(),
+            self.returns[batch_inds].flatten(),
+            self.cost_returns[batch_inds].flatten(),
+            self.safety_labels[batch_inds].flatten(),
+        )
+        return CostRolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
 class CategoricalRolloutBuffer(BaseBuffer):
     """
@@ -432,6 +662,248 @@ class CategoricalRolloutBuffer(BaseBuffer):
             self.guidance_actions[batch_inds].flatten(),
         )
         return CategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
+
+class CostCategoricalRolloutBuffer(BaseBuffer):
+    """
+    Rollout buffer used in on-policy algorithms like A2C/PPO.
+    It corresponds to ``buffer_size`` transitions collected
+    using the current policy.
+    This experience will be discarded after the policy update.
+    In order to use PPO objective, we also store the current value of each state
+    and the log probability of each taken action.
+
+    The term rollout here refers to the model-free notion and should not
+    be used with the concept of rollout used in model-based RL or planning.
+    Hence, it is only involved in policy and value function training but not action selection.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param gae_lambda: Factor for trade-off of bias vs variance for Generalized Advantage Estimator
+        Equivalent to classic advantage when set to 1.
+    :param gamma: Discount factor
+    :param n_envs: Number of parallel environments
+    """
+
+    observations: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    advantages: np.ndarray
+    advantages_costs: np.ndarray
+    returns: np.ndarray
+    cost_returns: np.ndarray
+    episode_starts: np.ndarray
+    log_probs: np.ndarray
+    values: np.ndarray
+    value_costs: np.ndarray
+    safety_labels: np.ndarray
+    costs: np.ndarray
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        gae_lambda: float = 1,
+        gamma: float = 0.99,
+        n_envs: int = 1,
+        is_mixed: bool = False,
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        self.gae_lambda = gae_lambda
+        self.gamma = gamma
+        self.generator_ready = False
+        self.is_mixed = is_mixed
+        self.logits_dim = get_action_dim(action_space)
+        if isinstance(action_space, gym.spaces.Discrete):
+            self.logits_dim = self.logits_dim*action_space.n
+        elif isinstance(action_space, gym.spaces.MultiDiscrete):
+            self.logits_dim = action_space.nvec.sum()
+        self.reset()
+
+
+    def reset(self) -> None:
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if self.is_mixed else categorical_dtype)
+        self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
+        self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.safety_labels = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.value_costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.advantages_costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.generator_ready = False
+        super().reset()
+
+    def compute_returns_and_advantage(self, last_values: th.Tensor, last_value_costs: th.Tensor, dones: np.ndarray) -> None:
+        """
+        Post-processing step: compute the lambda-return (TD(lambda) estimate)
+        and GAE(lambda) advantage.
+
+        Uses Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
+        to compute the advantage. To obtain Monte-Carlo advantage estimate (A(s) = R - V(S))
+        where R is the sum of discounted reward with value bootstrap
+        (because we don't always have full episode), set ``gae_lambda=1.0`` during initialization.
+
+        The TD(lambda) estimator has also two special cases:
+        - TD(1) is Monte-Carlo estimate (sum of discounted rewards)
+        - TD(0) is one-step estimate with bootstrapping (r_t + gamma * v(s_{t+1}))
+
+        For more information, see discussion in https://github.com/DLR-RM/stable-baselines3/pull/375.
+
+        :param last_values: state value estimation for the last step (one for each env)
+        :param dones: if the last step was a terminal step (one bool for each env).
+        """
+        # Convert to numpy
+        last_values = last_values.clone().cpu().numpy().flatten()
+        last_value_costs = last_value_costs.clone().cpu().numpy().flatten()
+
+        last_gae_lam = 0
+        last_gae_lam_costs = 0
+        for step in reversed(range(self.buffer_size)):
+            if step == self.buffer_size - 1:
+                next_non_terminal = 1.0 - dones
+                next_values = last_values
+                next_value_costs = last_value_costs
+            else:
+                next_non_terminal = 1.0 - self.episode_starts[step + 1]
+                next_values = self.values[step + 1]
+                next_value_costs = self.value_costs[step + 1]
+            delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
+            delta_costs = self.costs[step] + self.gamma * next_value_costs * next_non_terminal - self.value_costs[step]
+            last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
+            last_gae_lam_costs = delta_costs + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam_costs
+            self.advantages[step] = last_gae_lam
+            self.advantages_costs[step] = last_gae_lam_costs
+        # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
+        # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
+        self.returns = self.advantages + self.values
+        self.cost_returns = self.advantages_costs + self.costs
+
+    def add(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        episode_start: np.ndarray,
+        value: th.Tensor,
+        value_cost: th.Tensor,
+        log_prob: th.Tensor,
+        cost: th.Tensor,
+        safety_label: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        :param obs: Observation
+        :param action: Action
+        :param reward:
+        :param episode_start: Start of episode signal.
+        :param value: estimated value of the current state
+            following the current policy.
+        :param log_prob: log probability of the action
+            following the current policy.
+        :param guidance_labels: does the state complie with the guidelines.
+        """
+        if len(log_prob.shape) == 0:
+            # Reshape 0-d tensor to avoid error
+            log_prob = log_prob.reshape(-1, 1)
+
+        # Reshape needed when using multiple envs with discrete observations
+        # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
+        if isinstance(self.observation_space, spaces.Discrete):
+            obs = obs.reshape((self.n_envs, *self.obs_shape))
+
+        # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
+        action = action.reshape((self.n_envs, self.action_dim))
+
+        self.observations[self.pos] = np.array(obs).copy()
+        self.actions[self.pos] = np.array(action).copy()
+        self.rewards[self.pos] = np.array(reward).copy()
+        self.episode_starts[self.pos] = np.array(episode_start).copy()
+        self.values[self.pos] = value.clone().cpu().numpy().flatten()
+        self.value_costs[self.pos] = value_cost.clone().cpu().numpy().flatten()
+        self.costs[self.pos] = cost.clone().cpu().numpy().flatten()
+        self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
+
+        if safety_label is not None:
+            self.safety_labels[self.pos] = np.array(safety_label).copy()
+
+        self.pos += 1
+        if self.pos == self.buffer_size:
+            self.full = True
+
+    def get(self, batch_size: Optional[int] = None) -> Generator[CostCategoricalRolloutBufferSamples, None, None]:
+        assert self.full, ""
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+        # Prepare the data
+        if not self.generator_ready:
+            _tensor_names = [
+                "observations",
+                "actions",
+                "values",
+                "value_costs",
+                "log_probs",
+                "advantages",
+                "advantages_costs",
+                "returns",
+                "cost_returns",
+                "safety_labels",
+            ]
+
+            for tensor in _tensor_names:
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+            self.generator_ready = True
+
+        # Return everything, don't create minibatches
+        if batch_size is None:
+            batch_size = self.buffer_size * self.n_envs
+
+        start_idx = 0
+        while start_idx < self.buffer_size * self.n_envs:
+            yield self._get_samples(indices[start_idx:start_idx + batch_size])
+            start_idx += batch_size
+
+    def categorical_to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
+        """
+        Convert a numpy array to a PyTorch tensor.
+        Note: it copies the data by default
+
+        :param array:
+        :param copy: Whether to copy or not the data (may be useful to avoid changing things
+            by reference). This argument is inoperative if the device is not the CPU.
+        :return:
+        """
+        if copy:
+            if array.dtype == categorical_dtype or array.dtype == object:
+                return np.copy(array)
+            return th.tensor(array, device=self.device)
+        if array.dtype == categorical_dtype or array.dtype == object:
+            return array
+        return th.as_tensor(array, device=self.device)
+
+    def _get_samples(
+        self,
+        batch_inds: np.ndarray,
+        env: Optional[VecNormalize] = None,
+    ) -> CostCategoricalRolloutBufferSamples:  # type: ignore[signature-mismatch] #FIXME
+        data = (
+            self.observations[batch_inds],
+            self.actions[batch_inds],
+            self.values[batch_inds].flatten(),
+            self.value_costs[batch_inds].flatten(),
+            self.log_probs[batch_inds].flatten(),
+            self.advantages[batch_inds].flatten(),
+            self.advantages_costs[batch_inds].flatten(),
+            self.returns[batch_inds].flatten(),
+            self.cost_returns[batch_inds].flatten(),
+            self.safety_labels[batch_inds].flatten(),
+        )
+        return CostCategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 
 
 class MaskableCategoricalRolloutBuffer(CategoricalRolloutBuffer):
