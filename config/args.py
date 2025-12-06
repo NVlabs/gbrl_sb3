@@ -154,7 +154,7 @@ def parse_args():
     # mandatory arguments
     parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
                                                          'football', 'equation', 'rickety_bridge'])
-    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'cost_gbrl'
+    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'cost_gbrl',
                                                           'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn'])
     parser.add_argument('--env_name', type=str)
     # env args

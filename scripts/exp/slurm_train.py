@@ -62,7 +62,7 @@ sys.path.append(os.environ.get('SUBMIT_SCRIPTS', '.'))
 from userlib.auto_resume import AutoResume
 
 SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0']
-NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'cost_gbrl': Cost_PPO_GBRL,'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,
+NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'cost_gbrl': Cost_PPO_GBRL, 'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,
                 'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl', 'cost_gbrl']
