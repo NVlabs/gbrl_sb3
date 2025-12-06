@@ -200,8 +200,8 @@ class DynamicCrossing(MiniGridEnv):
         # It moves vertically down, resets at bottom
         self.obstacles = []
         obstacle_start_x = mid_x + 1
-        obstacle_start_y_lower = opening_y - 2
-        obstacle_start_y_upper = opening_y + 2
+        obstacle_start_y_lower = opening_y - 1
+        obstacle_start_y_upper = opening_y + 1
 
         if obstacle_start_y_lower < 1:
             obstacle_start_y_lower = 1  # wrap if out of bounds
