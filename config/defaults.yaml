@@ -89,7 +89,7 @@ ppo_gbrl:
   learning_rate: 3.0e-4
   target_kl: null
   normalize_value_grads: False
-  batch_size: 128
+  batch_size: 512
   n_epochs: 20
   clip_range: 0.62
   clip_range_vf: null

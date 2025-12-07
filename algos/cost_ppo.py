@@ -337,6 +337,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
         entropy_losses = []
         policy_losses, value_losses, cost_losses = [], [], []
         clip_fractions = []
+        safety_policy_losses = []
 
         continue_training = True
         theta_maxs, theta_mins = [], []
@@ -412,6 +413,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 # Logging
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
+                cost_losses.append(cost_loss.item())
 
                 policy_grad = None
                 value_grad = None,
@@ -433,14 +435,20 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                     # clipped surrogate loss
                     safety_policy_loss_1 = advantages_costs * ratio
                     safety_policy_loss_2 = advantages_costs * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                    safety_policy_loss = -th.min(safety_policy_loss_1, safety_policy_loss_2).mean()
+                    safety_policy_loss = th.min(safety_policy_loss_1, safety_policy_loss_2).mean()
                     safety_policy_loss.backward()
 
                     safety_grads, _, _ = self.policy.model.extract_grads()
                     safety_grads = safety_grads * n_samples
-                    if self.safety_mode:
-                        safety_grads_maxs.append(safety_grads.max().item())
-                        safety_grads_mins.append(safety_grads.min().item())
+
+                    safety_grads_maxs.append(safety_grads.max().item())
+                    safety_grads_mins.append(safety_grads.min().item())
+                    values_grad_maxs.append(value_grad.max().item())
+                    values_grad_mins.append(value_grad.min().item())
+                    cost_grad_maxs.append(cost_grad.max().item())
+                    cost_grad_mins.append(cost_grad.min().item())
+                    safety_policy_losses.append(safety_policy_loss.item())
+                        
                     safety = {'safety_grads': safety_grads,
                               'safety_labels': rollout_data.safety_labels}
 
@@ -523,9 +531,11 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
             if isinstance(num_trees, tuple):
                 num_trees, value_num_trees, cost_num_trees = num_trees
 
-            self.logger.record("train/entropy_loss", np.mean(entropy_losses))
-            self.logger.record("train/policy_gradient_loss", np.mean(policy_losses))
-            self.logger.record("train/value_loss", np.mean(value_losses))
+            self.logger.record("loss/entropy_loss", np.mean(entropy_losses))
+            self.logger.record("loss/policy_gradient_loss", np.mean(policy_losses))
+            self.logger.record("loss/cost_loss", np.mean(cost_losses))
+            self.logger.record("loss/value_loss", np.mean(value_losses))
+            self.logger.record("loss/safety_loss", np.mean(safety_policy_losses))
             self.logger.record("param/theta_max", np.mean(theta_maxs))
             self.logger.record("param/theta_min", np.mean(theta_mins))
             self.logger.record("param/value_max", np.mean(values_maxs))
