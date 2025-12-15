@@ -412,7 +412,7 @@ class CostActorCriticPolicy(BasePolicy):
         return self.model.predict_cost(obs, requires_grad, tensor=True, stop_idx=stop_idx)
 
     def predict_values(self, obs: Union[th.Tensor, np.ndarray], requires_grad: bool = True,
-                       stop_idx: int = None) -> th.Tensor:
+                       stop_idx: Optional[int] = None) -> th.Tensor:
         """
         Get the estimated values according to the current policy given the observations.
 
@@ -443,7 +443,6 @@ class CostActorCriticPolicy(BasePolicy):
              cost_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
              policy_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
              value_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
-             safety_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
              ) -> None:
 
         if self.nn_critic:
@@ -452,15 +451,14 @@ class CostActorCriticPolicy(BasePolicy):
             return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip)
         return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
                                value_grad_clip=value_grad_clip, cost_grad_clip=cost_grad_clip,
-                               guidance_labels=safety_labels, guidance_grads=safety_grads,
+                               obj_labels=safety_labels,
                                policy_grads=policy_grads, value_grads=value_grads, cost_grads=cost_grads)
 
     def actor_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
                    policy_grad_clip: float = None,
-                   safety_labels: Optional[Union[np.ndarray, th.Tensor]] = None,
-                   safety_grads: Optional[Union[np.ndarray, th.Tensor]] = None) -> None:
+                   safety_labels: Optional[Union[np.ndarray, th.Tensor]] = None) -> None:
         self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip,
-                              guidance_labels=safety_labels, guidance_grads=safety_grads)
+                              obj_labels=safety_labels)
 
     def critic_step(self,
                     observations: Optional[Union[th.Tensor, np.ndarray]] = None,

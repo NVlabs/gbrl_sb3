@@ -416,6 +416,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 cost_losses.append(cost_loss.item())
 
                 policy_grad = None
+                policy_grads = None
                 value_grad = None,
                 cost_grad = None
                 safety = {}
@@ -448,9 +449,10 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                     cost_grad_maxs.append(cost_grad.max().item())
                     cost_grad_mins.append(cost_grad.min().item())
                     safety_policy_losses.append(safety_policy_loss.item())
+
+                    policy_grads = (policy_grad, safety_grads)
                         
-                    safety = {'safety_grads': safety_grads,
-                              'safety_labels': rollout_data.safety_labels}
+                    safety = {'safety_labels': rollout_data.safety_labels}
 
                 if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                     if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
@@ -479,7 +481,8 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
                                  value_grad_clip=self.max_value_grad_norm,
-                                 policy_grads=policy_grad,
+                                 cost_grad_clip=self.max_cost_grad_norm,
+                                 policy_grads=policy_grads,
                                  value_grads=value_grad,
                                  cost_grads=cost_grad,
                                  observations=rollout_data.observations,

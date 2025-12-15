@@ -167,6 +167,8 @@ class DynamicCrossing(MiniGridEnv):
         self.last_agent_dir = self.agent_dir
         self.last_action = None
 
+        self.prev_potential = self.get_potential(self.agent_pos)
+
         return obs, info
 
     def _gen_grid(self, width, height):
@@ -189,19 +191,24 @@ class DynamicCrossing(MiniGridEnv):
                 self.put_obj(self.obstacle_type(), mid_x, y)
 
         # Place the agent in the top-left corner
-        self.agent_pos = np.array((1, 1))
+        top_left = np.array((1, 1))
+        bottom_right = np.array((width - 2, height - 2))
+        self.agent_pos = np.array((1, height - 2))
         self.agent_dir = 0
+
+        self.max_distance = np.linalg.norm(top_left - bottom_right)
 
         # Place a goal square in the bottom-right corner
         self.put_obj(Goal(), width - 2, height - 2)
 
+        self.goal_pos = bottom_right
 
         # Place a single obstacle at (mid_x + 1, opening_y + 1)
         # It moves vertically down, resets at bottom
         self.obstacles = []
         obstacle_start_x = mid_x + 1
-        obstacle_start_y_lower = opening_y - 1
-        obstacle_start_y_upper = opening_y + 1
+        obstacle_start_y_lower = opening_y - 2
+        obstacle_start_y_upper = opening_y + 2
 
         if obstacle_start_y_lower < 1:
             obstacle_start_y_lower = 1  # wrap if out of bounds
@@ -209,13 +216,15 @@ class DynamicCrossing(MiniGridEnv):
         if obstacle_start_y_upper > height - 2:
             obstacle_start_y_upper = height - 2  # wrap if out of bounds
         
-        self.obstacles.append(Ball())
-        self.grid.set(obstacle_start_x, obstacle_start_y_lower, self.obstacles[0])
-        self.obstacles[0].cur_pos = (obstacle_start_x, obstacle_start_y_lower)
-        self.obstacle_start_x = obstacle_start_x
+        # self.obstacles.append(Ball())
+
+        # self.grid.set(obstacle_start_x, obstacle_start_y_lower, self.obstacles[0])
+        # self.obstacles[0].cur_pos = (obstacle_start_x, obstacle_start_y_lower)
+        # self.obstacle_start_x = obstacle_start_x
         
-        self.obstacle_min_y = obstacle_start_y_lower
-        self.obstacle_max_y = obstacle_start_y_upper
+        # self.obstacle_min_y = obstacle_start_y_lower
+        # self.obstacle_max_y = obstacle_start_y_upper
+
         # self.obstacle_min_y = opening_y - 1
         # self.obstacle_max_y = opening_y + 1
 
@@ -240,17 +249,20 @@ class DynamicCrossing(MiniGridEnv):
         unsafe = front_cell is not None and front_cell.type in ['lava', 'ball']
         info = {'cost': 0.0, 'safety_label': int(unsafe)}
 
-        # Update obstacle positions
-        if self.obstacles:
-            old_x, old_y = self.obstacles[0].cur_pos
-            new_y = old_y + 1
-            if new_y > self.obstacle_max_y:
-                new_y = self.obstacle_min_y
-            self.grid.set(old_x, old_y, None)
-            self.grid.set(self.obstacle_start_x, new_y, self.obstacles[0])
-            self.obstacles[0].cur_pos = (self.obstacle_start_x, new_y)
+        # # Update obstacle positions
+        # if self.obstacles:
+        #     old_x, old_y = self.obstacles[0].cur_pos
+        #     new_y = old_y + 1
+        #     if new_y > self.obstacle_max_y:
+        #         new_y = self.obstacle_min_y
+        #     self.grid.set(old_x, old_y, None)
+        #     self.grid.set(self.obstacle_start_x, new_y, self.obstacles[0])
+        #     self.obstacles[0].cur_pos = (self.obstacle_start_x, new_y)
 
-        reward = 0
+        potential = self.get_potential(self.agent_pos)
+
+        reward = potential - self.prev_potential
+
         terminated = False
         truncated = False
 
@@ -277,8 +289,9 @@ class DynamicCrossing(MiniGridEnv):
             if fwd_cell is not None and fwd_cell.type == "goal":
                 terminated = True
                 reward = self._reward()
-            if fwd_cell is not None and fwd_cell.type == "lava":
-                terminated = True
+            # if fwd_cell is not None and fwd_cell.type == "lava":
+                # terminated = True
+
 
         # Wait action (not used by default)
         elif action == self.actions.wait:
@@ -298,12 +311,17 @@ class DynamicCrossing(MiniGridEnv):
         # If the agent tried to walk over an obstacle or wall
         if action == self.actions.forward and not_clear:
             if self.reward_penalty:
-                reward = -1
-            terminated = True
+                reward -= 1
+            # terminated = True
             info['cost'] += 1.0
+
+        self.prev_potential = potential
 
         return obs, reward, terminated, truncated, info
 
+    def get_potential(self, pos):
+        dist = np.linalg.norm(np.array(pos) - np.array(self.goal_pos))
+        return np.clip(1.0 - (dist / self.max_distance), 0.0, 1.0)
 
     def get_frame(
         self,

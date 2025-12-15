@@ -311,8 +311,7 @@ def parse_args():
     parser.add_argument('--generator_type', type=str, choices=['Quantile', 'quantile', 'l2', 'Uniform', 'uniform'])
     parser.add_argument('--grow_policy', type=str, choices=['Oblivious', 'Greedy', 'greedy', 'oblivious'])
     parser.add_argument('--feature_weights', type=json_string_to_list)
-    parser.add_argument('--guidance_weight', type=float)
-    parser.add_argument('--guidance_scale', type=float)
+    parser.add_argument('--lambda_penalty', type=float)
     # Saving params
     parser.add_argument('--save_name', type=str)
     parser.add_argument('--save_path', type=str)
@@ -342,8 +341,9 @@ def parse_args():
     parser.add_argument('--rollouts_player', type=int)
     # openspiel
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
-    # guidance
+    # safety
     parser.add_argument('--safety_mode', type=str2bool)
+    parser.add_argument('--lambda_objs', type=float, nargs='+')
     args = parser.parse_args()
 
     defaults = load_yaml_defaults()
@@ -407,6 +407,7 @@ def get_defaults(args, defaults):
     args.nn_critic = args.nn_critic if args.nn_critic is not None else algo_defaults.get('nn_critic', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
     args.safety_mode = args.safety_mode if args.safety_mode is not None else algo_defaults.get('safety_mode', False)
+    args.lambda_objs = args.lambda_objs if args.lambda_objs is not None else algo_defaults.get('lambda_objs', [1.0])
     args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else \
         algo_defaults.get('clip_range', 0.2)
     args.clip_range_vf = convert_clip_range(args.clip_range_vf) if args.clip_range_vf is not None else \
@@ -554,10 +555,8 @@ def get_defaults(args, defaults):
         gbrl_param_defaults['shared_tree_struct']
     args.feature_weights = args.feature_weights if args.feature_weights is not None else \
         gbrl_param_defaults['feature_weights']
-    args.guidance_weight = args.guidance_weight if args.guidance_weight is not None else \
-        gbrl_param_defaults.get('guidance_weight', 1.0)
-    args.guidance_scale = args.guidance_scale if args.guidance_scale is not None else \
-        gbrl_param_defaults.get('guidance_scale', 1.0)
+    args.lambda_penalty = args.lambda_penalty if args.lambda_penalty is not None else \
+        gbrl_param_defaults.get('lambda_penalty', 1.0)
     # SAC GBRL Params
     sac_gbrl_defaults = defaults.get('sac_gbrl', {})
     args.ent_lr = args.ent_lr if args.ent_lr is not None else sac_gbrl_defaults.get('ent_lr', 1.0e-3)
@@ -630,8 +629,9 @@ def process_policy_kwargs(args):
                     'control_variates': args.control_variates,
                     "generator_type": args.generator_type,
                     "feature_weights": args.feature_weights,
-                    "guidance_weight": args.guidance_weight,
-                    "guidance_scale": args.guidance_scale,
+                    "lambda_penalty": args.lambda_penalty,
+                    "n_objs": 2 if args.safety_mode else 1,
+                    'lambda_objs': args.lambda_objs,
                     }
     algo_kwargs = {}
     if args.algo_type == 'ppo_gbrl':

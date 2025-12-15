@@ -424,17 +424,10 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     continue_training = False
                     break
 
-                if self.guidance:
-                    guidance = {'guidance_labels': rollout_data.guidance_labels,
-                                'guidance_actions': rollout_data.guidance_actions}
-                else:
-                    guidance = {}
-
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
-                                 value_grad_clip=self.max_value_grad_norm,
-                                 log_probs=log_prob,
-                                 **guidance)
+                                 value_grad_clip=self.max_value_grad_norm)
+                
                 params, grads = self.policy.get_params()
                 if isinstance(grads, tuple):
                     theta_grad, values_grad = grads

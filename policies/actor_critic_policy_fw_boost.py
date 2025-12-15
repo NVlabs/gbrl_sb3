@@ -440,7 +440,7 @@ class ActorCriticPolicyBOOST(BasePolicy):
     def get_schedule_learning_rates(self):
         return self.lr, self.lr
 
-    def step(self, observations: Union[np.array, th.Tensor], policy_grad_clip: float=None, value_grad_clip: float=None) -> None:
+    def step(self, observations: Union[np.array, th.Tensor],policy_grad_clip: float=None, value_grad_clip: float=None) -> None:
         obs = to_numpy(observations)
         n_samples = len(observations)
         policy_grads = self.params['mean_actions'].grad.detach().cpu().numpy() * n_samples

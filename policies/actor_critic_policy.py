@@ -396,42 +396,34 @@ class ActorCriticPolicy(BasePolicy):
     def get_params(self):
         return self.model.get_params()
 
-    def get_grads(self):    
+    def get_grads(self) -> Optional[th.Tensor]:
         return self.model.get_grads()
 
     def step(self,
              observations: Optional[Union[np.ndarray, th.Tensor]] = None,
-             policy_grad_clip: float = None,
-             value_grad_clip: float = None,
-             guidance_labels: Optional[Union[np.ndarray, th.Tensor]] = None,
-             guidance_actions: Optional[Union[np.ndarray, th.Tensor]] = None,
-             log_probs: Optional[Union[np.ndarray, th.Tensor]] = None
+             policy_grad_clip: Optional[float] = None,
+             value_grad_clip: Optional[float] = None,
+             obj_labels: Optional[Union[np.ndarray, th.Tensor]] = None,
              ) -> None:
-
-        guidance_grads = None
-        if guidance_actions is not None:
-            guidance_grads = th.nn.functional.softmax(self.mean_actions, dim=-1) - guidance_actions.reshape(self.mean_actions.shape)
 
         if self.nn_critic:
             self.value_optimizer.step()
             return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
-                                   guidance_labels=guidance_labels, guidance_grads=guidance_grads)
+                                   obj_labels=obj_labels)
         return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
-                               value_grad_clip=value_grad_clip, guidance_labels=guidance_labels, guidance_grads=guidance_grads)
+                               value_grad_clip=value_grad_clip, obj_labels=obj_labels)
 
     def actor_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
-                   policy_grad_clip: float = None,
-                   guidance_labels: Optional[Union[np.ndarray, th.Tensor]] = None,
-                   guidance_grads: Optional[Union[np.ndarray, th.Tensor]] = None) -> None:
-        self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip, guidance_labels=guidance_labels, guidance_grads=guidance_grads)
+                   policy_grad_clip: Optional[float] = None,
+                   obj_labels: Optional[Union[np.ndarray, th.Tensor]] = None
+                   ) -> None:
+        self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip, obj_labels=obj_labels)
 
     def critic_step(self,
                     observations: Optional[Union[th.Tensor, np.ndarray]] = None,
-                    value_grad_clip: float = None,
-                    guidance_labels: Optional[Union[np.ndarray, th.Tensor]] = None,
-                    guidance_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
+                    value_grad_clip: Optional[float] = None,
                     ) -> None:
-        self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip, guidance_labels=guidance_labels, guidance_grads=guidance_grads)
+        self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip)
 
     def update_learning_rate(self, policy_learning_rate, value_learning_rate):
         self.model.adjust_learning_rates(policy_learning_rate, value_learning_rate)

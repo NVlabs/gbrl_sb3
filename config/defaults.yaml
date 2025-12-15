@@ -36,8 +36,7 @@ params:
   generator_type: "Quantile"
   shared_tree_struct: True
   feature_weights: null
-  guidance_weight: 100000.0
-  guidance_scale: 0.1
+  lambda_penalty: 1000.0
 tree_optimizer: 
   policy_optimizer: # PPO / AWR 
     algo: 'SGD'
@@ -127,6 +126,7 @@ cost_gbrl:
   vf_coef: 0.871923
   max_policy_grad_norm: null
   max_value_grad_norm: null
+  lambda_objs: [1.0, 0.1]
   max_cost_grad_norm: null
   policy_bound_loss_weight: null
   fixed_std: False
