@@ -217,17 +217,17 @@ class DynamicCrossing(MiniGridEnv):
         if obstacle_start_y_upper > height - 2:
             obstacle_start_y_upper = height - 2  # wrap if out of bounds
         
-        # self.obstacles.append(Ball())
+        self.obstacles.append(Ball())
 
-        # self.grid.set(obstacle_start_x, obstacle_start_y_lower, self.obstacles[0])
-        # self.obstacles[0].cur_pos = (obstacle_start_x, obstacle_start_y_lower)
-        # self.obstacle_start_x = obstacle_start_x
+        self.grid.set(obstacle_start_x, obstacle_start_y_lower, self.obstacles[0])
+        self.obstacles[0].cur_pos = (obstacle_start_x, obstacle_start_y_lower)
+        self.obstacle_start_x = obstacle_start_x
         
-        # self.obstacle_min_y = obstacle_start_y_lower
-        # self.obstacle_max_y = obstacle_start_y_upper
+        self.obstacle_min_y = obstacle_start_y_lower
+        self.obstacle_max_y = obstacle_start_y_upper
 
-        # self.obstacle_min_y = opening_y - 1
-        # self.obstacle_max_y = opening_y + 1
+        self.obstacle_min_y = opening_y - 1
+        self.obstacle_max_y = opening_y + 1
 
         self.mission = "avoid the lava and the ball get to the green goal square"
 
@@ -250,15 +250,15 @@ class DynamicCrossing(MiniGridEnv):
         unsafe = front_cell is not None and front_cell.type in ['lava', 'ball']
         info = {'cost': 0.0, 'safety_label': int(unsafe)}
 
-        # # Update obstacle positions
-        # if self.obstacles:
-        #     old_x, old_y = self.obstacles[0].cur_pos
-        #     new_y = old_y + 1
-        #     if new_y > self.obstacle_max_y:
-        #         new_y = self.obstacle_min_y
-        #     self.grid.set(old_x, old_y, None)
-        #     self.grid.set(self.obstacle_start_x, new_y, self.obstacles[0])
-        #     self.obstacles[0].cur_pos = (self.obstacle_start_x, new_y)
+        # Update obstacle positions
+        if self.obstacles:
+            old_x, old_y = self.obstacles[0].cur_pos
+            new_y = old_y + 1
+            if new_y > self.obstacle_max_y:
+                new_y = self.obstacle_min_y
+            self.grid.set(old_x, old_y, None)
+            self.grid.set(self.obstacle_start_x, new_y, self.obstacles[0])
+            self.obstacles[0].cur_pos = (self.obstacle_start_x, new_y)
 
         potential = self.get_potential(self.agent_pos)
 
@@ -293,7 +293,6 @@ class DynamicCrossing(MiniGridEnv):
             # if fwd_cell is not None and fwd_cell.type == "lava":
                 # terminated = True
 
-
         # Wait action (not used by default)
         elif action == self.actions.wait:
             pass
@@ -315,6 +314,8 @@ class DynamicCrossing(MiniGridEnv):
                 reward -= 1
             # terminated = True
             info['cost'] += 1.0
+            if front_cell.type == 'ball':
+                terminated = True
 
         self.prev_potential = potential
 
