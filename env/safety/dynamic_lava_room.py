@@ -144,7 +144,7 @@ class DynamicCrossing(MiniGridEnv):
         self.reward_penalty = reward_penalty
         # Allow only 3 actions permitted: left, right, forward, pickup which means do nothing
         # self.action_space = Discrete(self.actions.wait + 1)
-        self.action_space = Discrete(self.actions.wait) # no wait
+        self.action_space = Discrete(3) # no wait
         self.reward_range = (-1, 1)
 
     @staticmethod
