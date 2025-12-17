@@ -19,9 +19,9 @@ from stable_baselines3.common.utils import safe_mean
 
 from stable_baselines3.ppo.ppo import PPO as SB3_PPO
 
-SelfPPO = TypeVar("SelfPPO", bound="PPO")
+SelfPPO = TypeVar("SelfPPO", bound="VanillaPPO")
 
-class PPO(SB3_PPO):
+class VanillaPPO(SB3_PPO):
     def __init__(
         self,
         policy: Union[str, Type[ActorCriticPolicy]],

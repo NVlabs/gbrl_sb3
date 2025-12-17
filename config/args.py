@@ -9,7 +9,7 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Callable, Union
+from typing import Callable, Optional, Union
 
 import yaml
 from torch.nn import ReLU, Tanh
@@ -142,7 +142,7 @@ def str2bool(v):
         return v
 
 
-def load_yaml_defaults(yaml_file: str = None):
+def load_yaml_defaults(yaml_file: Optional[str] = None):
     if yaml_file is None:
         yaml_file = ROOT_PATH / 'defaults.yaml'
     with open(yaml_file, 'r') as file:
@@ -155,7 +155,8 @@ def parse_args():
     parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
                                                          'football', 'equation', 'rickety_bridge'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'cost_gbrl',
-                                                          'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn'])
+                                                          'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
+                                                          'ppo_lag'])
     parser.add_argument('--env_name', type=str)
     # env args
     parser.add_argument('--seed', type=int)
@@ -237,6 +238,7 @@ def parse_args():
     parser.add_argument('--vf_coef', type=float)
     parser.add_argument('--clip_range')
     parser.add_argument('--clip_range_vf')
+    parser.add_argument('--clip_range_cf')
     parser.add_argument('--log_std_grad_clip', type=float)
     parser.add_argument('--fixed_std', type=str2bool)
     parser.add_argument('--policy_bound_loss_weight', type=float)
@@ -344,6 +346,14 @@ def parse_args():
     # safety
     parser.add_argument('--safety_mode', type=str2bool)
     parser.add_argument('--lambda_objs', type=float, nargs='+')
+    # PPO Lagrangian
+    parser.add_argument('--cost_limit', type=float)
+    parser.add_argument('--lagrangian_multiplier_init', type=float)
+    parser.add_argument('--lambda_lr', type=float)
+    parser.add_argument('--lambda_optimizer', type=str)
+    parser.add_argument('--lagrangian_upper_bound', type=float)
+    parser.add_argument('--cf_coef', type=float)
+    
     args = parser.parse_args()
 
     defaults = load_yaml_defaults()
@@ -356,7 +366,7 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
     # args.env_type = args.env_type if args.env_type else 'equation'
     args.env_type = args.env_type if args.env_type else 'minigrid'
-    args.algo_type = args.algo_type if args.algo_type else 'cost_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_lag'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
@@ -440,6 +450,15 @@ def get_defaults(args, defaults):
         algo_defaults.get('value_batch_size', 8192)
     args.reward_mode = args.reward_mode if args.reward_mode is not None else algo_defaults.get('reward_mode', 'gae')
     args.tau = args.tau if args.tau is not None else algo_defaults.get('tau', 0.005)
+    args.clip_range_cf = convert_clip_range(args.clip_range_cf) if args.clip_range_cf is not None else \
+        algo_defaults.get('clip_range_cf', 0.2)
+    args.cf_coef = args.cf_coef if args.cf_coef is not None else algo_defaults.get('cf_coef', 0.5)
+    args.lambda_lr = args.lambda_lr if args.lambda_lr is not None else algo_defaults.get('lambda_lr', 0.035)
+    args.lagrangian_multiplier_init = args.lagrangian_multiplier_init if args.lagrangian_multiplier_init is not None else algo_defaults.get('lagrangian_multiplier_init', 0.001)
+    args.lambda_optimizer = args.lambda_optimizer if args.lambda_optimizer is not None else algo_defaults.get('lambda_optimizer', "Adam")
+    args.lagrangian_upper_bound = args.lagrangian_upper_bound if args.lagrangian_upper_bound is not None else algo_defaults.get('lagrangian_upper_bound', None)
+    args.cost_limit = args.cost_limit if args.cost_limit is not None else algo_defaults.get('cost_limit', 0.0)
+    
     # NN Params
     args.learning_rate = preprocess_lr(args.learning_rate if args.learning_rate is not None else
                                        algo_defaults.get('learning_rate', 1.e-2))
@@ -1007,6 +1026,38 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
+        }
+    elif args.algo_type == 'ppo_lag':
+        from policies.cost_actor_critic import CostActorCriticPolicy
+        policy = CostActorCriticPolicy
+        algo_kwargs = {
+            "policy": policy,
+            "learning_rate": args.learning_rate,
+            "n_steps": args.n_steps,
+            "batch_size": args.batch_size,
+            "n_epochs": args.n_epochs,
+            "gamma": args.gamma,
+            "gae_lambda": args.gae_lambda,
+            "clip_range": args.clip_range,
+            "clip_range_vf": args.clip_range_vf,
+            "clip_range_cf": args.clip_range_cf,
+            "normalize_advantage": args.normalize_advantage,
+            "ent_coef": args.ent_coef,
+            "vf_coef": args.vf_coef,
+            "max_grad_norm": args.max_grad_norm,
+            "use_sde": args.use_sde,
+            "sde_sample_freq": args.sde_sample_freq,
+            "stats_window_size": args.stats_window_size,
+            "policy_kwargs": args.policy_kwargs,
+            "verbose": args.verbose,
+            "seed": args.seed,
+            "device": args.device,
+            "cost_limit": args.cost_limit,
+            "lagrangian_multiplier_init": args.lagrangian_multiplier_init,
+            "lambda_lr": args.lambda_lr,
+            "lambda_optimizer": args.lambda_optimizer,
+            "lagrangian_upper_bound": args.lagrangian_upper_bound,
+            "cf_coef": args.cf_coef
         }
     elif args.algo_type == 'a2c_nn':
         from stable_baselines3.common.policies import ActorCriticPolicy

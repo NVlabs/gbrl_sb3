@@ -39,11 +39,12 @@ from stable_baselines3.dqn.dqn import DQN
 from algos.a2c import A2C_GBRL
 from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
+from algos.safety.ppo_lag import PPOLag
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
 from algos.sac import SAC_GBRL
 from algos.cost_ppo import Cost_PPO_GBRL
-from algos.safety.ppo import PPO
+from algos.safety.ppo import VanillaPPO as PPO
 
 from config.args import parse_args, process_logging, process_policy_kwargs
 
@@ -51,6 +52,7 @@ SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0']
 NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'cost_gbrl': Cost_PPO_GBRL,
                 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL,
                 'awr_gbrl': AWR_GBRL, 'ppo_nn': PPO,
+                'ppo_lag': PPOLag,
                 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL,
                 'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]

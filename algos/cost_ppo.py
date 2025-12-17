@@ -37,7 +37,7 @@ from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
 from buffers.rollout_buffer import CostRolloutBuffer, CostCategoricalRolloutBuffer
-from policies.cost_actor_critic import CostActorCriticPolicy
+from policies.cost_actor_critic import CostActorCriticPolicyGBRL
 from utils.io_util import load_from_zip_file, save_to_zip_file
 
 
@@ -98,7 +98,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
     def __init__(self, env: Union[GymEnv, str],
                  clip_range: float = 0.2,
                  clip_range_vf: float = None,
-                 policy: Type[BasePolicy] = CostActorCriticPolicy,
+                 policy: Type[BasePolicy] = CostActorCriticPolicyGBRL,
                  normalize_advantage: bool = True,
                  target_kl: float = None,
                  max_policy_grad_norm: float = None,
