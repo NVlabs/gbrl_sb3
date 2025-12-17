@@ -271,7 +271,11 @@ class DynamicCrossing(MiniGridEnv):
         fwd_pos = self.front_pos
 
         # Get the contents of the cell in front of the agent
-        fwd_cell = self.grid.get(*fwd_pos)
+        fx, fy = fwd_pos
+        if 0 <= fx < self.width and 0 <= fy < self.height:
+            fwd_cell = self.grid.get(fx, fy)
+        else:
+            fwd_cell = None
 
         # Rotate left
         if action == self.actions.left:
