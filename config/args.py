@@ -156,7 +156,7 @@ def parse_args():
                                                          'football', 'equation', 'rickety_bridge'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'cost_gbrl',
                                                           'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
-                                                          'ppo_lag'])
+                                                          'ppo_lag', 'cpo'])
     parser.add_argument('--env_name', type=str)
     # env args
     parser.add_argument('--seed', type=int)
@@ -353,6 +353,11 @@ def parse_args():
     parser.add_argument('--lambda_optimizer', type=str)
     parser.add_argument('--lagrangian_upper_bound', type=float)
     parser.add_argument('--cf_coef', type=float)
+    # CPO
+    parser.add_argument('--cg_damping', type=float)
+    parser.add_argument('--cg_max_steps', type=float)
+    parser.add_argument('--line_search_max_iter', type=float)
+    parser.add_argument('--line_search_shrinking_factor', type=float)
     
     args = parser.parse_args()
 
@@ -366,7 +371,7 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
     # args.env_type = args.env_type if args.env_type else 'equation'
     args.env_type = args.env_type if args.env_type else 'minigrid'
-    args.algo_type = args.algo_type if args.algo_type else 'ppo_lag'
+    args.algo_type = args.algo_type if args.algo_type else 'cpo'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
@@ -458,7 +463,12 @@ def get_defaults(args, defaults):
     args.lambda_optimizer = args.lambda_optimizer if args.lambda_optimizer is not None else algo_defaults.get('lambda_optimizer', "Adam")
     args.lagrangian_upper_bound = args.lagrangian_upper_bound if args.lagrangian_upper_bound is not None else algo_defaults.get('lagrangian_upper_bound', None)
     args.cost_limit = args.cost_limit if args.cost_limit is not None else algo_defaults.get('cost_limit', 0.0)
-    
+    args.cg_damping = args.cg_damping if args.cg_damping is not None else algo_defaults.get('cg_damping', 0.1)
+    args.cg_max_steps = args.cg_max_steps if args.cg_max_steps is not None else algo_defaults.get('cg_max_steps', 10)
+    args.line_search_max_iter = args.line_search_max_iter if args.line_search_max_iter is not None else \
+        algo_defaults.get('line_search_max_iter', 15)
+    args.line_search_shrinking_factor = args.line_search_shrinking_factor if args.line_search_shrinking_factor is not None else \
+        algo_defaults.get('line_search_shrinking_factor', 0.8)
     # NN Params
     args.learning_rate = preprocess_lr(args.learning_rate if args.learning_rate is not None else
                                        algo_defaults.get('learning_rate', 1.e-2))
@@ -1058,6 +1068,31 @@ def process_policy_kwargs(args):
             "lambda_optimizer": args.lambda_optimizer,
             "lagrangian_upper_bound": args.lagrangian_upper_bound,
             "cf_coef": args.cf_coef
+        }
+    elif args.algo_type == 'cpo':
+        from policies.cost_actor_critic import CostActorCriticPolicy
+        policy = CostActorCriticPolicy
+        algo_kwargs = {
+            "policy": policy,
+            "learning_rate": args.learning_rate,
+            "n_steps": args.n_steps,
+            "batch_size": args.batch_size,
+            "gamma": args.gamma,
+            "gae_lambda": args.gae_lambda,
+            "normalize_advantage": args.normalize_advantage,
+            "target_kl": args.target_kl,
+            "use_sde": args.use_sde,
+            "sde_sample_freq": args.sde_sample_freq,
+            "stats_window_size": args.stats_window_size,
+            "policy_kwargs": args.policy_kwargs,
+            "verbose": args.verbose,
+            "seed": args.seed,
+            "device": args.device,
+            "cost_limit": args.cost_limit,
+            "cg_max_steps": args.cg_max_steps,
+            "cg_damping": args.cg_damping,
+            "line_search_shrinking_factor": args.line_search_shrinking_factor,
+            "line_search_max_iter": args.line_search_max_iter,
         }
     elif args.algo_type == 'a2c_nn':
         from stable_baselines3.common.policies import ActorCriticPolicy

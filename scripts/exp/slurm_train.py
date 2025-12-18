@@ -53,7 +53,7 @@ from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
 from algos.safety.ppo import VanillaPPO as PPO
 from algos.sac import SAC_GBRL
-from algos.safety.ppo_lag import PPOLag
+from algos.safety import PPOLag, CPO
 from algos.cost_ppo import Cost_PPO_GBRL
 from config.args import parse_args, process_policy_kwargs
 
@@ -64,7 +64,8 @@ from userlib.auto_resume import AutoResume
 
 SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0']
 NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'a2c_gbrl': A2C_GBRL, 'cost_gbrl': Cost_PPO_GBRL, 'sac_gbrl': SAC_GBRL, 'awr_gbrl': AWR_GBRL,
-                'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN, 'ppo_lag': PPOLag}
+                'ppo_nn': PPO, 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL, 'awr_nn': AWR, 'dqn_nn': DQN,
+                'ppo_lag': PPOLag, "cpo": CPO}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl', 'cost_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']

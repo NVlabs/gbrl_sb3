@@ -369,7 +369,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
 
                 advantages_costs = rollout_data.advantages_costs
                 if self.normalize_advantage and len(advantages_costs) > 1:
-                    advantages_costs = (advantages_costs - advantages_costs.mean()) / (advantages_costs.std() + 1e-8)
+                    advantages_costs = advantages_costs - advantages_costs.mean()
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)

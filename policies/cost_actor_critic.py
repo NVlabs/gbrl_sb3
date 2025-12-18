@@ -906,7 +906,7 @@ class CostActorCriticPolicy(ActorCriticPolicy):
         :param obs:
         :return: the action distribution.
         """
-        features = super().extract_features(obs, self.pi_features_extractor)
+        features = BasePolicy.extract_features(self, obs, self.pi_features_extractor)
         latent_pi = self.mlp_extractor.forward_actor(features)
         return self._get_action_dist_from_latent(latent_pi)
 
