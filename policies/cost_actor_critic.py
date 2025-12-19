@@ -863,6 +863,31 @@ class CostActorCriticPolicy(ActorCriticPolicy):
         else:
             raise ValueError("Invalid action distribution")
 
+    def _get_action_dist_from_latent_and_network(self, latent_pi: th.Tensor, action_net: nn.Module) -> Distribution:
+        """
+        Retrieve action distribution given the latent codes.
+
+        :param latent_pi: Latent code for the actor
+        :return: Action distribution
+        """
+        mean_actions = action_net(latent_pi)
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std)
+        elif isinstance(self.action_dist, CategoricalDistribution):
+            # Here mean_actions are the logits before the softmax
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, MultiCategoricalDistribution):
+            # Here mean_actions are the flattened logits
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, BernoulliDistribution):
+            # Here mean_actions are the logits (before rounding to get the binary actions)
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
+        else:
+            raise ValueError("Invalid action distribution")
+
     def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
@@ -909,6 +934,17 @@ class CostActorCriticPolicy(ActorCriticPolicy):
         features = BasePolicy.extract_features(self, obs, self.pi_features_extractor)
         latent_pi = self.mlp_extractor.forward_actor(features)
         return self._get_action_dist_from_latent(latent_pi)
+    
+    def get_distribution_from_extractor(self, obs: th.Tensor, mlp_extractor: MlpExtractor, action_net: nn.Module) -> Distribution:
+        """
+        Get the current policy distribution given the observations.
+
+        :param obs:
+        :return: the action distribution.
+        """
+        features = BasePolicy.extract_features(self, obs, self.pi_features_extractor)
+        latent_pi = mlp_extractor.forward_actor(features)
+        return self._get_action_dist_from_latent_and_network(latent_pi, action_net)
 
     def predict_values(self, obs: th.Tensor) -> th.Tensor:
         """
