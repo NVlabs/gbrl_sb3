@@ -8,8 +8,6 @@ from stable_baselines3.common import type_aliases
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
 
 
-
-
 def evaluate_policy(
     model: "type_aliases.PolicyPredictor",
     env: Union[gym.Env, VecEnv],
@@ -96,8 +94,9 @@ def evaluate_policy(
             deterministic=deterministic,
         )
         new_observations, rewards, dones, infos = env.step(actions)
+        costs = np.array([info.get("cost", 0.0) for info in infos])
         current_rewards += rewards
-        current_costs += np.array([info.get("cost", 0.0) for info in infos])
+        current_costs += costs
         current_lengths += 1
         for i in range(n_envs):
             if episode_counts[i] < episode_count_targets[i]:

@@ -94,9 +94,13 @@ class CostMonitor(Monitor):
         super().__init__(env, filename, allow_early_resets, reset_keywords, info_keywords, override_existing)
         self.episode_costs: List[float] = []
         self.costs: List[float] = []
+        self.episode_scalarization: List[float] = []
+        self.scalarizations = []
+        self.cost_limit = 0.1
 
     def reset(self, **kwargs) -> Tuple[ObsType, Dict[str, Any]]:
         self.costs = []
+        self.scalarizations = []
         return super().reset(**kwargs)
 
     def step(self, action: ActType) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
@@ -110,19 +114,29 @@ class CostMonitor(Monitor):
             raise RuntimeError("Tried to step environment that needs reset")
         observation, reward, terminated, truncated, info = self.env.step(action)
         cost = info.get('cost', 0.0)
+        
+        def get_scalarization(reward: float, cost: float, cost_limit: float) -> float:
+            if cost <= cost_limit:
+                return reward
+            else:
+                return -cost - 1.5
+            
         self.rewards.append(float(reward))
         self.costs.append(float(cost))
+        self.scalarizations.append(get_scalarization(float(reward), float(cost), self.cost_limit))
         if terminated or truncated:
             self.needs_reset = True
             ep_rew = sum(self.rewards)
             ep_cost = sum(self.costs)
             ep_len = len(self.rewards)
-            ep_info = {"r": round(ep_rew, 6), "c": round(ep_cost, 6), "l": ep_len, "t": round(time.time() - self.t_start, 6)}
+            ep_scalarization = sum(self.scalarizations)
+            ep_info = {"r": round(ep_rew, 6), "c": round(ep_cost, 6), "s": round(ep_scalarization, 6), "l": ep_len, "t": round(time.time() - self.t_start, 6)}
             for key in self.info_keywords:
                 ep_info[key] = info[key]
             self.episode_returns.append(ep_rew)
             self.episode_costs.append(ep_cost)
             self.episode_lengths.append(ep_len)
+            self.episode_scalarization.append(ep_scalarization)
             self.episode_times.append(time.time() - self.t_start)
             ep_info.update(self.current_reset_info)
             if self.results_writer:
