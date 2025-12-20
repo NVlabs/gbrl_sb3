@@ -258,6 +258,7 @@ cpo:
   target_kl: 0.01
   batch_size: 64
   use_sde: False
+  n_critic_updates: 10
   stats_window_size: 100
   sde_sample_freq: -1
   learning_rate: 3.0e-4

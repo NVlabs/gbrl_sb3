@@ -355,8 +355,9 @@ def parse_args():
     parser.add_argument('--cf_coef', type=float)
     # CPO
     parser.add_argument('--cg_damping', type=float)
-    parser.add_argument('--cg_max_steps', type=float)
-    parser.add_argument('--line_search_max_iter', type=float)
+    parser.add_argument('--cg_max_steps', type=int)
+    parser.add_argument('--line_search_max_iter', type=int)
+    parser.add_argument('--n_critic_updates', type=int)
     parser.add_argument('--line_search_shrinking_factor', type=float)
     parser.add_argument('--kappa', type=float)
     parser.add_argument('--penalty_max', type=float)
@@ -469,6 +470,7 @@ def get_defaults(args, defaults):
     args.cg_max_steps = args.cg_max_steps if args.cg_max_steps is not None else algo_defaults.get('cg_max_steps', 10)
     args.kappa = args.kappa if args.kappa is not None else algo_defaults.get('kappa', 0.01)
     args.penalty_max = args.penalty_max if args.penalty_max is not None else algo_defaults.get('penalty_max', 1.0)
+    args.n_critic_updates = args.n_critic_updates if args.n_critic_updates is not None else algo_defaults.get('n_critic_updates', 10)
     args.line_search_max_iter = args.line_search_max_iter if args.line_search_max_iter is not None else \
         algo_defaults.get('line_search_max_iter', 15)
     args.line_search_shrinking_factor = args.line_search_shrinking_factor if args.line_search_shrinking_factor is not None else \
@@ -1157,6 +1159,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
+            "n_critic_updates": args.n_critic_updates,
             "cost_limit": args.cost_limit,
             "cg_max_steps": args.cg_max_steps,
             "cg_damping": args.cg_damping,
