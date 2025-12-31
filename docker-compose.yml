@@ -1,0 +1,187 @@
+##############################################################################
+# GBRL SB3 - Docker Compose for Development
+# Hot-reload code changes from host OS
+##############################################################################
+
+services:
+  gbrl-dev:
+    image: nomadramanujan/gbrl_sb3:latest
+    container_name: gbrl_sb3_dev
+
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # Mount local code for hot-reloading
+    volumes:
+      # Mount entire codebase (overwrites container's /gbrl_sb3)
+      - .:/gbrl_sb3
+      # Mount results directory
+      - ./runs:/gbrl_sb3/runs
+      # Preserve installed packages (don't overwrite site-packages)
+      - gbrl_packages:/usr/local/lib/python3.10/dist-packages
+
+    # Keep container running for development
+    stdin_open: true
+    tty: true
+
+    # Working directory
+    working_dir: /gbrl_sb3
+
+    # Environment variables
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - CUDA_HOME=/usr/local/cuda
+      - CUDA_PATH=/usr/local/cuda
+
+    # Default command - interactive shell
+    command: bash
+
+  # CPU-only development (no GPU required)
+  gbrl-dev-cpu:
+    image: nomadramanujan/gbrl_sb3:latest
+    container_name: gbrl_sb3_dev_cpu
+
+    volumes:
+      - .:/gbrl_sb3
+      - ./runs:/gbrl_sb3/runs
+      - gbrl_packages_cpu:/usr/local/lib/python3.10/dist-packages
+
+    stdin_open: true
+    tty: true
+    working_dir: /gbrl_sb3
+
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+
+    command: bash
+
+  # Training service (GPU)
+  train:
+    image: nomadramanujan/gbrl_sb3:latest
+    container_name: gbrl_sb3_train
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    volumes:
+      - .:/gbrl_sb3
+      - ./runs:/gbrl_sb3/runs
+
+    working_dir: /gbrl_sb3
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ENV_NAME=${ENV_NAME:-CartPole-v1}
+      - SEED=${SEED:-0}
+
+    command: bash experiments/gym/ppo_gbrl.sh ${ENV_NAME:-CartPole-v1} ${SEED:-0}
+
+  # Training service (CPU)
+  train-cpu:
+    image: nomadramanujan/gbrl_sb3:latest
+    container_name: gbrl_sb3_train_cpu
+
+    volumes:
+      - .:/gbrl_sb3
+      - ./runs:/gbrl_sb3/runs
+
+    working_dir: /gbrl_sb3
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ENV_NAME=${ENV_NAME:-CartPole-v1}
+      - SEED=${SEED:-0}
+
+    command: >
+      python scripts/train.py
+        --algo_type ppo_gbrl
+        --env_name ${ENV_NAME:-CartPole-v1}
+        --env_type gym
+        --device cpu
+        --seed ${SEED:-0}
+        --total_n_steps ${TOTAL_STEPS:-1000000}
+
+  # ==========================================================================
+  # TRUCK LOGISTICS SERVICES (CPU)
+  # ==========================================================================
+
+  # Test truck logistics environment
+  test-truck:
+    image: nomadramanujan/gbrl_sb3:latest
+    container_name: gbrl_truck_test
+
+    volumes:
+      - .:/gbrl_sb3
+      - ./runs:/gbrl_sb3/runs
+
+    working_dir: /gbrl_sb3
+
+    environment:
+      - PYTHONUNBUFFERED=1
+
+    command: python experiments/truck_logistics/test_env.py
+
+  # Train truck logistics (CPU)
+  train-truck:
+    image: nomadramanujan/gbrl_sb3:latest
+    container_name: gbrl_truck_train
+
+    volumes:
+      - .:/gbrl_sb3
+      - ./runs:/gbrl_sb3/runs
+      - ./saved_models:/gbrl_sb3/saved_models
+
+    working_dir: /gbrl_sb3
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ENV_NAME=${ENV_NAME:-TruckLogistics-Simple-BEV-v0}
+      - TOTAL_STEPS=${TOTAL_STEPS:-100000}
+      - SEED=${SEED:-42}
+
+    command: >
+      python experiments/truck_logistics/train_truck.py
+        --env_name ${ENV_NAME:-TruckLogistics-Simple-BEV-v0}
+        --total_steps ${TOTAL_STEPS:-100000}
+        --num_envs 4
+        --seed ${SEED:-42}
+        --save_path /gbrl_sb3/saved_models/truck_logistics
+
+  # Interactive development for truck logistics
+  truck-dev:
+    image: nomadramanujan/gbrl_sb3:latest
+    container_name: gbrl_truck_dev
+
+    volumes:
+      - .:/gbrl_sb3
+      - ./runs:/gbrl_sb3/runs
+      - ./saved_models:/gbrl_sb3/saved_models
+      - gbrl_packages_cpu:/usr/local/lib/python3.10/dist-packages
+
+    stdin_open: true
+    tty: true
+    working_dir: /gbrl_sb3
+
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+
+    command: bash
+
+# Named volumes to preserve installed packages
+volumes:
+  gbrl_packages:
+  gbrl_packages_cpu:
