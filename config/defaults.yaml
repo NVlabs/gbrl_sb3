@@ -101,7 +101,7 @@ ppo_gbrl:
   policy_bound_loss_weight: null
   fixed_std: False
   log_std_init: -2
-cost_gbrl:
+split_rl:
   wrapper_kwargs:
     training: True
     norm_obs: False
@@ -116,9 +116,9 @@ cost_gbrl:
   learning_rate: 3.0e-4
   target_kl: null
   normalize_value_grads: False
-  batch_size: 128
+  batch_size: 512
   n_epochs: 20
-  clip_range: 0.62
+  clip_range: 0.2
   clip_range_vf: null
   log_std_lr: lin_0.0017
   min_log_std_lr: 0.000475
@@ -130,7 +130,6 @@ cost_gbrl:
   max_cost_grad_norm: null
   policy_bound_loss_weight: null
   fixed_std: False
-  safety_mode: True
   log_std_init: -2
 ppo_nn:
   wrapper_kwargs:

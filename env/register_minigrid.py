@@ -135,7 +135,7 @@ def register_minigrid_tests():
     register(
         id="MiniGrid-GuidedLockedRoom-v0",
         entry_point="env.guidance.locked_room:GuidedLockedRoomEnv",
-        kwargs={"guided_reward": False, "action_masking": False},
+        kwargs={},
     )
     register(
         id="MiniGrid-DynamicCrossing-v0",

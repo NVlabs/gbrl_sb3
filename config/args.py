@@ -25,6 +25,9 @@ str2Activation = {'relu': ReLU, 'tanh': Tanh}
 
 ROOT_PATH = Path(__file__).parent
 
+SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0']
+GUIDANCE_ENVS = ['MiniGrid-GuidedLockedRoom-v0']
+GUIDANCE_ALGOS = ['split_rl']
 
 def get_value(x):
     if isinstance(x, dict):
@@ -154,7 +157,7 @@ def parse_args():
     # mandatory arguments
     parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
                                                          'football', 'equation', 'rickety_bridge'])
-    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'cost_gbrl',
+    parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'split_rl',
                                                           'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
                                                           'ppo_lag', 'cpo', 'cup', 'ipo'])
     parser.add_argument('--env_name', type=str)
@@ -374,12 +377,13 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
     # args.env_type = args.env_type if args.env_type else 'equation'
     args.env_type = args.env_type if args.env_type else 'minigrid'
-    args.algo_type = args.algo_type if args.algo_type else 'ipo'
+    # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
+    args.algo_type = args.algo_type if args.algo_type else 'split_rl'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-DynamicCrossing-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-GuidedLockedRoom-v0'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
     # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
@@ -424,7 +428,6 @@ def get_defaults(args, defaults):
     args.squash = args.squash if args.squash is not None else algo_defaults.get('squash', False)
     args.nn_critic = args.nn_critic if args.nn_critic is not None else algo_defaults.get('nn_critic', False)
     args.vf_coef = args.vf_coef if args.vf_coef is not None else algo_defaults.get('vf_coef', 0.5)
-    args.safety_mode = args.safety_mode if args.safety_mode is not None else algo_defaults.get('safety_mode', False)
     args.lambda_objs = args.lambda_objs if args.lambda_objs is not None else algo_defaults.get('lambda_objs', [1.0])
     args.clip_range = convert_clip_range(args.clip_range) if args.clip_range is not None else \
         algo_defaults.get('clip_range', 0.2)
@@ -659,13 +662,15 @@ def process_logging(args, callback_list):
 
 
 def process_policy_kwargs(args):
+    safety_mode = args.env_name in SAFETY_ENVS
+    guidance_mode = args.env_name in GUIDANCE_ENVS and args.algo_type in GUIDANCE_ALGOS
     tree_params = {
                     "split_score_func": args.split_score_func,
                     'control_variates': args.control_variates,
                     "generator_type": args.generator_type,
                     "feature_weights": args.feature_weights,
                     "lambda_penalty": args.lambda_penalty,
-                    "n_objs": 2 if args.safety_mode else 1,
+                    "n_objs": 2 if safety_mode or guidance_mode else 1,
                     'lambda_objs': args.lambda_objs,
                     }
     algo_kwargs = {}
@@ -727,7 +732,7 @@ def process_policy_kwargs(args):
             "seed": args.seed,
             "verbose": args.verbose,
         }
-    elif args.algo_type == 'cost_gbrl':
+    elif args.algo_type == 'split_rl':
         algo_kwargs = {
             "clip_range": args.clip_range,
             "clip_range_vf": args.clip_range_vf,
@@ -793,7 +798,8 @@ def process_policy_kwargs(args):
             "device": args.device,
             "seed": args.seed,
             "verbose": args.verbose,
-            "safety_mode": args.safety_mode,
+            "safety_mode": safety_mode,
+            "guidance_mode": guidance_mode,
         }
     elif args.algo_type == 'a2c_gbrl':
         algo_kwargs = {

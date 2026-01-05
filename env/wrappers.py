@@ -75,6 +75,8 @@ class MiniGridCategoricalObservationWrapper(ObservationWrapper):
                 categorical_array[i*self.image_shape[1] + j] = category.encode('utf-8')
         categorical_array[self.image_shape[0]*self.image_shape[1]] = str(observation['direction']).encode('utf-8')
         categorical_array[self.image_shape[0]*self.image_shape[1] + 1] = observation['mission'].encode('utf-8')
+        # if self.env.env.env.env.carrying is not None:
+        #     print()
         return np.ascontiguousarray(categorical_array)
 
     def reset(self, seed: int = None):

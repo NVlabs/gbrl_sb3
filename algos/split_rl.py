@@ -16,8 +16,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
-
-
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.distributions import DiagGaussianDistribution
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
@@ -30,18 +28,21 @@ from stable_baselines3.common.utils import (check_for_correct_spaces,
                                             get_schedule_fn, get_system_info,
                                             obs_as_tensor, safe_mean,
                                             update_learning_rate)
-
-from sb3_contrib.common.maskable.utils import (get_action_masks)
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
-from buffers.rollout_buffer import CostRolloutBuffer, CostCategoricalRolloutBuffer
+from buffers.rollout_buffer import (CategoricalRolloutBuffer,
+                                    CostCategoricalRolloutBuffer,
+                                    CostRolloutBuffer,
+                                    GuidedCategoricalRolloutBuffer,
+                                    GuidedRolloutBuffer, RolloutBuffer)
+from policies.actor_critic_policy import ActorCriticPolicy
 from policies.cost_actor_critic import CostActorCriticPolicyGBRL
 from utils.io_util import load_from_zip_file, save_to_zip_file
 
 
-class Cost_PPO_GBRL(OnPolicyAlgorithm):
+class SPLIT_RL(OnPolicyAlgorithm):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
 
@@ -98,7 +99,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
     def __init__(self, env: Union[GymEnv, str],
                  clip_range: float = 0.2,
                  clip_range_vf: float = None,
-                 policy: Type[BasePolicy] = CostActorCriticPolicyGBRL,
+                 policy: Type[BasePolicy] = None,
                  normalize_advantage: bool = True,
                  target_kl: float = None,
                  max_policy_grad_norm: float = None,
@@ -154,6 +155,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                  verbose: int = 1,
                  tensorboard_log: str = None,
                  safety_mode: bool = False,
+                 guidance_mode: bool = False,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -189,6 +191,8 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
             else:
                 log_std_lr = float(log_std_lr)
         policy_kwargs['log_std_schedule'] = get_schedule_fn(log_std_lr)
+        
+        policy = CostActorCriticPolicyGBRL if safety_mode else ActorCriticPolicy
         super().__init__(policy=policy,
                          env=env,
                          seed=seed,
@@ -222,6 +226,7 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
         self.prev_timesteps = 0
         self.policy_bound_loss_weight = policy_bound_loss_weight
         self.safety_mode = safety_mode
+        self.guidance_mode = guidance_mode
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -254,13 +259,25 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
 
         self.bound_min = self.get_action_bound_min()
         self.bound_max = self.get_action_bound_max()
-
-        self.rollout_buffer_class = CostRolloutBuffer
+        
+        assert not safety_mode or not guidance_mode, "safety_mode and guidance_mode cannot both be True"
+        
         self.rollout_buffer_kwargs = {}
-
-        if self.is_categorical or self.is_mixed:
-            self.rollout_buffer_class = CostCategoricalRolloutBuffer
+        if self.is_categorical or self.is_mixed: 
             self.rollout_buffer_kwargs['is_mixed'] = self.is_mixed
+            if safety_mode:
+                self.rollout_buffer_class = CostCategoricalRolloutBuffer
+            elif guidance_mode:
+                self.rollout_buffer_class = GuidedCategoricalRolloutBuffer
+            else:
+                self.rollout_buffer_class = CategoricalRolloutBuffer  
+        else:
+            if safety_mode:
+                self.rollout_buffer_class = CostRolloutBuffer
+            elif guidance_mode:
+                self.rollout_buffer_class = GuidedRolloutBuffer
+            else:
+                self.rollout_buffer_class = RolloutBuffer
 
         if _init_setup_model:
             self.ppo_setup_model()
@@ -328,11 +345,17 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
             self.logger.record("train/nn_critic", "True")
         else:
             self.logger.record("train/nn_critic", "False")
-        policy_lr, value_lr, cost_lr = self.policy.get_schedule_learning_rates(lr_schedule=self.lr_schedule,
+        
+        if self.safety_mode:
+            policy_lr, value_lr, cost_lr = self.policy.get_schedule_learning_rates(lr_schedule=self.lr_schedule,
+                                                                      progress_remaining=self._current_progress_remaining)
+            self.logger.record("train/cost_learning_rate", cost_lr)
+        else:
+            policy_lr, value_lr = self.policy.get_schedule_learning_rates(lr_schedule=self.lr_schedule,
                                                                       progress_remaining=self._current_progress_remaining)
         self.logger.record("train/policy_learning_rate", policy_lr)
         self.logger.record("train/value_learning_rate", value_lr)
-        self.logger.record("train/cost_learning_rate", cost_lr)
+        
 
         entropy_losses = []
         policy_losses, value_losses, cost_losses = [], [], []
@@ -354,22 +377,21 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
-                action_masks = None
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
                     actions = actions.long().flatten()
 
-                costs, values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions,
-                                                                         action_masks=action_masks)
+                if self.safety_mode:
+                    costs, values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                elif self.guidance_mode:
+                    values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                else:
+                    raise ValueError("Either safety_mode or guidance_mode must be True")
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-                advantages_costs = rollout_data.advantages_costs
-                if self.normalize_advantage and len(advantages_costs) > 1:
-                    advantages_costs = advantages_costs - advantages_costs.mean()
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -389,7 +411,6 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                     )
                 # Value loss using the TD(gae_lambda) target
                 value_loss = 0.5*F.mse_loss(rollout_data.returns, values_pred)
-                cost_loss = 0.5*F.mse_loss(rollout_data.cost_returns, costs)
 
                 if entropy is None:
                     # Approximate entropy when no analytical form
@@ -397,7 +418,12 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 else:
                     entropy_loss = -th.mean(entropy)
 
-                loss = policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss + cost_loss
+                loss = policy_loss + self.ent_coef*entropy_loss + self.vf_coef*value_loss
+                
+                if self.safety_mode:
+                     cost_loss = 0.5*F.mse_loss(rollout_data.cost_returns, costs)
+                     loss += cost_loss
+                     cost_losses.append(cost_loss.item())
 
                 if self.policy.nn_critic:
                     self.policy.value_optimizer.zero_grad()
@@ -413,25 +439,28 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 # Logging
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
-                cost_losses.append(cost_loss.item())
 
                 policy_grad = None
                 policy_grads = None
-                value_grad = None,
+                value_grad = None
                 cost_grad = None
                 safety = {}
+                guidance = {}
 
                 params = self.policy.get_params()
 
                 if self.safety_mode:
+
+                    advantages_costs = rollout_data.advantages_costs
+                    if self.normalize_advantage and len(advantages_costs) > 1:
+                        advantages_costs = advantages_costs - advantages_costs.mean()
                     policy_grad, value_grad, cost_grad = self.policy.model.extract_grads()
 
                     n_samples = len(rollout_data.observations)
                     policy_grad = policy_grad * n_samples
                     value_grad = value_grad * n_samples
                     cost_grad = cost_grad * n_samples
-                    _, _, log_prob, _ = self.policy.evaluate_actions(rollout_data.observations, actions,
-                                                        action_masks=action_masks)
+                    _, _, log_prob, _ = self.policy.evaluate_actions(rollout_data.observations, actions)
                     ratio = th.exp(log_prob - rollout_data.old_log_prob)
                     # clipped surrogate loss
                     safety_policy_loss_1 = advantages_costs * ratio
@@ -452,7 +481,21 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
 
                     policy_grads = (policy_grad, safety_grads)
                         
-                    safety = {'safety_labels': rollout_data.safety_labels}
+                    safety = {'safety_labels': rollout_data.safety_labels,
+                              'cost_grads': cost_grad,
+                              'cost_grad_clip': self.max_cost_grad_norm,}
+                    
+                elif self.guidance_mode:
+                    policy_grad, value_grad = self.policy.model.extract_grads()
+
+                    n_samples = len(rollout_data.observations)
+                    policy_grad = policy_grad * n_samples
+                    value_grad = value_grad * n_samples
+                    dist = self.policy.get_distribution(obs=rollout_data.observations, requires_grad=True)
+                    guidance_grads = (dist.distribution.probs - rollout_data.expert_actions)
+                    policy_grads = (policy_grad, guidance_grads)
+                    guidance = {'obj_labels': rollout_data.guidance_labels}
+                    
 
                 if isinstance(self.policy.action_dist, DiagGaussianDistribution) and not self.fixed_std:
                     if self.max_policy_grad_norm is not None and self.max_policy_grad_norm > 0.0:
@@ -481,20 +524,17 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 # Fit GBRL model on gradients - Optimization step
                 self.policy.step(policy_grad_clip=self.max_policy_grad_norm,
                                  value_grad_clip=self.max_value_grad_norm,
-                                 cost_grad_clip=self.max_cost_grad_norm,
                                  policy_grads=policy_grads,
                                  value_grads=value_grad,
-                                 cost_grads=cost_grad,
                                  observations=rollout_data.observations,
-                                 **safety)
+                                 **safety,
+                                 **guidance)
 
                 if not self.safety_mode:
-                    policy_grad, value_grad, cost_grad = self.policy.get_grads()
+                    policy_grad, value_grad = self.policy.get_grads()
 
                     values_grad_maxs.append(value_grad.max().item())
                     values_grad_mins.append(value_grad.min().item())
-                    cost_grad_maxs.append(cost_grad.max().item())
-                    cost_grad_mins.append(cost_grad.min().item())
 
                 theta = params if not isinstance(params, tuple) else params[0]
 
@@ -502,8 +542,10 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 values_mins.append(values.min().item())
                 values_maxs.append(values.max().item())
                 values_mins.append(values.min().item())
-                cost_maxs.append(costs.max().item())
-                cost_mins.append(costs.min().item())
+                
+                if self.safety_mode:
+                    cost_maxs.append(costs.max().item())
+                    cost_mins.append(costs.min().item())
 
                 theta_maxs.append(theta.max().item())
                 theta_mins.append(theta.min().item())
@@ -536,15 +578,18 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
 
             self.logger.record("loss/entropy_loss", np.mean(entropy_losses))
             self.logger.record("loss/policy_gradient_loss", np.mean(policy_losses))
-            self.logger.record("loss/cost_loss", np.mean(cost_losses))
             self.logger.record("loss/value_loss", np.mean(value_losses))
-            self.logger.record("loss/safety_loss", np.mean(safety_policy_losses))
+            if self.safety_mode:
+                self.logger.record("loss/cost_loss", np.mean(cost_losses))
+                self.logger.record("loss/safety_loss", np.mean(safety_policy_losses))
+                self.logger.record("param/cost_max", np.mean(cost_maxs))
+                self.logger.record("param/cost_min", np.mean(cost_mins))
+            
             self.logger.record("param/theta_max", np.mean(theta_maxs))
             self.logger.record("param/theta_min", np.mean(theta_mins))
             self.logger.record("param/value_max", np.mean(values_maxs))
             self.logger.record("param/value_min", np.mean(values_mins))
-            self.logger.record("param/cost_max", np.mean(cost_maxs))
-            self.logger.record("param/cost_min", np.mean(cost_mins))
+
             self.logger.record("grad/theta_grad_max", np.mean(theta_grad_maxs))
             self.logger.record("grad/theta_grad_min", np.mean(theta_grad_mins))
             if values_grad_maxs:
@@ -605,17 +650,22 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
+        
+        value_costs = None
 
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
-
+            
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = self._last_obs if self.is_categorical else obs_as_tensor(self._last_obs, self.device)
-                action_masks = None
-                actions, value_costs, values, log_probs = self.policy(obs_tensor, action_masks=action_masks, requires_grad=False)
+                
+                if self.safety_mode:
+                    actions, value_costs, values, log_probs = self.policy(obs_tensor, requires_grad=False)
+                else:
+                    actions, values, log_probs = self.policy(obs_tensor, requires_grad=False)
 
             actions = actions.cpu().numpy()
 
@@ -656,20 +706,26 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                     rewards[idx] += self.gamma * terminal_value
 
             kwargs = {}
+            if self.safety_mode:
+                safety_labels = [info.get('safety_label', None) for info in infos]
+                kwargs['cost'] = th.tensor([info.get('cost', 0.0) for info in infos])
+                kwargs['value_cost'] = value_costs
+                if safety_labels[0] is not None:
+                    kwargs['safety_label'] = safety_labels if safety_labels[0] is not None else None
+            elif self.guidance_mode:
+                guidance_labels = [info.get('guidance_active', None) for info in infos]
+                expert_action_probs = [info.get('expert_action', None) for info in infos]
+                if guidance_labels[0] is not None:
+                    kwargs['guidance_label'] = guidance_labels
+                    kwargs['expert_action'] = np.array(expert_action_probs)
 
-            safety_labels = [info.get('safety_label', None) for info in infos]
-            safety_cost = th.tensor([info.get('cost', 0.0) for info in infos])
-            if safety_labels[0] is not None:
-                kwargs['safety_label'] = safety_labels if safety_labels[0] is not None else None
             rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
-                actions,
-                rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
-                values,
-                value_costs,
-                log_probs,
-                safety_cost,
+                obs=self._last_obs,  # type: ignore[arg-type]
+                action=actions,
+                reward=rewards,
+                episode_start=self._last_episode_starts,  # type: ignore[arg-type]
+                value=values,
+                log_prob=log_probs,
                 **kwargs
             )
 
@@ -677,11 +733,13 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
             self._last_episode_starts = dones
 
         with th.no_grad():
+            kwargs = {}
             # Compute value for the last timestep
             values = self.policy.predict_values(new_obs, requires_grad=False)  # type: ignore[arg-type]
-            value_costs = self.policy.predict_costs(new_obs, requires_grad=False)  # type: ignore[arg-type]
-
-        rollout_buffer.compute_returns_and_advantage(last_values=values, last_value_costs=value_costs, dones=dones)
+            if self.safety_mode:
+                value_costs = self.policy.predict_costs(new_obs, requires_grad=False)  # type: ignore[arg-type]
+                kwargs['last_value_costs'] = value_costs
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones, **kwargs)
 
         callback.on_rollout_end()
 
@@ -729,8 +787,9 @@ class Cost_PPO_GBRL(OnPolicyAlgorithm):
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     self.logger.record("rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_cost_mean",
-                                       safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
+                    if self.safety_mode:
+                        self.logger.record("rollout/ep_cost_mean",
+                                        safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)

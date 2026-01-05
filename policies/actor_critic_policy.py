@@ -403,27 +403,33 @@ class ActorCriticPolicy(BasePolicy):
              observations: Optional[Union[np.ndarray, th.Tensor]] = None,
              policy_grad_clip: Optional[float] = None,
              value_grad_clip: Optional[float] = None,
+             policy_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
+             value_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
              obj_labels: Optional[Union[np.ndarray, th.Tensor]] = None,
              ) -> None:
 
         if self.nn_critic:
             self.value_optimizer.step()
             return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
+                                   policy_grads=policy_grads,
                                    obj_labels=obj_labels)
         return self.model.step(observations=observations, policy_grad_clip=policy_grad_clip,
+                               policy_grads=policy_grads, value_grads=value_grads,
                                value_grad_clip=value_grad_clip, obj_labels=obj_labels)
 
     def actor_step(self, observations: Optional[Union[th.Tensor, np.ndarray]] = None,
                    policy_grad_clip: Optional[float] = None,
+                   policy_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
                    obj_labels: Optional[Union[np.ndarray, th.Tensor]] = None
                    ) -> None:
-        self.model.actor_step(observations=observations, policy_grad_clip=policy_grad_clip, obj_labels=obj_labels)
+        self.model.actor_step(observations=observations, policy_grads=policy_grads, policy_grad_clip=policy_grad_clip, obj_labels=obj_labels)
 
     def critic_step(self,
                     observations: Optional[Union[th.Tensor, np.ndarray]] = None,
+                    value_grads: Optional[Union[np.ndarray, th.Tensor]] = None,
                     value_grad_clip: Optional[float] = None,
                     ) -> None:
-        self.model.critic_step(observations=observations, value_grad_clip=value_grad_clip)
+        self.model.critic_step(observations=observations, value_grads=value_grads, value_grad_clip=value_grad_clip)
 
     def update_learning_rate(self, policy_learning_rate, value_learning_rate):
         self.model.adjust_learning_rates(policy_learning_rate, value_learning_rate)
