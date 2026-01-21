@@ -147,3 +147,13 @@ def register_minigrid_tests():
         entry_point="env.safety.dynamic_lava_room:DynamicCrossing",
         kwargs={"reward_penalty": True},
     )
+    register(
+        id="MiniGrid-FragileCrossingEnv-v0",
+        entry_point="env.safety.fragile_carry:FragileCrossingEnv",
+        kwargs={},
+    )
+    register(
+        id="MiniGrid-FragileCrossingEnv-v1",
+        entry_point="env.safety.fragile_carry:FragileCrossingEnv",
+        kwargs={"reward_penalty": True},
+    )

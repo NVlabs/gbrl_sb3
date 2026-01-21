@@ -25,9 +25,11 @@ str2Activation = {'relu': ReLU, 'tanh': Tanh}
 
 ROOT_PATH = Path(__file__).parent
 
-SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0']
+SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0',
+               'MiniGrid-FragileCrossingEnv-v0', 'MiniGrid-FragileCrossing-v1',]
 GUIDANCE_ENVS = ['MiniGrid-GuidedLockedRoom-v0']
 GUIDANCE_ALGOS = ['split_rl']
+SAFETY_ALGOS = ['split_rl']
 
 def get_value(x):
     if isinstance(x, dict):
@@ -383,7 +385,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-GuidedLockedRoom-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-FragileCrossingEnv-v0'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
     # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
@@ -662,7 +664,7 @@ def process_logging(args, callback_list):
 
 
 def process_policy_kwargs(args):
-    safety_mode = args.env_name in SAFETY_ENVS
+    safety_mode = args.env_name in SAFETY_ENVS and args.algo_type in SAFETY_ALGOS
     guidance_mode = args.env_name in GUIDANCE_ENVS and args.algo_type in GUIDANCE_ALGOS
     tree_params = {
                     "split_score_func": args.split_score_func,

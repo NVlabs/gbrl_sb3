@@ -14,7 +14,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from gbrl.common.utils import categorical_dtype
 from gymnasium.core import ActType, ObsType
-from minigrid.core.constants import IDX_TO_COLOR, IDX_TO_OBJECT, STATE_TO_IDX
+from minigrid.core.constants import IDX_TO_COLOR, STATE_TO_IDX
+from env.safety.utils import IDX_TO_OBJECT
 from minigrid.wrappers import FullyObsWrapper, ObservationWrapper
 from stable_baselines3.common.atari_wrappers import (ClipRewardEnv,
                                                      EpisodicLifeEnv,
