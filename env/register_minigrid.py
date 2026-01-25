@@ -148,12 +148,12 @@ def register_minigrid_tests():
         kwargs={"reward_penalty": True},
     )
     register(
-        id="MiniGrid-FragileCrossingEnv-v0",
+        id="MiniGrid-FragileCrossing-v0",
         entry_point="env.safety.fragile_carry:FragileCrossingEnv",
         kwargs={},
     )
     register(
-        id="MiniGrid-FragileCrossingEnv-v1",
+        id="MiniGrid-FragileCrossing-v1",
         entry_point="env.safety.fragile_carry:FragileCrossingEnv",
         kwargs={"reward_penalty": True},
     )
