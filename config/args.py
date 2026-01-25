@@ -349,7 +349,6 @@ def parse_args():
     # openspiel
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
     # safety
-    parser.add_argument('--safety_mode', type=str2bool)
     parser.add_argument('--lambda_objs', type=float, nargs='+')
     # PPO Lagrangian
     parser.add_argument('--cost_limit', type=float)

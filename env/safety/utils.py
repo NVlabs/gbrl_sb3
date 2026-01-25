@@ -108,8 +108,6 @@ class ModObj(WorldObj):
 class Ice(ModObj):
     def __init__(self):
         super().__init__("ice", "blue")
-        self.step_ctr = 0
-        self.broken = False
 
     def can_overlap(self):
         return True

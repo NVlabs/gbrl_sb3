@@ -15,7 +15,7 @@ class FragileCrossingEnv(MiniGridEnv):
         width=15,  # Wide enough for two rooms (9 + 1 + 9)
         height=7,  # Tall enough for a clear detour
         max_steps: int | None = None,
-        max_steps_on_ice: int = 1,
+        max_steps_on_ice: int = 2,
         reward_penalty: bool = False,
         **kwargs,
     ):
@@ -146,10 +146,12 @@ class FragileCrossingEnv(MiniGridEnv):
             d_box_goal  = np.sum(np.abs(box_pos - self.drop_zone_pos))
             dist_remaining = d_agent_box + d_box_goal
             bonus = 0.0
+            # print(f'd_agent_box: {d_agent_box}, d_box_goal: {d_box_goal}, di    st_remaining: {dist_remaining}')
 
         # 2. Normalize
         # We allow potential to go slightly above 1.0 due to the bonus, that's fine.
         potential = 1.0 - (dist_remaining / self.max_mission_dist)
+        # print(potential)
         return potential + bonus
     
     def step(self, action):
@@ -163,10 +165,6 @@ class FragileCrossingEnv(MiniGridEnv):
         # This is the engine of the environment.
         # -0.05 is significantly higher than the potential loss of a detour step (-0.02).
         # This creates the pressure: "Moving in ANY direction is better than standing still."
-        # living_penalty = 0.005
-        living_penalty = 0.0
-        # reward = -living_penalty
-        not_moving_penalty = 0.0005
         box_bonus = 0.1
         reward = 0.0
 
@@ -177,10 +175,8 @@ class FragileCrossingEnv(MiniGridEnv):
 
         if is_carrying_heavy and standing_on_ice:
             self.steps_on_ice += 1
-        elif not standing_on_ice:
-            self.steps_on_ice = 0
             
-        unsafe = (is_carrying_heavy and standing_on_ice and self.steps_on_ice > self.max_steps_on_ice)
+        unsafe = (is_carrying_heavy and standing_on_ice)
         self.unsafe = unsafe
         
         # Info for Split RL
@@ -191,15 +187,15 @@ class FragileCrossingEnv(MiniGridEnv):
         truncated = False
 
         # --- Movement Logic ---
-        fx, fy = self.front_pos
-        if 0 <= fx < self.width and 0 <= fy < self.height:
-            fwd_cell = self.grid.get(fx, fy)
+        fwd_x, fwd_y = self.front_pos
+        if 0 <= fwd_x < self.width and 0 <= fwd_y < self.height:
+            fwd_cell = self.grid.get(fwd_x, fwd_y)
         else:
             fwd_cell = None
             
-        fx, fy = self.agent_pos
-        if 0 <= fx < self.width and 0 <= fy < self.height:
-            crnt_cell = self.grid.get(fx, fy)
+        crnt_x, crnt_y = self.agent_pos
+        if 0 <= crnt_x < self.width and 0 <= crnt_y < self.height:
+            crnt_cell = self.grid.get(crnt_x, crnt_y)
         else:
             crnt_cell = None
 
@@ -209,7 +205,7 @@ class FragileCrossingEnv(MiniGridEnv):
             self.agent_dir = (self.agent_dir + 1) % 4
         elif action == self.actions.forward:
             if fwd_cell is None or fwd_cell.can_overlap():
-                self.agent_pos = tuple((fx, fy))
+                self.agent_pos = tuple((fwd_x, fwd_y))
         
         # --- Pickup ---
         elif action == self.actions.pickup:
@@ -217,7 +213,7 @@ class FragileCrossingEnv(MiniGridEnv):
                 if self.carrying is None:
                     self.carrying = fwd_cell
                     self.carrying.cur_pos = np.array([-1, -1])
-                    self.grid.set(fx, fy, None)
+                    self.grid.set(fwd_x, fwd_y, None)
                     if fwd_cell.type == 'heavy_obj':
                         if not self.box_picked_up_once:
                             reward += box_bonus
@@ -226,20 +222,21 @@ class FragileCrossingEnv(MiniGridEnv):
                         
         # --- Drop ---
         elif action == self.actions.drop:
+            
             if self.carrying is not None:
                 is_drop_zone = crnt_cell is not None and isinstance(crnt_cell, DropZone)
-                
+                # if is_drop_zone:
+                    # print('Drop Action', self.carrying, 'at', self.agent_pos, 'is_drop_zone:', is_drop_zone)
                 if is_drop_zone and self.carrying.type == 'heavy_obj':
                     self.carrying = None
                     terminated = True
+                    # print('success!')
                     # Terminal Bonus to ensure the final step is highly profitable
                     reward += self._reward()
                 elif fwd_cell is None:
-                    self.grid.set(fx, fy, self.carrying)
-                    self.carrying.cur_pos = np.array([fx, fy])
+                    self.grid.set(fwd_x, fwd_y, self.carrying)
+                    self.carrying.cur_pos = np.array([fwd_x, fwd_y])
                     self.carrying = None
-                    # # Penalty to discourage dropping the "Key" in the wrong place
-                    # reward -= 0.5
                     
         # if action not in [self.actions.forward]:
         #     reward -= not_moving_penalty
@@ -259,7 +256,7 @@ class FragileCrossingEnv(MiniGridEnv):
         if self.step_count >= self.max_steps:
             truncated = True
         
-        if self.unsafe:
+        if self.steps_on_ice >= self.max_steps_on_ice:
             terminated = True
             # Optional: Strict Death Penalty
             # reward -= 5.0 
@@ -270,6 +267,8 @@ class FragileCrossingEnv(MiniGridEnv):
         
         if self.render_mode == "human":
             self.render()
+        
+        # print('unsafe:', self.unsafe, 'steps_on_ice:', self.steps_on_ice)
 
         obs = self.gen_obs()
         self._crt_reward = reward
