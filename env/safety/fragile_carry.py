@@ -8,6 +8,7 @@ from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
 from minigrid.minigrid_env import TILE_PIXELS, MiniGridEnv
 from env.safety.utils import Ice, HeavyObj, DropZone
+from minigrid.core.constants import DIR_TO_VEC
 
 class FragileCrossingEnv(MiniGridEnv):
     def __init__(
@@ -154,6 +155,14 @@ class FragileCrossingEnv(MiniGridEnv):
         # print(potential)
         return potential + bonus
     
+    @property
+    def right_pos(self):
+        """
+        Get the position of the cell to the right (absolute east)
+        """
+        return self.agent_pos + DIR_TO_VEC[0]  # East
+    
+    
     def step(self, action):
         self.step_count += 1
         self.last_grid = self.grid.copy()
@@ -161,37 +170,40 @@ class FragileCrossingEnv(MiniGridEnv):
         self.last_agent_dir = self.agent_dir
         self.last_action = action
 
-        # --- 1. CRITICAL: HIGH LIVING PENALTY ---
-        # This is the engine of the environment.
-        # -0.05 is significantly higher than the potential loss of a detour step (-0.02).
-        # This creates the pressure: "Moving in ANY direction is better than standing still."
-        box_bonus = 0.1
         reward = 0.0
-
-        # --- Safety / Ice Logic ---
-        current_cell = self.grid.get(*self.agent_pos)
-        standing_on_ice = current_cell is not None and isinstance(current_cell, Ice)
-        is_carrying_heavy = self.carrying is not None and self.carrying.type == 'heavy_obj'
-
-        if is_carrying_heavy and standing_on_ice:
-            self.steps_on_ice += 1
-            
-        unsafe = (is_carrying_heavy and standing_on_ice)
-        self.unsafe = unsafe
-        
-        # Info for Split RL
-        step_cost = 1.0 if unsafe else 0.0
-        info = {'cost': step_cost, 'safety_label': int(unsafe)}
-
-        terminated = False
-        truncated = False
-
         # --- Movement Logic ---
         fwd_x, fwd_y = self.front_pos
         if 0 <= fwd_x < self.width and 0 <= fwd_y < self.height:
             fwd_cell = self.grid.get(fwd_x, fwd_y)
         else:
             fwd_cell = None
+
+        right_x, right_y = self.right_pos
+        if 0 <= right_x < self.width and 0 <= right_y < self.height:
+            right_cell = self.grid.get(right_x, right_y)
+        else:
+            right_cell = None
+
+        # --- Safety / Ice Logic ---
+        current_cell = self.grid.get(*self.agent_pos)
+        standing_on_ice = current_cell is not None and isinstance(current_cell, Ice)
+        right_ice = right_cell is not None and isinstance(right_cell, Ice)
+        is_carrying_heavy = self.carrying is not None and self.carrying.type == 'heavy_obj'
+
+        # Increment counter if on ice
+        if is_carrying_heavy and standing_on_ice:
+            self.steps_on_ice += 1
+            
+        # Unsafe if carrying heavy and (standing on ice OR ice to the right)
+        unsafe = is_carrying_heavy and (standing_on_ice or right_ice)
+        self.unsafe = unsafe
+        
+        # Info for Split RL
+        step_cost = 1.0 if unsafe and (not right_ice or standing_on_ice) else 0.0
+        info = {'cost': step_cost, 'safety_label': int(unsafe)}
+
+        terminated = False
+        truncated = False
             
         crnt_x, crnt_y = self.agent_pos
         if 0 <= crnt_x < self.width and 0 <= crnt_y < self.height:
@@ -214,17 +226,13 @@ class FragileCrossingEnv(MiniGridEnv):
                     self.carrying = fwd_cell
                     self.carrying.cur_pos = np.array([-1, -1])
                     self.grid.set(fwd_x, fwd_y, None)
-                    if fwd_cell.type == 'heavy_obj':
-                        if not self.box_picked_up_once:
-                            reward += box_bonus
-                            self.box_picked_up_once = True
-                        
+
                         
         # --- Drop ---
         elif action == self.actions.drop:
             
             if self.carrying is not None:
-                is_drop_zone = crnt_cell is not None and isinstance(crnt_cell, DropZone)
+                is_drop_zone = fwd_cell is not None and isinstance(fwd_cell, DropZone)
                 # if is_drop_zone:
                     # print('Drop Action', self.carrying, 'at', self.agent_pos, 'is_drop_zone:', is_drop_zone)
                 if is_drop_zone and self.carrying.type == 'heavy_obj':
@@ -311,10 +319,11 @@ class FragileCrossingEnv(MiniGridEnv):
             taken_text = f"Action: {action_names[self.last_action]}"
         else:
             taken_text = "Action: None"
-            
+        
+        carrying = "Nothing" if self.carrying is None else self.carrying.type
         taken_text += f" | Unsafe: {self.unsafe} | Ice Steps: {self.steps_on_ice}"
         reward_text = f"Reward: {self._crt_reward:.4f} | Pot: {self.prev_potential:.2f}"
-        cost_text = f"Cost: {self.cost} | Unsafe: {int(self.unsafe)}"
+        cost_text = f"Cost: {self.cost} | Unsafe: {int(self.unsafe)} | Carrying: {carrying}"
         
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(banner, cost_text, (10, 20), font, 0.5, (0,0,0), 1, cv2.LINE_AA)
