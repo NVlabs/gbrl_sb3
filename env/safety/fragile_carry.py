@@ -162,7 +162,6 @@ class FragileCrossingEnv(MiniGridEnv):
         """
         return self.agent_pos + DIR_TO_VEC[0]  # East
     
-    
     def step(self, action):
         self.step_count += 1
         self.last_grid = self.grid.copy()

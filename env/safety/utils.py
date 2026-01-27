@@ -12,7 +12,7 @@ from minigrid.core.world_object import (Ball, Box, Door, Floor, Goal, Key,
                                         Lava, Wall, WorldObj)
 from minigrid.minigrid_env import MiniGridEnv
 from minigrid.utils.rendering import (downsample, fill_coords, highlight_img,
-                                      point_in_line, point_in_rect,
+                                      point_in_line, point_in_rect, point_in_circle,
                                       point_in_triangle, rotate_fn)
 
 Point = Tuple[int, int]
@@ -32,6 +32,7 @@ OBJECT_TO_IDX = {
     "ice": 11,
     "heavy_obj": 12,
     "drop_zone": 13,
+    "coin": 14,
 }
 IDX_TO_OBJECT = dict(zip(OBJECT_TO_IDX.values(), OBJECT_TO_IDX.keys()))
 
@@ -100,11 +101,44 @@ class ModObj(WorldObj):
             v = HeavyObj()
         elif obj_type == 'drop_zone':
             v = DropZone()
+        elif obj_type == 'coin':
+            v = Coin()
         else:
             assert False, "unknown object type in decode '%s'" % obj_type
 
         return v
 
+class Coin(ModObj):
+    def __init__(self):
+        super().__init__("coin", "yellow")
+
+    def can_overlap(self):
+        # Depending on your specific logic:
+        # True = Agent walks OVER it (common for coin collection)
+        # False = Agent bumps into it (if you want to use pickup action)
+        return False 
+    
+    def can_pickup(self):
+        return True
+
+    def render(self, img):
+        # 1. Main Gold Circle
+        gold = (255, 215, 0) 
+        fill_coords(img, point_in_circle(0.5, 0.5, 0.31), gold)
+
+        # 2. Slight sheen/highlight (Lighter yellow)
+        shine = (255, 255, 224)
+        fill_coords(img, point_in_circle(0.4, 0.4, 0.08), shine)
+        
+        # 3. Outline (Darker Goldenrod) for contrast
+        outline = (218, 165, 32)
+        # Draw a thin ring by filling a slightly smaller circle with the main color
+        # over a slightly larger darker circle, but Minigrid rendering is simple,
+        # so often just the solid color is enough. 
+        # Here is a simple rim effect:
+        fill_coords(img, point_in_circle(0.5, 0.5, 0.35), outline)
+        fill_coords(img, point_in_circle(0.5, 0.5, 0.31), gold)
+        
 class Ice(ModObj):
     def __init__(self):
         super().__init__("ice", "blue")

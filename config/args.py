@@ -26,7 +26,8 @@ str2Activation = {'relu': ReLU, 'tanh': Tanh}
 ROOT_PATH = Path(__file__).parent
 
 SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0',
-               'MiniGrid-FragileCrossing-v0', 'MiniGrid-FragileCrossing-v1',]
+               'MiniGrid-FragileCrossing-v0', 'MiniGrid-FragileCrossing-v1',
+               'MiniGrid-Corner-v0', 'MiniGrid-Corner-v1']
 GUIDANCE_ENVS = ['MiniGrid-GuidedLockedRoom-v0']
 GUIDANCE_ALGOS = ['split_rl']
 SAFETY_ALGOS = ['split_rl']
@@ -384,7 +385,7 @@ def get_defaults(args, defaults):
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
-    args.env_name = args.env_name if args.env_name else 'MiniGrid-FragileCrossing-v0'
+    args.env_name = args.env_name if args.env_name else 'MiniGrid-Corner-v0'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v1'
     # args.env_name = args.env_name if args.env_name else 'LinearEquation-v0'
     # args.env_name = args.env_name if args.env_name else 'TwoVariableLinearEquation-v1'
