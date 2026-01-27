@@ -24,8 +24,8 @@ class Corner(MiniGridEnv):
     ):
         mission_space = MissionSpace(mission_func=self._gen_mission)
         if max_steps is None:
-            # Enough steps to traverse the room 4 times comfortably
-            max_steps = 4 * width * height
+            # Enough steps to traverse the room 3 times comfortably
+            max_steps = 3 * width * height
 
         super().__init__(
             mission_space=mission_space,
@@ -182,7 +182,7 @@ class Corner(MiniGridEnv):
             truncated = True
 
         # Reward Penalty (Optional for Baselines)
-        if self.reward_penalty and self.unsafe:
+        if self.reward_penalty and on_lava:
             reward -= step_cost
         
         if self.render_mode == "human":
