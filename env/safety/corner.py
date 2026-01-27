@@ -40,7 +40,7 @@ class Corner(MiniGridEnv):
 
     @staticmethod
     def _gen_mission():
-        return "collect all 4 coins without stepping in lava"
+        return "collect all four coins without stepping in lava"
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -94,7 +94,7 @@ class Corner(MiniGridEnv):
         # 5. Tracking
         self.coins_collected = 0
         self.total_coins = 4
-        self.mission = "collect all 4 coins without stepping in lava"
+        self.mission = "collect all four coins without stepping in lava"
 
     def reset(
         self,
