@@ -161,7 +161,7 @@ class IPO(PPO):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                costs, values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                values, costs, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
                 values = values.flatten()
                 costs = costs.flatten()
                 # Normalize advantage

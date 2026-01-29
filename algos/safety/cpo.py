@@ -356,19 +356,23 @@ class CPO(TRPO):
             
         elif optim_case in (1, 2):
             # Partially safe: solve constrained optimization
-            # Compute candidate lambdas
+            # Compute candidate lambdas (unconstrained solutions)
+            # λ=argmax(f_a(λ),f_b(λ)) = λa_star or λb_star
             lambda_a = th.sqrt(A / (B + 1e-8))
             lambda_b = th.sqrt(q / (2 * target_kl + 1e-8))
             
             # Project to feasible region based on r/c
-            # If ep_costs < 0 (currently safe), we want lambda > r/c to keep it safe
-            # If ep_costs >= 0 (currently unsafe), we need lambda in valid range
+            # λa_star = Proj(lambda_a, 0, r/c)  λb_star = Proj(lambda_b, r/c, +inf)
+            # Following omnisafe implementation
+            r_num = r.item()
+            eps_cost = ep_costs + 1e-8
+            
             if ep_costs < 0:
-                lambda_a_star = th.clamp(lambda_a, 0.0, r / (ep_costs + 1e-8))      # [0, r/c]
-                lambda_b_star = th.clamp(lambda_b, r / (ep_costs + 1e-8), float('inf'))  # [r/c, ∞]
+                lambda_a_star = th.clamp(lambda_a, min=0.0, max=r_num / eps_cost)
+                lambda_b_star = th.clamp(lambda_b, min=r_num / eps_cost)
             else:
-                lambda_a_star = th.clamp(lambda_a, r / (ep_costs + 1e-8), float('inf'))  # [r/c, ∞]
-                lambda_b_star = th.clamp(lambda_b, 0.0, r / (ep_costs + 1e-8))      # [0, r/c]
+                lambda_a_star = th.clamp(lambda_a, min=r_num / eps_cost)
+                lambda_b_star = th.clamp(lambda_b, min=0.0, max=r_num / eps_cost)
             
             # Evaluate objectives for both candidates and choose best
             def objective_a(lam):
@@ -383,7 +387,8 @@ class CPO(TRPO):
                 lambda_star = lambda_b_star
             
             # Compute nu_star from lambda_star
-            nu_star = th.max((lambda_star * ep_costs - r) / (s + 1e-8), th.tensor(0.0))
+            # Nu_star = max(0, (lambda_star * ep_costs - r)) / s
+            nu_star = th.clamp(lambda_star * ep_costs - r, min=0.0) / (s + 1e-8)
             
             # Compute step direction
             step_direction = (1.0 / (lambda_star + 1e-8)) * (search_direction - nu_star * p)

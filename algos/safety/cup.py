@@ -147,7 +147,7 @@ class CUP(PPOLag):
                 values, costs, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
                 values = values.flatten()
                 costs = costs.flatten()
-                
+
                 # Normalize advantage
                 advantages_reward = rollout_data.advantages
                 if self.normalize_advantage and len(advantages_reward) > 1:
@@ -304,16 +304,21 @@ class CUP(PPOLag):
                 ratio = th.exp(new_log_prob - rollout_data.old_log_prob)
                 
                 # D. Calculate KL Divergence vs Anchor Distribution (Step 1)
-                # KL(Step1 || New) - "Trust Region" direction
-                kl = th.distributions.kl_divergence(old_distribution.distribution, new_distribution.distribution).sum(-1).mean()
+                # KL(new || old) - penalize new policy for deviating from Step 1 anchor
+                kl = th.distributions.kl_divergence(new_distribution.distribution, old_distribution.distribution).sum(-1).mean()
                 
                 # E. Calculate Loss
-                # Coef = (1 - gamma * lam) / (1 - gamma)
+                # CUP projection: minimize cost surrogate + KL penalty
+                # Coef = (1 - gamma * gae_lambda) / (1 - gamma) - from omnisafe reference
                 coef = (1 - self.gamma * self.gae_lambda) / (1 - self.gamma)
                 
-                # We normalize cost advantages same as Step 1 or use raw? 
-                # Usually better to use the raw advantages_costs from buffer, assuming they were computed correctly via GAE
-                loss = (self.lagrangian_multiplier * coef * ratio * rollout_data.advantages_costs).mean() + kl
+                # Normalize cost advantages for stability
+                advantages_costs = rollout_data.advantages_costs
+                if len(advantages_costs) > 1:
+                    advantages_costs = advantages_costs - advantages_costs.mean()
+                
+                # Loss = lambda * coef * E[ratio * A_c] + KL (minimize cost while staying close to anchor)
+                loss = (self.lagrangian_multiplier * coef * ratio * advantages_costs).mean() + kl
 
                 # F. Optimize
                 self.policy.optimizer.zero_grad()
