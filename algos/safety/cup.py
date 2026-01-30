@@ -305,20 +305,20 @@ class CUP(PPOLag):
                 
                 # D. Calculate KL Divergence vs Anchor Distribution (Step 1)
                 # KL(new || old) - penalize new policy for deviating from Step 1 anchor
-                kl = th.distributions.kl_divergence(new_distribution.distribution, old_distribution.distribution).sum(-1).mean()
+                # Keep per-sample KL (sum over action dims, keep batch dim)
+                kl = th.distributions.kl_divergence(new_distribution.distribution, old_distribution.distribution).sum(-1, keepdim=True)
                 
                 # E. Calculate Loss
                 # CUP projection: minimize cost surrogate + KL penalty
                 # Coef = (1 - gamma * gae_lambda) / (1 - gamma) - from omnisafe reference
                 coef = (1 - self.gamma * self.gae_lambda) / (1 - self.gamma)
                 
-                # Normalize cost advantages for stability
-                advantages_costs = rollout_data.advantages_costs
-                if len(advantages_costs) > 1:
-                    advantages_costs = advantages_costs - advantages_costs.mean()
-                
-                # Loss = lambda * coef * E[ratio * A_c] + KL (minimize cost while staying close to anchor)
-                loss = (self.lagrangian_multiplier * coef * ratio * advantages_costs).mean() + kl
+                # Loss = E[lambda * coef * ratio * A_c + KL] (per-sample KL, then mean)
+                # Note: omnisafe does NOT normalize cost advantages in the second step
+                adv_c = rollout_data.advantages_costs
+                if len(adv_c.shape) == 1:
+                    adv_c = adv_c.unsqueeze(-1)
+                loss = (self.lagrangian_multiplier * coef * ratio.unsqueeze(-1) * adv_c + kl).mean()
 
                 # F. Optimize
                 self.policy.optimizer.zero_grad()
