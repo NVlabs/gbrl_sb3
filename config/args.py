@@ -1054,6 +1054,10 @@ def process_policy_kwargs(args):
     elif args.algo_type == 'ppo_lag':
         from policies.cost_actor_critic import CostActorCriticPolicy
         policy = CostActorCriticPolicy
+        
+        policy_kwargs = {'share_features_extractor': False}
+        if args.policy_kwargs is not None:
+            policy_kwargs.update(args.policy_kwargs)
         algo_kwargs = {
             "policy": policy,
             "learning_rate": args.learning_rate,
@@ -1072,7 +1076,7 @@ def process_policy_kwargs(args):
             "use_sde": args.use_sde,
             "sde_sample_freq": args.sde_sample_freq,
             "stats_window_size": args.stats_window_size,
-            "policy_kwargs": args.policy_kwargs,
+            "policy_kwargs": policy_kwargs,
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
@@ -1086,6 +1090,10 @@ def process_policy_kwargs(args):
     elif args.algo_type == 'ipo':
         from policies.cost_actor_critic import CostActorCriticPolicy
         policy = CostActorCriticPolicy
+        
+        policy_kwargs = {'share_features_extractor': False}
+        if args.policy_kwargs is not None:
+            policy_kwargs.update(args.policy_kwargs)
         algo_kwargs = {
             "policy": policy,
             "learning_rate": args.learning_rate,
@@ -1104,7 +1112,7 @@ def process_policy_kwargs(args):
             "use_sde": args.use_sde,
             "sde_sample_freq": args.sde_sample_freq,
             "stats_window_size": args.stats_window_size,
-            "policy_kwargs": args.policy_kwargs,
+            "policy_kwargs": policy_kwargs,
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,
@@ -1151,6 +1159,10 @@ def process_policy_kwargs(args):
     elif args.algo_type == 'cpo':
         from policies.cost_actor_critic import CostActorCriticPolicy
         policy = CostActorCriticPolicy
+        
+        policy_kwargs = {'share_features_extractor': False}
+        if args.policy_kwargs is not None:
+            policy_kwargs.update(args.policy_kwargs)
         algo_kwargs = {
             "policy": policy,
             "learning_rate": args.learning_rate,
@@ -1163,7 +1175,7 @@ def process_policy_kwargs(args):
             "use_sde": args.use_sde,
             "sde_sample_freq": args.sde_sample_freq,
             "stats_window_size": args.stats_window_size,
-            "policy_kwargs": args.policy_kwargs,
+            "policy_kwargs": policy_kwargs,
             "verbose": args.verbose,
             "seed": args.seed,
             "device": args.device,

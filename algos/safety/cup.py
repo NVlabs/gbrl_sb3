@@ -1,6 +1,6 @@
 import sys
 import time
-from typing import Any, Dict, Optional, Type, TypeVar, Union
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
 import numpy as np
 import torch as th
@@ -132,7 +132,9 @@ class CUP(PPOLag):
         self.lambda_optimizer.step()
         self.lagrangian_multiplier.data.clamp_(0.0, self.lagrangian_upper_bound)
 
-        # --- Step 1: PPOLag update ---
+        # --- Step 1: Standard PPO update (reward-only, no cost scalarization) ---
+        # NOTE: Unlike PPOLag, CUP uses PURE REWARD advantage in Step 1
+        # The cost constraint is handled in Step 2 (projection step)
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
             
@@ -148,18 +150,11 @@ class CUP(PPOLag):
                 values = values.flatten()
                 costs = costs.flatten()
 
-                # Normalize advantage
-                advantages_reward = rollout_data.advantages
-                if self.normalize_advantage and len(advantages_reward) > 1:
-                    advantages_reward = (advantages_reward - advantages_reward.mean()) / (advantages_reward.std() + 1e-8)
-
-                advantages_costs = rollout_data.advantages_costs
-                if self.normalize_advantage and len(advantages_costs) > 1:
-                    advantages_costs = advantages_costs - advantages_costs.mean()
-                    
-                # Combine advantages
-                penalty = self.lagrangian_multiplier.item()
-                advantages = (advantages_reward - penalty * advantages_costs) / (1 + penalty)
+                # Normalize REWARD advantage only (pure PPO step)
+                # CUP Step 1 uses ONLY reward advantage - cost handling is in Step 2
+                advantages = rollout_data.advantages
+                if self.normalize_advantage and len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # Ratio between old and new policy
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -244,6 +239,31 @@ class CUP(PPOLag):
         # --- Step 2: CUP projection step ---
         self._cup_projection_update()
         
+    def _get_actor_parameters(self) -> List[th.nn.Parameter]:
+        """
+        Get all actor parameters for CUP Step 2 optimization.
+        Matches omnisafe's actor.parameters() which includes mean network + log_std.
+        """
+        actor_params = []
+        
+        # Action net (output layer)
+        actor_params.extend(self.policy.action_net.parameters())
+        
+        # Policy MLP (hidden layers)
+        if hasattr(self.policy.mlp_extractor, "policy_net"):
+            actor_params.extend(self.policy.mlp_extractor.policy_net.parameters())
+        
+        # Log std (if DiagGaussian - learnable std)
+        if hasattr(self.policy, "log_std") and self.policy.log_std is not None:
+            actor_params.append(self.policy.log_std)
+        
+        # Policy feature extractor (only if NOT shared with critics)
+        if hasattr(self.policy, "share_features_extractor") and not self.policy.share_features_extractor:
+            if hasattr(self.policy, "pi_features_extractor"):
+                actor_params.extend(self.policy.pi_features_extractor.parameters())
+        
+        return list(actor_params)
+        
     def _cup_projection_update(self) -> None:
         """
         Perform the second-step CUP projection update.
@@ -255,20 +275,10 @@ class CUP(PPOLag):
         for param in self.policy.parameters():
             param.requires_grad = False
 
-        # 2. Unfreeze only the Actor components
-        # - Action Net (The output head)
-        for param in self.policy.action_net.parameters():
+        # 2. Unfreeze only the Actor components (matching omnisafe's actor.parameters())
+        actor_params = self._get_actor_parameters()
+        for param in actor_params:
             param.requires_grad = True
-        
-        # - Policy MLP (The hidden layers specific to the actor)
-        if hasattr(self.policy.mlp_extractor, "policy_net"):
-            for param in self.policy.mlp_extractor.policy_net.parameters():
-                param.requires_grad = True
-        
-        # - Policy Feature Extractor (If using separate networks)
-        if hasattr(self.policy, "pi_features_extractor"):
-             for param in self.policy.pi_features_extractor.parameters():
-                 param.requires_grad = True
         
         # 3. Create the Anchor Policy (The "Old" Distribution)
         # We copy the policy state exactly as it is after Step 1.
@@ -320,10 +330,11 @@ class CUP(PPOLag):
                     adv_c = adv_c.unsqueeze(-1)
                 loss = (self.lagrangian_multiplier * coef * ratio.unsqueeze(-1) * adv_c + kl).mean()
 
-                # F. Optimize
+                # F. Optimize (only actor parameters, matching omnisafe)
                 self.policy.optimizer.zero_grad()
                 loss.backward()
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                # Only clip gradients for actor parameters (matching omnisafe actor.parameters())
+                th.nn.utils.clip_grad_norm_(actor_params, self.max_grad_norm)
                 self.policy.optimizer.step()
                 
                 # Logging stats
@@ -334,10 +345,12 @@ class CUP(PPOLag):
             # 5. Early Stopping Check
             if self.cup_kl_early_stop:
                 # Approximate check using the last batch's KL to avoid full pass
-                if kl.item() > self.cup_target_kl:
+                # kl has shape [batch, 1], need to take mean first
+                mean_kl = kl.mean().item()
+                if mean_kl > self.cup_target_kl:
                     final_iter = i + 1
                     if self.verbose >= 1:
-                        print(f"CUP early stopping at iter {i + 1} due to KL: {kl.item():.4f}")
+                        print(f"CUP early stopping at iter {i + 1} due to KL: {mean_kl:.4f}")
                     break
         
         del old_mlp_extractor
