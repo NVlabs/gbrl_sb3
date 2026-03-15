@@ -94,7 +94,7 @@ class ActorCriticPolicy(BasePolicy):
         normalize_images: bool = True,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        is_categorical: bool = False
+        is_categorical: bool = False,
     ):
 
         if optimizer_kwargs is None:

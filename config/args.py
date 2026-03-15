@@ -180,6 +180,7 @@ def parse_args():
     parser.add_argument('--wrapper_kwargs', type=json_string_to_dict)
     parser.add_argument('--neurosymbolic_kwargs', type=json_string_to_dict)
     parser.add_argument('--atari_wrapper_kwargs', type=json_string_to_dict)
+    parser.add_argument('--mujoco_tree_obs', type=str2bool, help='Add sin/cos angle encoding and relative joint features for MuJoCo envs')
 
     # logging args
     parser.add_argument('--wandb', type=str2bool)
@@ -399,6 +400,7 @@ def get_defaults(args, defaults):
     args.log_interval = args.log_interval if args.log_interval is not None else defaults['env']['log_interval']
     args.evaluate = args.evaluate if args.evaluate is not None else defaults['env']['evaluate']
     # Wrapper and env_kwargs
+    args.mujoco_tree_obs = args.mujoco_tree_obs if args.mujoco_tree_obs is not None else defaults['env'].get('mujoco_tree_obs', False)
     args.wrapper = args.wrapper if args.wrapper is not None else defaults['env']['wrapper']
     args.env_kwargs = args.env_kwargs if args.env_kwargs is not None else defaults['env']['env_kwargs']
     args.eval_kwargs = args.eval_kwargs if args.eval_kwargs else defaults['env']['eval_kwargs']

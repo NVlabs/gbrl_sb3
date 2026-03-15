@@ -29,6 +29,7 @@ from env.equation import register_equation_tests
 from env.register_minigrid import register_minigrid_tests
 from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper)
+from env.mujoco_wrappers import MujocoTreeObsWrapper
 from utils.helpers import make_ram_atari_env, set_seed, make_cost_vec_env
 
 warnings.filterwarnings("ignore")
@@ -111,9 +112,14 @@ if __name__ == '__main__':
         if args.evaluate:
             eval_env = make_vec_env(FootballGymSB3, n_envs=1, env_kwargs=args.env_kwargs)
     elif args.env_type in ['mujoco', 'gym']:
-        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs)
+        mujoco_wrapper = None
+        if args.mujoco_tree_obs and args.env_type == 'mujoco':
+            mujoco_wrapper = lambda env: MujocoTreeObsWrapper(env, env_name=args.env_name)
+        env = make_vec_env(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
+                           wrapper_class=mujoco_wrapper)
         if args.evaluate:
-            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs)
+            eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs,
+                                   wrapper_class=mujoco_wrapper)
     elif args.env_type == 'equation':
         register_equation_tests()
         vec_env_cls = DummyVecEnv
@@ -126,10 +132,8 @@ if __name__ == '__main__':
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
         env = VecNormalize(env, **args.wrapper_kwargs)
-        if eval_env is not None:
-            args.wrapper_kwargs['training'] = False
-            args.wrapper_kwargs['norm_reward'] = False
-            eval_env = VecNormalize(eval_env, **args.wrapper_kwargs)
+        # eval_env VecNormalize wrapping is deferred to after VecVideoRecorder
+        # so that VecNormalize is outermost and sync_envs_normalization works
     if args.save_every and args.save_every > 0 and args.specific_seed == args.seed:
         callback_list.append(CheckpointCallback(save_freq=int(args.save_every / args.num_envs),
                                                 save_path=os.path.join(args.save_path,
@@ -158,6 +162,14 @@ if __name__ == '__main__':
                                         record_video_trigger=lambda x: x == args.eval_kwargs['eval_freq'],
                                         name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                                         video_length=args.eval_kwargs.get('video_length', 2000))
+
+        # Apply VecNormalize AFTER VecVideoRecorder so it's the outermost wrapper.
+        # This ensures sync_envs_normalization can find VecNormalize on eval_env.
+        if args.wrapper == 'normalize':
+            eval_norm_kwargs = dict(args.wrapper_kwargs)
+            eval_norm_kwargs['training'] = False
+            eval_norm_kwargs['norm_reward'] = False
+            eval_env = VecNormalize(eval_env, **eval_norm_kwargs)
 
         eval_callback = EvalCallback if args.env_name not in SAFETY_ENVS else SafetyEvalCallback
         callback_list.append(eval_callback(

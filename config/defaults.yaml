@@ -1,5 +1,5 @@
 env:
-  evaluate: True
+  evaluate: False
   env_kwargs: null
   verbose: 1
   seed: 0
