@@ -22,13 +22,19 @@ RUN apt-get update && \
     apt-get install -y unzip && \
     apt-get install -y swig 
 
-# Install software-properties-common to get add-apt-repository
-RUN apt-get update && \
-    apt-get install -y software-properties-common && \
-    add-apt-repository ppa:sumo/stable && \
-    apt-get update && \
-    apt-get install -y sumo sumo-tools sumo-doc
+# 1. Install gnupg so we can handle repository keys
+RUN apt-get update && apt-get install -y gnupg2
 
+# 2. Add the SUMO repository key manually
+# The hex code is the public key for the SUMO PPA
+RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys A4AD22BD13978A32
+
+# 3. Add the repository to your sources list
+# Note: 'jammy' corresponds to Ubuntu 22.04, which your NVIDIA base image uses
+RUN echo "deb http://ppa.launchpad.net/sumo/stable/ubuntu jammy main" > /etc/apt/sources.list.d/sumo.list
+
+# 4. Update and install
+RUN apt-get update && apt-get install -y sumo sumo-tools sumo-doc
 ENV SUMO_HOME=/usr/share/sumo
 
 WORKDIR /
