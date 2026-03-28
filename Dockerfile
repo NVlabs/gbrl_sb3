@@ -22,7 +22,10 @@ RUN apt-get update && \
     apt-get install -y unzip && \
     apt-get install -y swig 
 
-RUN add-apt-repository ppa:sumo/stable && \ 
+# Install software-properties-common to get add-apt-repository
+RUN apt-get update && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository ppa:sumo/stable && \
     apt-get update && \
     apt-get install -y sumo sumo-tools sumo-doc
 
