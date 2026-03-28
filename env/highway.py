@@ -100,6 +100,20 @@ class HighwaySafetyWrapper(gym.Wrapper):
         if missing:
             raise ValueError(f"HighwaySafetyWrapper missing required kinematics features: {sorted(missing)}")
 
+        base_obs_space = env.observation_space
+        if not isinstance(base_obs_space, gym.spaces.Box) or len(base_obs_space.shape) != 2:
+            raise ValueError("HighwaySafetyWrapper expects a 2D Box observation space from Kinematics.")
+        self._matrix_shape = tuple(base_obs_space.shape)
+        self.observation_space = gym.spaces.Box(
+            low=np.asarray(base_obs_space.low, dtype=np.float32).reshape(-1),
+            high=np.asarray(base_obs_space.high, dtype=np.float32).reshape(-1),
+            shape=(int(np.prod(base_obs_space.shape)),),
+            dtype=np.float32,
+        )
+
+    def _flatten_obs(self, obs: np.ndarray) -> np.ndarray:
+        return np.asarray(obs, dtype=np.float32).reshape(-1)
+
     def _reshape_obs(self, obs: np.ndarray) -> np.ndarray:
         obs = np.asarray(obs, dtype=np.float32)
         if obs.ndim == 2:
@@ -163,6 +177,7 @@ class HighwaySafetyWrapper(gym.Wrapper):
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         obs, info = self.env.reset(seed=seed, options=options)
+        obs = self._flatten_obs(obs)
         info = dict(info)
         info["cost"] = 0.0
         info["original_reward"] = 0.0
@@ -171,6 +186,7 @@ class HighwaySafetyWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        obs = self._flatten_obs(obs)
         info = dict(info)
         info["original_reward"] = float(reward)
         info["cost"] = self._compute_cost(info)

@@ -31,6 +31,8 @@ from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper)
 from env.mujoco_wrappers import MujocoTreeObsWrapper
 from env.flatland import make_flatland_vec_env
+from env.highway import make_highway_vec_env
+from env.sumo import make_sumo_vec_env
 from utils.helpers import make_ram_atari_env, set_seed, make_cost_vec_env
 
 warnings.filterwarnings("ignore")
@@ -135,6 +137,20 @@ if __name__ == '__main__':
         if args.evaluate:
             eval_env = make_flatland_vec_env(env_name=args.env_name, n_envs=1,
                                             seed=args.seed, **flatland_kwargs)
+    elif args.env_type == 'sumo':
+        sumo_kwargs = args.env_kwargs or {}
+        env = make_sumo_vec_env(env_name=args.env_name, n_envs=args.num_envs,
+                                seed=args.seed, **sumo_kwargs)
+        if args.evaluate:
+            eval_env = make_sumo_vec_env(env_name=args.env_name, n_envs=1,
+                                         seed=args.seed, **sumo_kwargs)
+    elif args.env_type == 'highway':
+        highway_kwargs = args.env_kwargs or {}
+        env = make_highway_vec_env(env_name=args.env_name, n_envs=args.num_envs,
+                                   seed=args.seed, **highway_kwargs)
+        if args.evaluate:
+            eval_env = make_highway_vec_env(env_name=args.env_name, n_envs=1,
+                                            seed=args.seed, **highway_kwargs)
     else:
         print("Invalid env_type!")
     if args.wrapper == 'normalize':
