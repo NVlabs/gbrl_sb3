@@ -189,11 +189,11 @@ class ContinuousCritic(BaseModel):
 
     def save_model(self, name: str, env_name: str):
         for i in range(self.n_critics):
-            self.q_models[i].save_model(name + f'_critic_{i+1}', env_name)
+            self.q_models[i].save_learner(name + f'_critic_{i+1}')
 
     def load_model(self, name: str, env_name: str):
         for i in range(self.n_critics):
-            self.q_models[i] = ContinuousCritic.load_model(name + f'_critic_{i+1}', env_name)
+            self.q_models[i] = ContinuousCritic.load_learner(name + f'_critic_{i+1}', self.q_models[i].device if hasattr(self.q_models[i], 'device') else 'cpu')
 
 
 class Actor(BasePolicy):
@@ -477,11 +477,11 @@ class SACPolicy(BasePolicy):
         return self.actor(observation, deterministic)
 
     def save_model(self, name: str, env_name: str):
-        self.actor.model.save_model(name + '_actor', env_name)
+        self.actor.model.save_learner(name + '_actor')
         self.critic.save_model(name, env_name)
 
     def load_model(self, name: str, env_name: str):
-        self.actor.model.load_model(name + '_actor', env_name)
+        self.actor.model = type(self.actor.model).load_learner(name + '_actor', self.device.type if hasattr(self.device, 'type') else str(self.device))
         self.critic.load_model(name, env_name)
 
     def set_training_mode(self, mode: bool) -> None:

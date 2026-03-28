@@ -177,13 +177,13 @@ def load_from_zip_file(
                         temp_file.write(archive.read(gbrl_file))
 
                 if gbrl_files and data['shared_tree_struct']:
-                    gbrl_model = ActorCritic.load_model(os.path.join(temp_dir, gbrl_files[0]), device)
+                    gbrl_model = ActorCritic.load_learner(os.path.join(temp_dir, gbrl_files[0]), device)
                 elif gbrl_files and not data['shared_tree_struct'] and not data['nn_critic']:
-                    gbrl_model = ActorCritic.load_model(
+                    gbrl_model = ActorCritic.load_learner(
                         os.path.join(temp_dir, gbrl_files[0].replace('_policy.gbrl_model', '').replace(
                             '_value.gbrl_model', '')), device)
                 elif gbrl_files and data['nn_critic']:
-                    gbrl_model = ParametricActor.load_model(os.path.join(temp_dir, gbrl_files[0]), device)
+                    gbrl_model = ParametricActor.load_learner(os.path.join(temp_dir, gbrl_files[0]), device)
 
     except zipfile.BadZipFile as e:
         # load_path wasn't a zip file

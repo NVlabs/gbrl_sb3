@@ -30,6 +30,7 @@ from env.register_minigrid import register_minigrid_tests
 from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper)
 from env.mujoco_wrappers import MujocoTreeObsWrapper
+from env.flatland import make_flatland_vec_env
 from utils.helpers import make_ram_atari_env, set_seed, make_cost_vec_env
 
 warnings.filterwarnings("ignore")
@@ -127,6 +128,13 @@ if __name__ == '__main__':
                            vec_env_cls=vec_env_cls)
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs, vec_env_cls=vec_env_cls)
+    elif args.env_type == 'flatland':
+        flatland_kwargs = args.env_kwargs or {}
+        env = make_flatland_vec_env(env_name=args.env_name, n_envs=args.num_envs,
+                                    seed=args.seed, **flatland_kwargs)
+        if args.evaluate:
+            eval_env = make_flatland_vec_env(env_name=args.env_name, n_envs=1,
+                                            seed=args.seed, **flatland_kwargs)
     else:
         print("Invalid env_type!")
     if args.wrapper == 'normalize':

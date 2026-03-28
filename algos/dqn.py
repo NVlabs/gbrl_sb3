@@ -313,4 +313,4 @@ class DQN_GBRL(OffPolicyAlgorithm):
         exclude: Optional[Iterable[str]] = None,
         include: Optional[Iterable[str]] = None,
     ) -> None:
-        self.policy.q_model.save_model(path)
+        self.policy.q_model.save_learner(path)

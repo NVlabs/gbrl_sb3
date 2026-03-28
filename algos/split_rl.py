@@ -156,6 +156,7 @@ class SPLIT_RL(OnPolicyAlgorithm):
                  tensorboard_log: str = None,
                  safety_mode: bool = False,
                  guidance_mode: bool = False,
+                 use_cost_advantage_label: bool = False,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -227,6 +228,7 @@ class SPLIT_RL(OnPolicyAlgorithm):
         self.policy_bound_loss_weight = policy_bound_loss_weight
         self.safety_mode = safety_mode
         self.guidance_mode = guidance_mode
+        self.use_cost_advantage_label = use_cost_advantage_label
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -741,6 +743,12 @@ class SPLIT_RL(OnPolicyAlgorithm):
                 kwargs['last_value_costs'] = value_costs
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones, **kwargs)
 
+        # Override safety labels with cost-advantage sign when enabled.
+        # label_t = 1 when cost_advantage_t > 0, meaning the action led to
+        # higher-than-expected cost → the SPLIT safety head should intervene.
+        if self.safety_mode and self.use_cost_advantage_label and hasattr(rollout_buffer, 'advantages_costs'):
+            rollout_buffer.safety_labels = (rollout_buffer.advantages_costs > 0).astype(np.float32)
+
         callback.on_rollout_end()
 
         return True
@@ -790,6 +798,9 @@ class SPLIT_RL(OnPolicyAlgorithm):
                     if self.safety_mode:
                         self.logger.record("rollout/ep_cost_mean",
                                         safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
+                        if "original_r" in self.ep_info_buffer[0]:
+                            self.logger.record("rollout/ep_original_rew_mean",
+                                            safe_mean([ep_info["original_r"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
@@ -809,7 +820,7 @@ class SPLIT_RL(OnPolicyAlgorithm):
              include: Optional[Iterable[str]] = None,
              ) -> None:
         print(f"saving model to: {path}")
-        self.policy.model.save_model(path.replace('.zip', ''))
+        self.policy.model.save_learner(path.replace('.zip', ''))
         # Copy parameter list so we don't mutate the original dict
         data = self.__dict__.copy()
 

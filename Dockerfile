@@ -22,46 +22,22 @@ RUN apt-get update && \
     apt-get install -y unzip && \
     apt-get install -y swig 
 
-RUN set -eux; \
-  GO_VER=1.23.9 ;  \
-  ARCH=amd64 ;     \
-  wget -q https://go.dev/dl/go${GO_VER}.linux-${ARCH}.tar.gz -O /tmp/go.tgz && \
-  rm -rf /usr/local/go &&  \
-  tar -C /usr/local -xzf /tmp/go.tgz && \
-  rm /tmp/go.tgz
+RUN add-apt-repository ppa:sumo/stable && \ 
+    apt-get update && \
+    apt-get install -y sumo sumo-tools sumo-doc
 
-# make the binaries visible
-ENV PATH="/usr/local/go/bin:${PATH}"
-RUN go version
+ENV SUMO_HOME=/usr/share/sumo
 
-# RUN apt-get update -qq && \
-#     apt-get install -y --no-install-recommends \
-#         cargo rustc pkg-config libssl-dev && \
-#     apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN curl -sSf https://sh.rustup.rs \
-      | bash -s -- -y --profile minimal --default-toolchain 1.88.0
-ENV PATH="/root/.cargo/bin:${PATH}"
-# --------------------------------------------------------------------
-
-# optional: confirm
-RUN cargo --version && rustc --version
-  
-RUN pip install git+https://github.com/wandb/wandb.git@kyle/forward-agent-signals
-# # Create the directory where Mujoco will be installed
-# RUN mkdir -p ~/.mujoco
-# # Download and extract Mujoco
-# RUN wget -O mujoco.tar.gz https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz && \
-#     tar -xzf mujoco.tar.gz -C ~/.mujoco && \
-#     rm mujoco.tar.gz
 WORKDIR /
 RUN git clone https://github.com/NVlabs/gbrl_sb3.git
 WORKDIR /gbrl_sb3
 RUN git fetch; git checkout dev
 RUN git pull && pip install -r requirements.txt
-RUN pip install gfootball
-
-# RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/root/.mujoco/mujoco210/bin
-
+RUN pip install psutil
+RUN pip install --no-build-isolation gfootball
+RUN pip install sumo-rl
+RUN pip install "pettingzoo==1.24.3"
+RUN pip install wandb
+RUN pip install flatland-rl
 
 

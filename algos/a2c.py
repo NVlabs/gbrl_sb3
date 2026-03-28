@@ -465,4 +465,4 @@ class A2C_GBRL(OnPolicyAlgorithm):
              exclude: Optional[Iterable[str]] = None,
              include: Optional[Iterable[str]] = None,
              ) -> None:
-        self.policy.model.save_model(path)
+        self.policy.model.save_learner(path)

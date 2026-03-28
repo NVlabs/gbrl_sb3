@@ -689,7 +689,7 @@ class PPO_GBRL(OnPolicyAlgorithm):
              include: Optional[Iterable[str]] = None,
              ) -> None:
         print(f"saving model to: {path}")
-        self.policy.model.save_model(path.replace('.zip', ''))
+        self.policy.model.save_learner(path.replace('.zip', ''))
         # Copy parameter list so we don't mutate the original dict
         data = self.__dict__.copy()
 

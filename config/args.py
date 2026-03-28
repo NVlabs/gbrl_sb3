@@ -27,7 +27,12 @@ ROOT_PATH = Path(__file__).parent
 
 SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0',
                'MiniGrid-FragileCrossing-v0', 'MiniGrid-FragileCrossing-v1',
-               'MiniGrid-Corner-v0', 'MiniGrid-Corner-v1']
+               'MiniGrid-Corner-v0', 'MiniGrid-Corner-v1',
+               'flatland-small-v0', 'flatland-medium-v0',
+               'flatland-large-v0', 'flatland-xlarge-v0',
+               'sumo-grid4x4-v0', 'sumo-arterial4x4-v0',
+               'sumo-cologne1-v0', 'sumo-cologne3-v0', 'sumo-cologne8-v0',
+               'sumo-ingolstadt1-v0', 'sumo-ingolstadt7-v0', 'sumo-ingolstadt21-v0']
 GUIDANCE_ENVS = ['MiniGrid-GuidedLockedRoom-v0']
 GUIDANCE_ALGOS = ['split_rl']
 SAFETY_ALGOS = ['split_rl']
@@ -159,7 +164,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     # mandatory arguments
     parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
-                                                         'football', 'equation', 'rickety_bridge'])
+                                                         'football', 'equation', 'rickety_bridge',
+                                                         'flatland', 'sumo'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'split_rl',
                                                           'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
                                                           'ppo_lag', 'cpo', 'cup', 'ipo'])
@@ -235,6 +241,9 @@ def parse_args():
     parser.add_argument('--cost_beta_2', type=float)
     parser.add_argument('--cost_eps', type=float)
     parser.add_argument('--cost_shrinkage', type=float)
+
+    parser.add_argument('--use_cost_advantage_label', action='store_true', default=False,
+                        help='Override safety_label with sign of cost advantage (computed post-rollout)')
 
     parser.add_argument('--log_std_lr', type=str)
     parser.add_argument('--min_log_std_lr', type=float)
@@ -804,6 +813,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "safety_mode": safety_mode,
             "guidance_mode": guidance_mode,
+            "use_cost_advantage_label": getattr(args, 'use_cost_advantage_label', False),
         }
     elif args.algo_type == 'a2c_gbrl':
         algo_kwargs = {
