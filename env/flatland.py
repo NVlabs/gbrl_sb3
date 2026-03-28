@@ -62,6 +62,9 @@ from stable_baselines3.common.vec_env import VecMonitor
 # Agent-data segment [n_nodes*7, n_nodes*12): 5 agent features per node.
 #   col 1 = num_agents_opposite_direction
 #   col 2 = num_agents_malfunctioning
+# We only use these counts as danger evidence when they occur on a branch that
+# already has a nearby conflict or nearby agent cue. This keeps the label local
+# and avoids firing on broad subtree-level risk.
 _DATA_COL_OTHER_AGENT = 2
 _DATA_COL_POTENTIAL_CONFLICT = 3
 _AGENT_COL_OPPOSITE_DIR = 1
@@ -77,13 +80,15 @@ def compute_danger_label(
     """
     Binary danger label from a flattened normalized tree observation.
 
-    Returns 1 (danger) if ANY of the following hold:
-      - A potential conflict is detected within *conflict_dist_thresh*
-        on any non-root branch.
-      - Another agent is encountered within *agent_dist_thresh*
-        on any non-root branch.
-      - Any node reports opposite-direction traffic.
-      - Any node reports a malfunctioning / blocked agent.
+        Returns 1 (danger) if ANY of the following hold:
+            - A potential conflict is detected within *conflict_dist_thresh*
+                on any non-root branch.
+            - Another agent is encountered within *agent_dist_thresh*
+                on any non-root branch.
+            - A non-root branch reports opposite-direction traffic AND that same
+                branch also has a nearby conflict or nearby other-agent cue.
+            - A non-root branch reports a malfunctioning / blocked agent AND that
+                same branch also has a nearby conflict or nearby other-agent cue.
 
     After Flatland's normalization the data features are divided by
     observation_radius (default 2) and clipped to [-1, 1].  A positive
@@ -99,18 +104,23 @@ def compute_danger_label(
     child_data = data[1:]
 
     conflict = child_data[:, _DATA_COL_POTENTIAL_CONFLICT]
-    if np.any((conflict > 0) & (conflict <= conflict_dist_thresh)):
+    nearby_conflict = (conflict > 0) & (conflict <= conflict_dist_thresh)
+    if np.any(nearby_conflict):
         return 1
 
     other_agent = child_data[:, _DATA_COL_OTHER_AGENT]
-    if np.any((other_agent > 0) & (other_agent <= agent_dist_thresh)):
+    nearby_other_agent = (other_agent > 0) & (other_agent <= agent_dist_thresh)
+    if np.any(nearby_other_agent):
         return 1
 
-    # --- agent-count features (all nodes including root) ---
-    if np.any(agent_data[:, _AGENT_COL_OPPOSITE_DIR] > 0):
+    # --- agent-count features (non-root branches only) ---
+    child_agent_data = agent_data[1:]
+    local_branch_hazard = nearby_conflict | nearby_other_agent
+
+    if np.any((child_agent_data[:, _AGENT_COL_OPPOSITE_DIR] > 0) & local_branch_hazard):
         return 1
 
-    if np.any(agent_data[:, _AGENT_COL_MALFUNCTIONING] > 0):
+    if np.any((child_agent_data[:, _AGENT_COL_MALFUNCTIONING] > 0) & local_branch_hazard):
         return 1
 
     return 0

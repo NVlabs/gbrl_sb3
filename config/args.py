@@ -28,6 +28,7 @@ ROOT_PATH = Path(__file__).parent
 SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0',
                'MiniGrid-FragileCrossing-v0', 'MiniGrid-FragileCrossing-v1',
                'MiniGrid-Corner-v0', 'MiniGrid-Corner-v1',
+               'merge-v0', 'intersection-v0', 'two-way-v0',
                'flatland-small-v0', 'flatland-medium-v0',
                'flatland-large-v0', 'flatland-xlarge-v0',
                'sumo-grid4x4-v0', 'sumo-arterial4x4-v0',
@@ -165,7 +166,7 @@ def parse_args():
     # mandatory arguments
     parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
                                                          'football', 'equation', 'rickety_bridge',
-                                                         'flatland', 'sumo'])
+                                                         'flatland', 'sumo', 'highway'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'split_rl',
                                                           'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
                                                           'ppo_lag', 'cpo', 'cup', 'ipo'])

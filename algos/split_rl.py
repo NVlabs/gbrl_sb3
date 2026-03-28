@@ -743,11 +743,21 @@ class SPLIT_RL(OnPolicyAlgorithm):
                 kwargs['last_value_costs'] = value_costs
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones, **kwargs)
 
+        if self.safety_mode and hasattr(rollout_buffer, 'safety_labels'):
+            self.logger.record("rollout/env_safety_label_rate", float(np.mean(rollout_buffer.safety_labels)))
+
         # Override safety labels with cost-advantage sign when enabled.
         # label_t = 1 when cost_advantage_t > 0, meaning the action led to
         # higher-than-expected cost → the SPLIT safety head should intervene.
         if self.safety_mode and self.use_cost_advantage_label and hasattr(rollout_buffer, 'advantages_costs'):
             rollout_buffer.safety_labels = (rollout_buffer.advantages_costs > 0).astype(np.float32)
+
+        if self.safety_mode and hasattr(rollout_buffer, 'safety_labels'):
+            self.logger.record("rollout/safety_label_rate", float(np.mean(rollout_buffer.safety_labels)))
+            self.logger.record("rollout/safety_label_count", int(np.sum(rollout_buffer.safety_labels)))
+        if self.safety_mode and hasattr(rollout_buffer, 'costs'):
+            self.logger.record("rollout/step_cost_mean", float(np.mean(rollout_buffer.costs)))
+            self.logger.record("rollout/positive_cost_rate", float(np.mean(rollout_buffer.costs > 0)))
 
         callback.on_rollout_end()
 
