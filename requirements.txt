@@ -1,19 +1,19 @@
-gymnasium==0.29.1
+gymnasium==1.0.0
 numpy<1.25,>=1.21
 Cython>0.27,<3
 PyYAML==6.0.1
-rl_zoo3==2.1.0
-stable_baselines3==2.1.0
-sb3_contrib==2.1.0
+rl_zoo3==2.7.0
+stable_baselines3==2.7.1
+sb3_contrib==2.7.1
 # wandb==0.16.0
 mujoco
 minigrid==2.3.1
 highway-env
 opencv-python==4.7.0.72
-gymnasium[atari]==0.29.1
-gymnasium[accept-rom-license]==0.29.1
-gymnasium[box2d]==0.29.1
-gymnasium[mujoco]==0.29.1
+gymnasium[atari]==1.0.0
+gymnasium[accept-rom-license]==1.0.0
+gymnasium[box2d]==1.0.0
+gymnasium[mujoco]==1.0.0
 tensorboard==2.15.1
 flatland-rl
 ray[rllib]
