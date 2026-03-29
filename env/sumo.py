@@ -95,26 +95,37 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._teleport_weight = teleport_weight
         self._label_horizon = label_horizon
 
-        # Cache observation/action spaces (must be uniform for shared policy)
-        self.observation_spaces = {
+        # Cache original observation/action spaces
+        raw_obs_spaces = {
             agent: env.observation_space(agent) for agent in self.possible_agents
         }
         self.action_spaces = {
             agent: env.action_space(agent) for agent in self.possible_agents
         }
 
-        # Validate uniform spaces for shared policy
-        sample_obs = next(iter(self.observation_spaces.values()))
+        # Validate uniform action spaces (phase selection must match)
         sample_act = next(iter(self.action_spaces.values()))
         for agent in self.possible_agents:
-            assert self.observation_spaces[agent].shape == sample_obs.shape, (
-                f"Agent {agent} obs shape {self.observation_spaces[agent].shape} "
-                f"!= {sample_obs.shape}. Shared policy requires uniform spaces."
-            )
             assert self.action_spaces[agent].n == sample_act.n, (
                 f"Agent {agent} action space {self.action_spaces[agent].n} "
-                f"!= {sample_act.n}. Shared policy requires uniform spaces."
+                f"!= {sample_act.n}. Shared policy requires uniform action spaces."
             )
+
+        # Pad observation spaces to max dim for real-world networks with
+        # non-uniform intersection topologies (different #lanes → different obs dims).
+        obs_dims = [raw_obs_spaces[a].shape[0] for a in self.possible_agents]
+        self._max_obs_dim = max(obs_dims)
+        self._needs_obs_padding = not all(d == self._max_obs_dim for d in obs_dims)
+        self._agent_obs_dims = {a: raw_obs_spaces[a].shape[0] for a in self.possible_agents}
+
+        if self._needs_obs_padding:
+            padded_space = gym.spaces.Box(
+                low=-np.inf, high=np.inf,
+                shape=(self._max_obs_dim,), dtype=np.float32,
+            )
+            self.observation_spaces = {a: padded_space for a in self.possible_agents}
+        else:
+            self.observation_spaces = raw_obs_spaces
 
         # TraCI connection (set after first reset)
         self._sumo = None
@@ -136,6 +147,18 @@ class SumoRewardCostWrapper(ParallelEnv):
 
     def action_space(self, agent):
         return self.action_spaces[agent]
+
+    def _pad_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Zero-pad observations to max_obs_dim for non-uniform networks."""
+        if not self._needs_obs_padding:
+            return obs
+        padded = {}
+        for agent, ob in obs.items():
+            ob = np.asarray(ob, dtype=np.float32)
+            if ob.shape[0] < self._max_obs_dim:
+                ob = np.pad(ob, (0, self._max_obs_dim - ob.shape[0]))
+            padded[agent] = ob
+        return padded
 
     def _get_sumo_env(self):
         """Get the underlying SumoEnvironment instance."""
@@ -239,7 +262,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             info["safety_label"] = 0
             new_infos[agent] = info
 
-        return obs, new_infos
+        return self._pad_obs(obs), new_infos
 
     def step(self, actions):
         obs, rewards, terminations, truncations, infos = self._env.step(actions)
@@ -281,7 +304,7 @@ class SumoRewardCostWrapper(ParallelEnv):
 
             new_infos[agent] = info
 
-        return obs, new_rewards, terminations, truncations, new_infos
+        return self._pad_obs(obs), new_rewards, terminations, truncations, new_infos
 
     def render(self):
         return self._env.render()
