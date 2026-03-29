@@ -1,0 +1,60 @@
+# Best SPLIT-RL run on sumo-arterial4x4-v0
+# wandb: nvidia-mellanox/split_rl_test/z60w8opf
+# sweep: 5aw89lym (split_rl_sumo_arterial4x4_v0)
+# Result: ep_rew_mean ≈ -1.09, runtime 3h07m on V100
+# Date: 2026-03-29
+# NOTE: this run used the OLD emergency cost (always 0 on synthetic grids).
+#       Re-run with cost_fn=queue_overflow to get actual cost signal.
+
+# ── Environment ──────────────────────────────────────────────────────────────
+env_name: sumo-arterial4x4-v0
+env_type: sumo
+num_envs: 1          # 1 SUMO sim → 16 agent slots in VecEnv
+env_kwargs: null      # TODO: set cost_fn/queue_threshold for constrained runs
+
+# ── Algorithm ────────────────────────────────────────────────────────────────
+algo_type: split_rl
+seed: 0
+device: cuda
+total_n_steps: 1_000_000
+n_steps: 256
+batch_size: 256
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.3
+clip_range_vf: null
+normalize_advantage: true
+vf_coef: 0.871923
+ent_coef: 0
+target_kl: null
+
+# ── Learning rates ───────────────────────────────────────────────────────────
+policy_lr: 0.10962394847986982
+value_lr: 0.02566036182181146
+cost_lr: 0.04973339342943135
+log_std_lr: "lin_0.0017"
+min_log_std_lr: 0.000475
+log_std_init: -2
+fixed_std: false
+
+# ── Tree structure ───────────────────────────────────────────────────────────
+max_depth: 4
+n_bins: 250
+min_data_in_leaf: 0
+par_th: 2
+grow_policy: oblivious
+split_score_func: cosine
+generator_type: Quantile
+shared_tree_struct: true
+control_variates: false
+
+# ── Gradient clipping ────────────────────────────────────────────────────────
+max_policy_grad_norm: null
+max_value_grad_norm: null
+max_cost_grad_norm: null
+
+# ── Multi-objective ──────────────────────────────────────────────────────────
+lambda_objs: [1, 1]
+lambda_penalty: 1
+nn_critic: false

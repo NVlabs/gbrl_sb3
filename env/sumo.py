@@ -33,7 +33,7 @@ Label:   cost-advantage based (computed post-rollout in SPLIT-RL), with
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -44,7 +44,20 @@ import supersuit as ss
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PettingZoo wrapper: reward/cost split via native SUMO failure events
+# Cost function registry
+# ──────────────────────────────────────────────────────────────────────────────
+
+COST_FN_REGISTRY: Dict[str, str] = {
+    "combined": "Per-agent: sum of all per-agent costs (queue + wait + saturation)",
+    "queue_overflow": "Per-agent: 1 if total queued vehicles > queue_threshold",
+    "max_wait": "Per-agent: 1 if max accumulated wait on any lane > wait_threshold",
+    "lane_saturation": "Per-agent: 1 if any lane queue ratio > saturation_threshold",
+    "emergency": "Global: 1 if emergency stops occur (+ teleport_weight if teleports)",
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PettingZoo wrapper: reward/cost split with configurable cost functions
 # ──────────────────────────────────────────────────────────────────────────────
 
 class SumoRewardCostWrapper(ParallelEnv):
@@ -52,46 +65,68 @@ class SumoRewardCostWrapper(ParallelEnv):
     PettingZoo ParallelEnv wrapper around sumo_rl.parallel_env that:
 
       reward = original reward (diff-waiting-time or custom)
-      info['cost']            = native SUMO failure cost (emergency stops + teleports)
+      info['cost']            = configurable constraint violation cost
       info['original_reward'] = same as reward (no decomposition needed)
-      info['safety_label']    = event-proximal fallback label (1 if failure event
-                                occurred within last ``label_horizon`` steps).
+      info['safety_label']    = event-proximal fallback label (1 if cost > 0
+                                within last ``label_horizon`` steps).
                                 The preferred label is cost-advantage based,
                                 computed post-rollout in SPLIT-RL.
 
-    Cost is derived from simulation-wide TraCI signals — events that indicate
-    the traffic signal policy is causing hard failures:
-      - Emergency stops: vehicles forced to brake beyond normal deceleration
-      - Teleports: vehicles removed/repositioned due to deadlock/gridlock
+    Cost functions (selected via ``cost_fn``):
+      - "queue_overflow": per-agent, 1 if queued vehicles > queue_threshold
+      - "max_wait": per-agent, 1 if max lane wait > wait_threshold seconds
+      - "lane_saturation": per-agent, 1 if any lane queue ratio > saturation_threshold
+      - "emergency": global, from native TraCI failure events (emergency stops + teleports)
 
-    These are *not* redundant with the observation (which contains lane queues
-    and densities) — they capture failure *consequences* that the policy should
-    learn to avoid.
+    The per-agent costs capture what diff-waiting-time reward is willing to sacrifice:
+    the reward optimizes aggregate waiting time reduction, but a policy can improve
+    the aggregate by starving low-volume approaches. The cost constraints catch this.
 
     Parameters
     ----------
     env : ParallelEnv
         PettingZoo parallel env from sumo_rl.parallel_env().
+    cost_fn : str
+        Cost function to use. One of: "queue_overflow", "max_wait",
+        "lane_saturation", "emergency".
+    queue_threshold : int
+        For cost_fn="queue_overflow": max allowed queued vehicles per intersection.
+    wait_threshold : float
+        For cost_fn="max_wait": max allowed accumulated wait (seconds) on any lane.
+    saturation_threshold : float
+        For cost_fn="lane_saturation": max allowed lane queue ratio (0-1).
     teleport_weight : float
-        Multiplier for teleport events relative to emergency stops.
+        For cost_fn="emergency": multiplier for teleport events.
     label_horizon : int
         Number of past steps to look back for the event-proximal fallback label.
-        If any failure event occurred within the last ``label_horizon`` steps,
-        safety_label = 1 for all agents (shared signal).
+        If any cost > 0 within the last ``label_horizon`` steps,
+        safety_label = 1 for that agent.
     """
 
     def __init__(
         self,
         env: ParallelEnv,
+        cost_fn: str = "combined",
+        queue_threshold: int = 10,
+        wait_threshold: float = 200.0,
+        saturation_threshold: float = 0.8,
         teleport_weight: float = 1.0,
         label_horizon: int = 3,
     ):
+        if cost_fn not in COST_FN_REGISTRY:
+            raise ValueError(
+                f"Unknown cost_fn '{cost_fn}'. Available: {list(COST_FN_REGISTRY.keys())}"
+            )
         self._env = env
         self.possible_agents = env.possible_agents
         self.agents = list(env.possible_agents)
         self.metadata = getattr(env, "metadata", {})
         self.render_mode = getattr(env, "render_mode", None)
 
+        self._cost_fn = cost_fn
+        self._queue_threshold = queue_threshold
+        self._wait_threshold = wait_threshold
+        self._saturation_threshold = saturation_threshold
         self._teleport_weight = teleport_weight
         self._label_horizon = label_horizon
 
@@ -131,16 +166,26 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._sumo = None
         self._sumo_env = None  # underlying SumoEnvironment
 
-        # Accumulated failure events across sub-steps (delta_time > 1)
+        # Accumulated failure events across sub-steps (for cost_fn="emergency")
         self._accumulated_emergency_stops = 0
         self._accumulated_teleports = 0
 
-        # Ring buffer for event-proximal fallback label
-        self._failure_history: List[bool] = []
+        # Per-agent ring buffer for event-proximal labels
+        self._failure_history: Dict[str, List[bool]] = {
+            a: [] for a in self.possible_agents
+        }
 
         # Episode accumulators
         self._episode_costs: Dict = {}
         self._episode_original_rewards: Dict = {}
+        # Per-agent metric accumulators for logging
+        self._episode_queue_violations: Dict[str, int] = {}
+        self._episode_wait_violations: Dict[str, int] = {}
+        self._episode_max_queued: Dict[str, int] = {}
+        self._episode_max_wait: Dict[str, float] = {}
+        self._episode_cost_queue: Dict[str, float] = {}
+        self._episode_cost_wait: Dict[str, float] = {}
+        self._episode_cost_saturation: Dict[str, float] = {}
 
     def observation_space(self, agent):
         return self.observation_spaces[agent]
@@ -176,13 +221,22 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._sumo = getattr(sumo_env, "sumo", None)
         return self._sumo
 
+    def _get_traffic_signal(self, agent_id: str):
+        """Get the TrafficSignal object for a specific agent."""
+        sumo_env = self._get_sumo_env()
+        if sumo_env is not None and hasattr(sumo_env, 'traffic_signals'):
+            return sumo_env.traffic_signals.get(agent_id)
+        return None
+
     def _patch_sumo_step(self):
         """Monkey-patch SumoEnvironment._sumo_step to accumulate failure events.
 
-        sumo_rl runs delta_time sub-steps per agent step, but TraCI counters
-        like getEmergencyStoppingVehiclesNumber() only report the LAST sub-step.
-        This patch accumulates events across all sub-steps so we don't miss any.
+        Only needed for cost_fn="emergency". For other cost functions we query
+        TrafficSignal objects directly after the step.
         """
+        if self._cost_fn != "emergency":
+            return
+
         sumo_env = self._get_sumo_env()
         if sumo_env is None or not hasattr(sumo_env, '_sumo_step'):
             return
@@ -204,6 +258,63 @@ class SumoRewardCostWrapper(ParallelEnv):
         sumo_env._original_sumo_step = original_step
         sumo_env._sumo_step = types.MethodType(patched_sumo_step, sumo_env)
 
+    # ── Per-agent cost functions ──────────────────────────────────────────
+
+    def _compute_agent_cost_queue_overflow(self, agent_id: str) -> float:
+        """1 if total queued vehicles at this intersection > queue_threshold."""
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        queued = ts.get_total_queued()
+        return 1.0 if queued > self._queue_threshold else 0.0
+
+    def _compute_agent_cost_max_wait(self, agent_id: str) -> float:
+        """1 if max accumulated waiting time on any lane > wait_threshold."""
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        if not wait_per_lane:
+            return 0.0
+        return 1.0 if max(wait_per_lane) > self._wait_threshold else 0.0
+
+    def _compute_agent_cost_lane_saturation(self, agent_id: str) -> float:
+        """1 if any lane's queue ratio > saturation_threshold."""
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        lane_queues = ts.get_lanes_queue()
+        if not lane_queues:
+            return 0.0
+        return 1.0 if max(lane_queues) > self._saturation_threshold else 0.0
+
+    def _compute_agent_cost(self, agent_id: str) -> float:
+        """Dispatch to the selected cost function."""
+        if self._cost_fn == "combined":
+            return (self._compute_agent_cost_queue_overflow(agent_id) +
+                    self._compute_agent_cost_max_wait(agent_id) +
+                    self._compute_agent_cost_lane_saturation(agent_id))
+        elif self._cost_fn == "queue_overflow":
+            return self._compute_agent_cost_queue_overflow(agent_id)
+        elif self._cost_fn == "max_wait":
+            return self._compute_agent_cost_max_wait(agent_id)
+        elif self._cost_fn == "lane_saturation":
+            return self._compute_agent_cost_lane_saturation(agent_id)
+        elif self._cost_fn == "emergency":
+            # Emergency cost is global, computed separately
+            return self._compute_emergency_cost()
+        return 0.0
+
+    def _compute_emergency_cost(self) -> float:
+        """Global cost from native SUMO failure events."""
+        events = self._query_failure_events()
+        cost = 0.0
+        if events["emergency_stops"] > 0:
+            cost += 1.0
+        if events["teleports"] > 0:
+            cost += self._teleport_weight
+        return cost
+
     def _query_failure_events(self) -> Dict[str, int]:
         """Return accumulated failure events since last query, then reset."""
         events = {
@@ -214,27 +325,39 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._accumulated_teleports = 0
         return events
 
-    def _compute_cost(self, events: Dict[str, int]) -> float:
-        """Cost from native SUMO failure events.
+    # ── Per-agent metrics (always computed, for logging) ──────────────────
 
-        c_t = 1[emergency_stops > 0] + teleport_weight * 1[teleports > 0]
-        """
-        cost = 0.0
-        if events["emergency_stops"] > 0:
-            cost += 1.0
-        if events["teleports"] > 0:
-            cost += self._teleport_weight
-        return cost
+    def _get_agent_metrics(self, agent_id: str) -> Dict[str, float]:
+        """Get per-agent traffic metrics for logging (independent of cost_fn)."""
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return {"queued": 0, "max_wait": 0.0, "max_lane_queue": 0.0,
+                    "avg_speed": 1.0, "pressure": 0}
+        queued = ts.get_total_queued()
+        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        max_wait = max(wait_per_lane) if wait_per_lane else 0.0
+        lane_queues = ts.get_lanes_queue()
+        max_lane_queue = max(lane_queues) if lane_queues else 0.0
+        avg_speed = ts.get_average_speed()
+        pressure = ts.get_pressure()
+        return {
+            "queued": queued,
+            "max_wait": max_wait,
+            "max_lane_queue": max_lane_queue,
+            "avg_speed": avg_speed,
+            "pressure": pressure,
+        }
 
-    def _update_failure_history(self, has_failure: bool):
-        """Update ring buffer for event-proximal label."""
-        self._failure_history.append(has_failure)
-        if len(self._failure_history) > self._label_horizon:
-            self._failure_history.pop(0)
+    def _update_failure_history(self, agent_id: str, has_failure: bool):
+        """Update per-agent ring buffer for event-proximal label."""
+        history = self._failure_history[agent_id]
+        history.append(has_failure)
+        if len(history) > self._label_horizon:
+            history.pop(0)
 
-    def _event_proximal_label(self) -> int:
-        """Fallback label: 1 if any failure event in last label_horizon steps."""
-        return int(any(self._failure_history))
+    def _event_proximal_label(self, agent_id: str) -> int:
+        """Fallback label: 1 if any cost fired in last label_horizon steps for this agent."""
+        return int(any(self._failure_history[agent_id]))
 
     def reset(self, seed=None, options=None):
         obs, infos = self._env.reset(seed=seed, options=options)
@@ -245,14 +368,21 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._sumo_env = None
         self._accumulated_emergency_stops = 0
         self._accumulated_teleports = 0
-        self._failure_history = []
+        self._failure_history = {a: [] for a in self.possible_agents}
 
-        # Patch _sumo_step to accumulate events across sub-steps
+        # Patch _sumo_step for emergency cost (only if needed)
         self._patch_sumo_step()
 
         # Reset episode accumulators
         self._episode_costs = {agent: 0.0 for agent in self.possible_agents}
         self._episode_original_rewards = {agent: 0.0 for agent in self.possible_agents}
+        self._episode_cost_queue = {a: 0.0 for a in self.possible_agents}
+        self._episode_cost_wait = {a: 0.0 for a in self.possible_agents}
+        self._episode_cost_saturation = {a: 0.0 for a in self.possible_agents}
+        self._episode_queue_violations = {a: 0 for a in self.possible_agents}
+        self._episode_wait_violations = {a: 0 for a in self.possible_agents}
+        self._episode_max_queued = {a: 0 for a in self.possible_agents}
+        self._episode_max_wait = {a: 0.0 for a in self.possible_agents}
 
         new_infos = {}
         for agent in self.agents:
@@ -268,12 +398,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         obs, rewards, terminations, truncations, infos = self._env.step(actions)
         self.agents = list(self._env.agents) if hasattr(self._env, 'agents') else list(self.possible_agents)
 
-        # Query simulation-wide failure events (shared across all agents)
-        events = self._query_failure_events()
-        cost = self._compute_cost(events)
-        has_failure = (events["emergency_stops"] > 0) or (events["teleports"] > 0)
-        self._update_failure_history(has_failure)
-        fallback_label = self._event_proximal_label()
+        # For emergency cost_fn, compute once (global)
+        emergency_cost = None
+        if self._cost_fn == "emergency":
+            emergency_cost = self._compute_emergency_cost()
 
         new_rewards = {}
         new_infos = {}
@@ -281,26 +409,89 @@ class SumoRewardCostWrapper(ParallelEnv):
             reward = float(rewards[agent])
             info = dict(infos.get(agent, {}))
 
+            # Always compute all primitive per-agent costs for monitoring
+            c_queue = self._compute_agent_cost_queue_overflow(agent)
+            c_wait = self._compute_agent_cost_max_wait(agent)
+            c_sat = self._compute_agent_cost_lane_saturation(agent)
+
+            # Determine the training cost signal
+            if self._cost_fn == "combined":
+                cost = c_queue + c_wait + c_sat
+            elif self._cost_fn == "queue_overflow":
+                cost = c_queue
+            elif self._cost_fn == "max_wait":
+                cost = c_wait
+            elif self._cost_fn == "lane_saturation":
+                cost = c_sat
+            elif self._cost_fn == "emergency":
+                cost = emergency_cost
+            else:
+                cost = 0.0
+
+            # Per-agent metrics (always logged, regardless of cost_fn)
+            metrics = self._get_agent_metrics(agent)
+
+            # Update per-agent label history
+            has_cost = cost > 0
+            self._update_failure_history(agent, has_cost)
+            fallback_label = self._event_proximal_label(agent)
+
             new_rewards[agent] = reward
-            # Cost is shared: all agents see the same simulation-wide failure signal
             info["cost"] = cost
             info["original_reward"] = reward
-            # Event-proximal fallback label (cost-advantage label is preferred,
-            # computed post-rollout in SPLIT-RL when use_cost_advantage_label=True)
             info["safety_label"] = fallback_label
-            info["emergency_stops"] = events["emergency_stops"]
-            info["teleports"] = events["teleports"]
+            # Per-agent cost components (always logged for monitoring)
+            info["cost_queue"] = c_queue
+            info["cost_wait"] = c_wait
+            info["cost_saturation"] = c_sat
+            # Per-agent traffic metrics
+            info["queued"] = metrics["queued"]
+            info["max_wait"] = metrics["max_wait"]
+            info["max_lane_queue"] = metrics["max_lane_queue"]
+            info["avg_speed"] = metrics["avg_speed"]
+            info["pressure"] = metrics["pressure"]
 
-            # Accumulate episode stats
+            # Track per-agent episode stats
             self._episode_costs[agent] = self._episode_costs.get(agent, 0.0) + cost
             self._episode_original_rewards[agent] = (
                 self._episode_original_rewards.get(agent, 0.0) + reward
+            )
+            # Per-component episode cost totals
+            self._episode_cost_queue[agent] = (
+                self._episode_cost_queue.get(agent, 0.0) + c_queue
+            )
+            self._episode_cost_wait[agent] = (
+                self._episode_cost_wait.get(agent, 0.0) + c_wait
+            )
+            self._episode_cost_saturation[agent] = (
+                self._episode_cost_saturation.get(agent, 0.0) + c_sat
+            )
+            if metrics["queued"] > self._queue_threshold:
+                self._episode_queue_violations[agent] = (
+                    self._episode_queue_violations.get(agent, 0) + 1
+                )
+            if metrics["max_wait"] > self._wait_threshold:
+                self._episode_wait_violations[agent] = (
+                    self._episode_wait_violations.get(agent, 0) + 1
+                )
+            self._episode_max_queued[agent] = max(
+                self._episode_max_queued.get(agent, 0), metrics["queued"]
+            )
+            self._episode_max_wait[agent] = max(
+                self._episode_max_wait.get(agent, 0.0), metrics["max_wait"]
             )
 
             # Emit episode-level stats when agent terminates
             if terminations.get(agent, False) or truncations.get(agent, False):
                 info["episode_cost"] = self._episode_costs.get(agent, 0.0)
                 info["episode_original_reward"] = self._episode_original_rewards.get(agent, 0.0)
+                info["episode_cost_queue"] = self._episode_cost_queue.get(agent, 0.0)
+                info["episode_cost_wait"] = self._episode_cost_wait.get(agent, 0.0)
+                info["episode_cost_saturation"] = self._episode_cost_saturation.get(agent, 0.0)
+                info["episode_queue_violations"] = self._episode_queue_violations.get(agent, 0)
+                info["episode_wait_violations"] = self._episode_wait_violations.get(agent, 0)
+                info["episode_max_queued"] = self._episode_max_queued.get(agent, 0)
+                info["episode_max_wait"] = self._episode_max_wait.get(agent, 0.0)
 
             new_infos[agent] = info
 
@@ -489,6 +680,10 @@ def make_sumo_vec_env(
     env_name: str = "sumo-grid4x4-v0",
     n_envs: int = 1,
     seed: Optional[int] = None,
+    cost_fn: str = "combined",
+    queue_threshold: int = 10,
+    wait_threshold: float = 200.0,
+    saturation_threshold: float = 0.8,
     teleport_weight: float = 1.0,
     label_horizon: int = 3,
     use_gui: bool = False,
@@ -511,8 +706,16 @@ def make_sumo_vec_env(
         NOTE: with LIBSUMO_AS_TRACI=1, only n_envs=1 is supported.
     seed : int or None
         Random seed for SUMO.
+    cost_fn : str
+        Cost function: "queue_overflow", "max_wait", "lane_saturation", "emergency".
+    queue_threshold : int
+        For cost_fn="queue_overflow": max allowed queued vehicles per intersection.
+    wait_threshold : float
+        For cost_fn="max_wait": max allowed accumulated wait (seconds) on any lane.
+    saturation_threshold : float
+        For cost_fn="lane_saturation": max allowed lane queue ratio (0-1).
     teleport_weight : float
-        Multiplier for teleport events relative to emergency stops in cost.
+        For cost_fn="emergency": multiplier for teleport events.
     label_horizon : int
         Number of past steps for event-proximal fallback label.
     use_gui : bool
@@ -552,9 +755,13 @@ def make_sumo_vec_env(
         use_gui=use_gui,
     )
 
-    # Reward/cost wrapper (native SUMO failure events as cost)
+    # Reward/cost wrapper (configurable constraint-based cost)
     par_env = SumoRewardCostWrapper(
         par_env,
+        cost_fn=cost_fn,
+        queue_threshold=queue_threshold,
+        wait_threshold=wait_threshold,
+        saturation_threshold=saturation_threshold,
         teleport_weight=teleport_weight,
         label_horizon=label_horizon,
     )
@@ -577,19 +784,33 @@ def make_sumo_vec_env(
 
 
 class VecCostMonitor(VecMonitor):
-    """VecMonitor subclass that also tracks per-episode cost.
+    """VecMonitor subclass that also tracks per-episode cost and traffic metrics.
 
-    Identical to the one in env/flatland.py — accumulates info["cost"]
-    each step and stores the total in episode_info["c"].
+    Accumulates info["cost"] each step and stores total in episode_info["c"].
+    Also tracks per-agent queue/wait violations and peak metrics.
     """
 
     def __init__(self, venv, filename=None, info_keywords=()):
         super().__init__(venv, filename=filename, info_keywords=info_keywords)
         self.episode_costs = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_cost_queue = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_cost_wait = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_cost_saturation = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_queue_violations = np.zeros(self.num_envs, dtype=np.int32)
+        self.episode_wait_violations = np.zeros(self.num_envs, dtype=np.int32)
+        self.episode_max_queued = np.zeros(self.num_envs, dtype=np.int32)
+        self.episode_max_wait = np.zeros(self.num_envs, dtype=np.float64)
 
     def reset(self, **kwargs):
         obs = super().reset(**kwargs)
         self.episode_costs[:] = 0.0
+        self.episode_cost_queue[:] = 0.0
+        self.episode_cost_wait[:] = 0.0
+        self.episode_cost_saturation[:] = 0.0
+        self.episode_queue_violations[:] = 0
+        self.episode_wait_violations[:] = 0
+        self.episode_max_queued[:] = 0
+        self.episode_max_wait[:] = 0.0
         return obs
 
     def step_wait(self):
@@ -598,6 +819,16 @@ class VecCostMonitor(VecMonitor):
         self.episode_lengths += 1
         for i in range(self.num_envs):
             self.episode_costs[i] += infos[i].get("cost", 0.0)
+            self.episode_cost_queue[i] += infos[i].get("cost_queue", 0.0)
+            self.episode_cost_wait[i] += infos[i].get("cost_wait", 0.0)
+            self.episode_cost_saturation[i] += infos[i].get("cost_saturation", 0.0)
+            # Track per-step metrics
+            queued = infos[i].get("queued", 0)
+            max_wait = infos[i].get("max_wait", 0.0)
+            if queued > self.episode_max_queued[i]:
+                self.episode_max_queued[i] = queued
+            if max_wait > self.episode_max_wait[i]:
+                self.episode_max_wait[i] = max_wait
         new_infos = list(infos[:])
         for i in range(len(dones)):
             if dones[i]:
@@ -609,6 +840,11 @@ class VecCostMonitor(VecMonitor):
                     "l": self.episode_lengths[i],
                     "c": ep_cost,
                     "original_r": ep_rew,
+                    "cost_queue": float(self.episode_cost_queue[i]),
+                    "cost_wait": float(self.episode_cost_wait[i]),
+                    "cost_saturation": float(self.episode_cost_saturation[i]),
+                    "max_queued": int(self.episode_max_queued[i]),
+                    "max_wait": float(self.episode_max_wait[i]),
                     "t": round(time.time() - self.t_start, 6),
                 }
                 for key in self.info_keywords:
@@ -618,6 +854,13 @@ class VecCostMonitor(VecMonitor):
                 self.episode_returns[i] = 0
                 self.episode_lengths[i] = 0
                 self.episode_costs[i] = 0.0
+                self.episode_cost_queue[i] = 0.0
+                self.episode_cost_wait[i] = 0.0
+                self.episode_cost_saturation[i] = 0.0
+                self.episode_queue_violations[i] = 0
+                self.episode_wait_violations[i] = 0
+                self.episode_max_queued[i] = 0
+                self.episode_max_wait[i] = 0.0
                 if self.results_writer:
                     self.results_writer.write_row(episode_info)
                 new_infos[i] = info
