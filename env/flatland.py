@@ -465,6 +465,10 @@ def make_flatland_vec_env(
         agent_dist_thresh=agent_dist_thresh,
     )
 
+    # Handle per-agent termination: pad dead agents with zero obs/rewards
+    # until all agents in the env are done (required by SuperSuit VecEnv).
+    par_env = ss.black_death_v3(par_env)
+
     # PettingZoo → SB3 VecEnv
     vec_env = ss.pettingzoo_env_to_vec_env_v1(par_env)
     vec_env = ss.concat_vec_envs_v1(
