@@ -564,15 +564,18 @@ def train_runner():
     else:
         env_name = getattr(args, 'env_name', 'unknown')
         short_env = env_name.replace('NoFrameskip-v4', '').replace('MiniGrid-', '').lower()
-        base_log_dir = os.getenv('TRAIN_LOG_DIR', 'runs')
+        # Allow environment override for sweeps where sys.argv is rebuilt from wandb config.
+        base_log_dir = os.getenv('LOG_DIR') or os.getenv('TRAIN_LOG_DIR') or getattr(args, 'log_dir', None) or 'runs'
         if is_sweep_run:
             log_dir = str(Path(base_log_dir) / f"{short_env}_{args.algo_type}_s{args.seed}_{job_id}_{wandb_run_id}")
         else:
             log_dir = str(Path(base_log_dir) / f"{short_env}_{args.algo_type}_s{args.seed}_{job_id}")
         print(f"First run, log_dir: {log_dir}")
 
-    log_dir_path = Path(log_dir)
+    log_dir_path = Path(log_dir).resolve()
+    log_dir = str(log_dir_path)
     log_dir_path.mkdir(exist_ok=True, parents=True)
+    args.log_dir = log_dir
 
     # ── Checkpoint detection ─────────────────────────────────────────────
     checkpoint_path = log_dir_path / "checkpoint.zip"
@@ -676,15 +679,9 @@ def train_runner():
         from wandb.integration.sb3 import WandbCallback
         callback_list.append(WandbCallback(gradient_save_freq=0, model_save_path=None, verbose=1))
 
-        # Tensorboard log dir
-        tb_name = ''
-        if getattr(args, 'group_name', None):
-            tb_name += f'g_{args.group_name}_'
-        tb_name += f'n_{args.env_type}_{args.run_name}_{args.env_name}_seed_{args.seed}'
-        tensorboard_log = f"runs/{tb_name}"
+        tensorboard_log = str(log_dir_path / "tensorboard")
     else:
-        tb_name = f'n_{args.env_type}_{args.run_name}_{args.env_name}_seed_{args.seed}'
-        tensorboard_log = f"runs/{tb_name}"
+        tensorboard_log = str(log_dir_path / "tensorboard")
 
     # ── Build env ────────────────────────────────────────────────────────
     env, eval_env = _build_env(args)

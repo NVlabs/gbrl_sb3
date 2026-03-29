@@ -29,6 +29,7 @@ logging:
   run_name: 'default'  # Logging using weights and biases
   group_name: 'default_group'
   entity: "default_entity"
+  log_dir: 'runs'
   desc: "" # run/sweep description for experiment tracking
 params:
   control_variates: False

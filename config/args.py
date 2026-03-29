@@ -8,6 +8,7 @@
 ##############################################################################
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Callable, Optional, Union
 
@@ -195,6 +196,7 @@ def parse_args():
     parser.add_argument('--group_name', type=str, help='wandb group name')
     parser.add_argument('--project', type=str)
     parser.add_argument('--entity', type=str)
+    parser.add_argument('--log_dir', type=str)
     parser.add_argument('--desc', type=str)
     # algo parameters
     parser.add_argument('--normalize_advantage', type=str2bool)
@@ -427,6 +429,7 @@ def get_defaults(args, defaults):
     args.group_name = args.group_name if args.group_name is not None else defaults['logging']['group_name']
     args.project = args.project if args.project is not None else defaults['logging']['project']
     args.entity = args.entity if args.entity is not None else defaults['logging']['entity']
+    args.log_dir = args.log_dir if args.log_dir is not None else defaults['logging'].get('log_dir', 'runs')
     # Algorithm specific defaults
     algo_defaults = defaults.get(args.algo_type, {})
     args.normalize_advantage = args.normalize_advantage if args.normalize_advantage is not None else \
@@ -646,9 +649,12 @@ def get_defaults(args, defaults):
 
 
 def process_logging(args, callback_list):
+    log_root = Path(os.getenv('LOG_DIR') or os.getenv('TRAIN_LOG_DIR') or args.log_dir or 'runs')
+    log_root.mkdir(exist_ok=True, parents=True)
+
     if not args.wandb:
         tb_name = f'n_{args.env_type}_{args.run_name}_{args.env_name}_seed_{args.seed}'
-        tensorboard_log = f"runs/{tb_name}"
+        tensorboard_log = str(log_root / tb_name)
         return tensorboard_log
 
     print(f'args.wand: {args.wandb}')
@@ -669,7 +675,7 @@ def process_logging(args, callback_list):
     if args.group_name is not None:
         tb_name += f'g_{args.group_name}_'
     tb_name += f'n_{args.env_type}_{args.run_name}_{args.env_name}_seed_{args.seed}'
-    tensorboard_log = f"runs/{tb_name}"
+    tensorboard_log = str(log_root / tb_name)
     # args.wandb = wandb
     print('finished setting up wandb')
     return tensorboard_log
