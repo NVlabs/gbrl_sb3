@@ -16,6 +16,7 @@ gymnasium[box2d]==1.0.0
 gymnasium[mujoco]==1.0.0
 tensorboard==2.15.1
 flatland-rl
+supersuit
 ray[rllib]
 --index-url https://test.pypi.org/simple/
 --extra-index-url https://pypi.org/simple/
