@@ -245,9 +245,6 @@ def parse_args():
     parser.add_argument('--cost_eps', type=float)
     parser.add_argument('--cost_shrinkage', type=float)
 
-    parser.add_argument('--use_cost_advantage_label', type=str2bool,
-                        help='Override safety_label with sign of cost advantage (computed post-rollout)')
-
     parser.add_argument('--log_std_lr', type=str)
     parser.add_argument('--min_log_std_lr', type=float)
 
@@ -820,7 +817,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "safety_mode": safety_mode,
             "guidance_mode": guidance_mode,
-            "use_cost_advantage_label": getattr(args, 'use_cost_advantage_label', False),
+
         }
     elif args.algo_type == 'a2c_gbrl':
         algo_kwargs = {
