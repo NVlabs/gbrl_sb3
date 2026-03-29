@@ -238,7 +238,7 @@ def _is_json_serializable(v):
 
 def _inject_args_from_wandb_config():
     """Bridge wandb sweep config → argparse by rebuilding sys.argv."""
-    wandb.init()
+    wandb.init(sync_tensorboard=True, monitor_gym=True)
     config = dict(wandb.config)
 
     algo = config.get('algo_type', '')
