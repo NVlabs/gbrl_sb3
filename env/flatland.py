@@ -261,6 +261,28 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         self.agents = self._env.agents
         obs = self._cast_obs(obs)
 
+        # Flatland terminates agents individually as they reach their
+        # destinations, but the episode continues until ALL agents are done.
+        # SuperSuit's MarkovVectorEnv propagates per-agent done=True to the
+        # VecMonitor, which wrongly counts each as a separate episode ending,
+        # flooding stats with spurious 1-step "episodes" and causing reward
+        # oscillation.  Fix: only report termination/truncation when the full
+        # episode is over (all agents done).
+        all_term = all(terminations.get(a, False) for a in self.possible_agents)
+        all_trunc = all(truncations.get(a, False) for a in self.possible_agents)
+        env_done = all_term or all_trunc
+
+        # Track which agents are individually done (for reward/cost bookkeeping)
+        agent_done = {
+            a: terminations.get(a, False) or truncations.get(a, False)
+            for a in self.possible_agents
+        }
+
+        # Override: only signal done to SB3/VecMonitor when full episode ends
+        if not env_done:
+            terminations = {a: False for a in terminations}
+            truncations = {a: False for a in truncations}
+
         # Update stored observations for next step's label computation
         self._prev_obs = {agent: obs[agent].copy() for agent in obs}
 
@@ -303,8 +325,8 @@ class FlatlandRewardCostWrapper(ParallelEnv):
 
             info["safety_label"] = pre_step_labels.get(agent, 0)
 
-            # Emit episode-level stats when agent terminates
-            if terminations.get(agent, False) or truncations.get(agent, False):
+            # Emit episode-level stats when the full episode ends
+            if env_done:
                 info["episode_cost"] = self._episode_costs.get(agent, 0.0)
                 info["episode_original_reward"] = self._episode_original_rewards.get(agent, 0.0)
                 info["episode_reward_terms"] = dict(
@@ -464,10 +486,6 @@ def make_flatland_vec_env(
         conflict_dist_thresh=conflict_dist_thresh,
         agent_dist_thresh=agent_dist_thresh,
     )
-
-    # Handle per-agent termination: pad dead agents with zero obs/rewards
-    # until all agents in the env are done (required by SuperSuit VecEnv).
-    par_env = ss.black_death_v3(par_env)
 
     # PettingZoo → SB3 VecEnv
     vec_env = ss.pettingzoo_env_to_vec_env_v1(par_env)
