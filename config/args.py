@@ -245,7 +245,7 @@ def parse_args():
     parser.add_argument('--cost_eps', type=float)
     parser.add_argument('--cost_shrinkage', type=float)
 
-    parser.add_argument('--use_cost_advantage_label', action='store_true', default=False,
+    parser.add_argument('--use_cost_advantage_label', type=str2bool,
                         help='Override safety_label with sign of cost advantage (computed post-rollout)')
 
     parser.add_argument('--log_std_lr', type=str)
