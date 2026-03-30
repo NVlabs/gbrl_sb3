@@ -817,6 +817,12 @@ class SPLIT_RL(OnPolicyAlgorithm):
                         if "cost_saturation" in self.ep_info_buffer[0]:
                             self.logger.record("rollout/ep_cost_saturation_mean",
                                             safe_mean([ep_info["cost_saturation"] for ep_info in self.ep_info_buffer]))
+                        if "normalized_score" in self.ep_info_buffer[0]:
+                            self.logger.record("rollout/normalized_score",
+                                            safe_mean([ep_info["normalized_score"] for ep_info in self.ep_info_buffer]))
+                        if "completion_rate" in self.ep_info_buffer[0]:
+                            self.logger.record("rollout/completion_rate",
+                                            safe_mean([ep_info["completion_rate"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)

@@ -169,6 +169,8 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         use_original_reward: bool = False,
         conflict_dist_thresh: float = 0.5,
         agent_dist_thresh: float = 0.5,
+        n_agents: int = 1,
+        max_episode_steps: int = 200,
     ):
         self._env = env
         self.possible_agents = env.possible_agents
@@ -179,6 +181,8 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         self._use_original_reward = use_original_reward
         self._conflict_dist_thresh = conflict_dist_thresh
         self._agent_dist_thresh = agent_dist_thresh
+        self._n_agents = n_agents
+        self._max_episode_steps = max_episode_steps
 
         # Override observation spaces to float32
         self.observation_spaces = {
@@ -203,6 +207,7 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         self._episode_costs: Dict = {}
         self._episode_original_rewards: Dict = {}
         self._episode_reward_terms: Dict = {}
+        self._agents_completed: set = set()
 
     def observation_space(self, agent):
         return self.observation_spaces[agent]
@@ -234,6 +239,7 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         self._episode_reward_terms = {
             agent: self._empty_reward_terms() for agent in self.possible_agents
         }
+        self._agents_completed = set()
 
         for agent in self.agents:
             infos[agent] = dict(infos[agent])
@@ -271,6 +277,12 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         all_term = all(terminations.get(a, False) for a in self.possible_agents)
         all_trunc = all(truncations.get(a, False) for a in self.possible_agents)
         env_done = all_term or all_trunc
+
+        # Track which agents completed (reached destination = terminated,
+        # not just truncated by time limit).  Must check BEFORE override.
+        for a in self.possible_agents:
+            if terminations.get(a, False) and not truncations.get(a, False):
+                self._agents_completed.add(a)
 
         # Track which agents are individually done (for reward/cost bookkeeping)
         agent_done = {
@@ -331,6 +343,16 @@ class FlatlandRewardCostWrapper(ParallelEnv):
                 info["episode_original_reward"] = self._episode_original_rewards.get(agent, 0.0)
                 info["episode_reward_terms"] = dict(
                     self._episode_reward_terms.get(agent, self._empty_reward_terms())
+                )
+                # Flatland normalized score:
+                #   sum(all agents' original rewards) / (max_ep_steps * n_agents)
+                # Perfect (no penalties) = 0, worst ≈ -1
+                total_original_rew = sum(self._episode_original_rewards.values())
+                info["normalized_score"] = (
+                    total_original_rew / (self._max_episode_steps * self._n_agents)
+                )
+                info["completion_rate"] = (
+                    len(self._agents_completed) / self._n_agents
                 )
 
             infos[agent] = info
@@ -480,11 +502,18 @@ def make_flatland_vec_env(
     par_env = pz_wrapper.parallel_env()
 
     # Reward/cost decomposition + label wrapper
+    n_agents = config.get("n_agents", 3)
+    x_dim = config.get("x_dim", 25)
+    y_dim = config.get("y_dim", 25)
+    max_episode_steps = 4 * (x_dim + y_dim + n_agents)
+
     par_env = FlatlandRewardCostWrapper(
         par_env,
         use_original_reward=use_original_reward,
         conflict_dist_thresh=conflict_dist_thresh,
         agent_dist_thresh=agent_dist_thresh,
+        n_agents=n_agents,
+        max_episode_steps=max_episode_steps,
     )
 
     # PettingZoo → SB3 VecEnv
@@ -541,6 +570,11 @@ class VecCostMonitor(VecMonitor):
                     "original_r": ep_rew - ep_cost,
                     "t": round(time.time() - self.t_start, 6),
                 }
+                # Flatland-specific metrics
+                if "normalized_score" in info:
+                    episode_info["normalized_score"] = info["normalized_score"]
+                if "completion_rate" in info:
+                    episode_info["completion_rate"] = info["completion_rate"]
                 for key in self.info_keywords:
                     episode_info[key] = info[key]
                 info["episode"] = episode_info
