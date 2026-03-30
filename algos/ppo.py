@@ -672,6 +672,21 @@ class PPO_GBRL(OnPolicyAlgorithm):
                     if "c" in self.ep_info_buffer[0]:
                         self.logger.record("rollout/ep_cost_mean",
                             safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
+                    if "max_queued" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_max_queued_mean",
+                            safe_mean([ep_info["max_queued"] for ep_info in self.ep_info_buffer]))
+                    if "max_wait" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_max_wait_mean",
+                            safe_mean([ep_info["max_wait"] for ep_info in self.ep_info_buffer]))
+                    if "cost_queue" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_queue_mean",
+                            safe_mean([ep_info["cost_queue"] for ep_info in self.ep_info_buffer]))
+                    if "cost_wait" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_wait_mean",
+                            safe_mean([ep_info["cost_wait"] for ep_info in self.ep_info_buffer]))
+                    if "cost_saturation" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_saturation_mean",
+                            safe_mean([ep_info["cost_saturation"] for ep_info in self.ep_info_buffer]))
                     if "normalized_score" in self.ep_info_buffer[0]:
                         self.logger.record("rollout/normalized_score",
                             safe_mean([ep_info["normalized_score"] for ep_info in self.ep_info_buffer]))

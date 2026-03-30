@@ -424,6 +424,20 @@ class IPO(PPO):
                     self.logger.record("rollout/ep_cost_mean", self.ep_cost_mean)
                     self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_scalarization_mean", safe_mean([ep_info["s"] for ep_info in self.ep_info_buffer]))
+                    if "max_queued" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_max_queued_mean", safe_mean([ep_info["max_queued"] for ep_info in self.ep_info_buffer]))
+                    if "max_wait" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_max_wait_mean", safe_mean([ep_info["max_wait"] for ep_info in self.ep_info_buffer]))
+                    if "cost_queue" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_queue_mean", safe_mean([ep_info["cost_queue"] for ep_info in self.ep_info_buffer]))
+                    if "cost_wait" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_wait_mean", safe_mean([ep_info["cost_wait"] for ep_info in self.ep_info_buffer]))
+                    if "cost_saturation" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_saturation_mean", safe_mean([ep_info["cost_saturation"] for ep_info in self.ep_info_buffer]))
+                    if "normalized_score" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/normalized_score", safe_mean([ep_info["normalized_score"] for ep_info in self.ep_info_buffer]))
+                    if "completion_rate" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/completion_rate", safe_mean([ep_info["completion_rate"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
