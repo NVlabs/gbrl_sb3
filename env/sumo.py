@@ -25,8 +25,8 @@ Observations: [phase_one_hot, min_green, lane_densities, lane_queues]
   - For shared policy, all intersections must have the SAME obs/action dims.
     SUMO-RL RESCO benchmarks satisfy this for grid networks (grid4x4, arterial4x4).
 Actions: Discrete(n_phases) — select next green phase.
-Rewards: per-agent scalar (diff-waiting-time by default).
-Cost:    native SUMO failure events (emergency stops, teleports) via TraCI.
+Rewards: per-agent scalar — throughput (default) or diff-waiting-time.
+Cost:    fairness + phase-churn (default "conflict"), or legacy queue/wait/saturation.
 Label:   cost-advantage based (computed post-rollout in SPLIT-RL), with
          event-proximal fallback from wrapper.
 """
@@ -48,7 +48,10 @@ import supersuit as ss
 # ──────────────────────────────────────────────────────────────────────────────
 
 COST_FN_REGISTRY: Dict[str, str] = {
-    "combined": "Per-agent: sum of all per-agent costs (queue + wait + saturation)",
+    "conflict": "Per-agent: 1 if fairness OR phase-churn fires (genuinely conflicts with throughput)",
+    "fairness": "Per-agent: 1 if max_wait > tau_abs AND max_wait/(mean_wait+eps) > rho",
+    "phase_churn": "Per-agent: 1 if phase changed this step",
+    "combined": "Per-agent: sum of all legacy costs (queue + wait + saturation)",
     "queue_overflow": "Per-agent: 1 if total queued vehicles > queue_threshold",
     "max_wait": "Per-agent: 1 if max accumulated wait on any lane > wait_threshold",
     "lane_saturation": "Per-agent: 1 if any lane queue ratio > saturation_threshold",
@@ -64,49 +67,60 @@ class SumoRewardCostWrapper(ParallelEnv):
     """
     PettingZoo ParallelEnv wrapper around sumo_rl.parallel_env that:
 
-      reward = original reward (diff-waiting-time or custom)
+      reward = throughput (vehicles on outgoing lanes) or original sumo-rl reward
       info['cost']            = configurable constraint violation cost
-      info['original_reward'] = same as reward (no decomposition needed)
+      info['original_reward'] = original sumo-rl reward (e.g. diff-waiting-time)
       info['safety_label']    = event-proximal fallback label (1 if cost > 0
                                 within last ``label_horizon`` steps).
                                 The preferred label is cost-advantage based,
                                 computed post-rollout in SPLIT-RL.
 
     Cost functions (selected via ``cost_fn``):
+      - "conflict": 1 if fairness OR phase-churn fires (default — genuinely conflicts with throughput)
+      - "fairness": 1 if max_wait > tau_abs AND max_wait/(mean_wait+eps) > rho
+      - "phase_churn": 1 if agent switched phase this step
+      - "combined": legacy sum of queue + wait + saturation (correlated with diff-wait reward)
       - "queue_overflow": per-agent, 1 if queued vehicles > queue_threshold
       - "max_wait": per-agent, 1 if max lane wait > wait_threshold seconds
       - "lane_saturation": per-agent, 1 if any lane queue ratio > saturation_threshold
-      - "emergency": global, from native TraCI failure events (emergency stops + teleports)
+      - "emergency": global, from native TraCI failure events
 
-    The per-agent costs capture what diff-waiting-time reward is willing to sacrifice:
-    the reward optimizes aggregate waiting time reduction, but a policy can improve
-    the aggregate by starving low-volume approaches. The cost constraints catch this.
+    The "conflict" cost + throughput reward creates a genuine trade-off:
+    throughput wants maximum vehicle flow, but fairness penalizes lane starvation
+    and phase-churn penalizes excessive signal switching.
 
     Parameters
     ----------
     env : ParallelEnv
         PettingZoo parallel env from sumo_rl.parallel_env().
+    override_reward : str or None
+        If "throughput", replace sumo-rl reward with outgoing vehicle count.
+        None keeps the original sumo-rl reward (e.g., diff-waiting-time).
     cost_fn : str
-        Cost function to use. One of: "queue_overflow", "max_wait",
-        "lane_saturation", "emergency".
+        Cost function to use. See COST_FN_REGISTRY.
+    fairness_tau : float
+        Absolute floor for fairness cost: max_wait must exceed this (seconds).
+    fairness_rho : float
+        Relative ratio for fairness: max_wait / (mean_wait + eps) must exceed this.
     queue_threshold : int
-        For cost_fn="queue_overflow": max allowed queued vehicles per intersection.
+        For legacy cost_fn="queue_overflow": max allowed queued vehicles.
     wait_threshold : float
-        For cost_fn="max_wait": max allowed accumulated wait (seconds) on any lane.
+        For legacy cost_fn="max_wait": max allowed accumulated wait (seconds).
     saturation_threshold : float
-        For cost_fn="lane_saturation": max allowed lane queue ratio (0-1).
+        For legacy cost_fn="lane_saturation": max allowed lane queue ratio (0-1).
     teleport_weight : float
         For cost_fn="emergency": multiplier for teleport events.
     label_horizon : int
         Number of past steps to look back for the event-proximal fallback label.
-        If any cost > 0 within the last ``label_horizon`` steps,
-        safety_label = 1 for that agent.
     """
 
     def __init__(
         self,
         env: ParallelEnv,
-        cost_fn: str = "combined",
+        override_reward: Optional[str] = None,
+        cost_fn: str = "conflict",
+        fairness_tau: float = 120.0,
+        fairness_rho: float = 3.0,
         queue_threshold: int = 10,
         wait_threshold: float = 200.0,
         saturation_threshold: float = 0.8,
@@ -117,13 +131,20 @@ class SumoRewardCostWrapper(ParallelEnv):
             raise ValueError(
                 f"Unknown cost_fn '{cost_fn}'. Available: {list(COST_FN_REGISTRY.keys())}"
             )
+        if override_reward is not None and override_reward != "throughput":
+            raise ValueError(
+                f"Unknown override_reward '{override_reward}'. Use 'throughput' or None."
+            )
         self._env = env
         self.possible_agents = env.possible_agents
         self.agents = list(env.possible_agents)
         self.metadata = getattr(env, "metadata", {})
         self.render_mode = getattr(env, "render_mode", None)
 
+        self._override_reward = override_reward
         self._cost_fn = cost_fn
+        self._fairness_tau = fairness_tau
+        self._fairness_rho = fairness_rho
         self._queue_threshold = queue_threshold
         self._wait_threshold = wait_threshold
         self._saturation_threshold = saturation_threshold
@@ -175,6 +196,11 @@ class SumoRewardCostWrapper(ParallelEnv):
             a: [] for a in self.possible_agents
         }
 
+        # Per-agent phase tracking for churn cost
+        self._last_green_phase: Dict[str, Optional[int]] = {
+            a: None for a in self.possible_agents
+        }
+
         # Episode accumulators
         self._episode_costs: Dict = {}
         self._episode_original_rewards: Dict = {}
@@ -186,6 +212,8 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._episode_cost_queue: Dict[str, float] = {}
         self._episode_cost_wait: Dict[str, float] = {}
         self._episode_cost_saturation: Dict[str, float] = {}
+        self._episode_cost_fairness: Dict[str, float] = {}
+        self._episode_cost_churn: Dict[str, float] = {}
 
     def observation_space(self, agent):
         return self.observation_spaces[agent]
@@ -288,9 +316,67 @@ class SumoRewardCostWrapper(ParallelEnv):
             return 0.0
         return 1.0 if max(lane_queues) > self._saturation_threshold else 0.0
 
+    def _compute_agent_cost_fairness(self, agent_id: str) -> float:
+        """1 if one lane is being starved relative to others.
+
+        Fires when max_wait > tau_abs AND max_wait / (mean_wait + eps) > rho.
+        The absolute floor prevents spurious triggers when all waits are tiny.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        if not wait_per_lane or len(wait_per_lane) < 2:
+            return 0.0
+        max_w = max(wait_per_lane)
+        mean_w = sum(wait_per_lane) / len(wait_per_lane)
+        if max_w > self._fairness_tau and max_w / (mean_w + 1e-6) > self._fairness_rho:
+            return 1.0
+        return 0.0
+
+    def _compute_agent_cost_phase_churn(self, agent_id: str) -> float:
+        """1 if the agent switched phase this step.
+
+        Uses sumo-rl's TrafficSignal.green_phase compared to last known phase.
+        Every switch costs yellow time = lost throughput capacity, creating
+        real tension with a throughput reward.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        current_phase = ts.green_phase
+        last_phase = self._last_green_phase.get(agent_id)
+        # Update tracked phase
+        self._last_green_phase[agent_id] = current_phase
+        if last_phase is None:
+            return 0.0  # first step, no switch
+        return 1.0 if current_phase != last_phase else 0.0
+
+    def _compute_agent_throughput(self, agent_id: str) -> float:
+        """Vehicle count on outgoing lanes — proxy for throughput.
+
+        Counts vehicles that have cleared through the intersection.
+        This is a pure productivity signal: higher = more cars moved.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        return float(sum(
+            ts.sumo.lane.getLastStepVehicleNumber(lane) for lane in ts.out_lanes
+        ))
+
     def _compute_agent_cost(self, agent_id: str) -> float:
         """Dispatch to the selected cost function."""
-        if self._cost_fn == "combined":
+        if self._cost_fn == "conflict":
+            # Binary OR: 1 if fairness or phase-churn fires
+            c_fair = self._compute_agent_cost_fairness(agent_id)
+            c_churn = self._compute_agent_cost_phase_churn(agent_id)
+            return 1.0 if (c_fair > 0 or c_churn > 0) else 0.0
+        elif self._cost_fn == "fairness":
+            return self._compute_agent_cost_fairness(agent_id)
+        elif self._cost_fn == "phase_churn":
+            return self._compute_agent_cost_phase_churn(agent_id)
+        elif self._cost_fn == "combined":
             return (self._compute_agent_cost_queue_overflow(agent_id) +
                     self._compute_agent_cost_max_wait(agent_id) +
                     self._compute_agent_cost_lane_saturation(agent_id))
@@ -301,7 +387,6 @@ class SumoRewardCostWrapper(ParallelEnv):
         elif self._cost_fn == "lane_saturation":
             return self._compute_agent_cost_lane_saturation(agent_id)
         elif self._cost_fn == "emergency":
-            # Emergency cost is global, computed separately
             return self._compute_emergency_cost()
         return 0.0
 
@@ -369,6 +454,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._accumulated_emergency_stops = 0
         self._accumulated_teleports = 0
         self._failure_history = {a: [] for a in self.possible_agents}
+        self._last_green_phase = {a: None for a in self.possible_agents}
 
         # Patch _sumo_step for emergency cost (only if needed)
         self._patch_sumo_step()
@@ -379,6 +465,8 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._episode_cost_queue = {a: 0.0 for a in self.possible_agents}
         self._episode_cost_wait = {a: 0.0 for a in self.possible_agents}
         self._episode_cost_saturation = {a: 0.0 for a in self.possible_agents}
+        self._episode_cost_fairness = {a: 0.0 for a in self.possible_agents}
+        self._episode_cost_churn = {a: 0.0 for a in self.possible_agents}
         self._episode_queue_violations = {a: 0 for a in self.possible_agents}
         self._episode_wait_violations = {a: 0 for a in self.possible_agents}
         self._episode_max_queued = {a: 0 for a in self.possible_agents}
@@ -406,16 +494,32 @@ class SumoRewardCostWrapper(ParallelEnv):
         new_rewards = {}
         new_infos = {}
         for agent in rewards:
-            reward = float(rewards[agent])
+            original_reward = float(rewards[agent])
             info = dict(infos.get(agent, {}))
 
-            # Always compute all primitive per-agent costs for monitoring
+            # ── Reward: throughput override or original ──
+            if self._override_reward == "throughput":
+                reward = self._compute_agent_throughput(agent)
+            else:
+                reward = original_reward
+
+            # ── Always compute ALL cost primitives for monitoring ──
+            # Legacy costs
             c_queue = self._compute_agent_cost_queue_overflow(agent)
             c_wait = self._compute_agent_cost_max_wait(agent)
             c_sat = self._compute_agent_cost_lane_saturation(agent)
+            # New conflict costs
+            c_fair = self._compute_agent_cost_fairness(agent)
+            c_churn = self._compute_agent_cost_phase_churn(agent)
 
-            # Determine the training cost signal
-            if self._cost_fn == "combined":
+            # ── Determine the training cost signal ──
+            if self._cost_fn == "conflict":
+                cost = 1.0 if (c_fair > 0 or c_churn > 0) else 0.0
+            elif self._cost_fn == "fairness":
+                cost = c_fair
+            elif self._cost_fn == "phase_churn":
+                cost = c_churn
+            elif self._cost_fn == "combined":
                 cost = c_queue + c_wait + c_sat
             elif self._cost_fn == "queue_overflow":
                 cost = c_queue
@@ -438,12 +542,14 @@ class SumoRewardCostWrapper(ParallelEnv):
 
             new_rewards[agent] = reward
             info["cost"] = cost
-            info["original_reward"] = reward
+            info["original_reward"] = original_reward
             info["safety_label"] = fallback_label
-            # Per-agent cost components (always logged for monitoring)
+            # All cost components (always logged for monitoring)
             info["cost_queue"] = c_queue
             info["cost_wait"] = c_wait
             info["cost_saturation"] = c_sat
+            info["cost_fairness"] = c_fair
+            info["cost_churn"] = c_churn
             # Per-agent traffic metrics
             info["queued"] = metrics["queued"]
             info["max_wait"] = metrics["max_wait"]
@@ -454,7 +560,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             # Track per-agent episode stats
             self._episode_costs[agent] = self._episode_costs.get(agent, 0.0) + cost
             self._episode_original_rewards[agent] = (
-                self._episode_original_rewards.get(agent, 0.0) + reward
+                self._episode_original_rewards.get(agent, 0.0) + original_reward
             )
             # Per-component episode cost totals
             self._episode_cost_queue[agent] = (
@@ -465,6 +571,12 @@ class SumoRewardCostWrapper(ParallelEnv):
             )
             self._episode_cost_saturation[agent] = (
                 self._episode_cost_saturation.get(agent, 0.0) + c_sat
+            )
+            self._episode_cost_fairness[agent] = (
+                self._episode_cost_fairness.get(agent, 0.0) + c_fair
+            )
+            self._episode_cost_churn[agent] = (
+                self._episode_cost_churn.get(agent, 0.0) + c_churn
             )
             if metrics["queued"] > self._queue_threshold:
                 self._episode_queue_violations[agent] = (
@@ -488,6 +600,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                 info["episode_cost_queue"] = self._episode_cost_queue.get(agent, 0.0)
                 info["episode_cost_wait"] = self._episode_cost_wait.get(agent, 0.0)
                 info["episode_cost_saturation"] = self._episode_cost_saturation.get(agent, 0.0)
+                info["episode_cost_fairness"] = self._episode_cost_fairness.get(agent, 0.0)
+                info["episode_cost_churn"] = self._episode_cost_churn.get(agent, 0.0)
                 info["episode_queue_violations"] = self._episode_queue_violations.get(agent, 0)
                 info["episode_wait_violations"] = self._episode_wait_violations.get(agent, 0)
                 info["episode_max_queued"] = self._episode_max_queued.get(agent, 0)
@@ -680,7 +794,10 @@ def make_sumo_vec_env(
     env_name: str = "sumo-grid4x4-v0",
     n_envs: int = 1,
     seed: Optional[int] = None,
-    cost_fn: str = "combined",
+    override_reward: Optional[str] = "throughput",
+    cost_fn: str = "conflict",
+    fairness_tau: float = 120.0,
+    fairness_rho: float = 3.0,
     queue_threshold: int = 10,
     wait_threshold: float = 200.0,
     saturation_threshold: float = 0.8,
@@ -706,8 +823,15 @@ def make_sumo_vec_env(
         NOTE: with LIBSUMO_AS_TRACI=1, only n_envs=1 is supported.
     seed : int or None
         Random seed for SUMO.
+    override_reward : str or None
+        If "throughput", replace sumo-rl reward with outgoing vehicle count.
+        None keeps the original sumo-rl reward (e.g., diff-waiting-time).
     cost_fn : str
-        Cost function: "queue_overflow", "max_wait", "lane_saturation", "emergency".
+        Cost function. See COST_FN_REGISTRY. Default "conflict" (fairness OR churn).
+    fairness_tau : float
+        Absolute floor for fairness cost (seconds). Default 120.
+    fairness_rho : float
+        Relative ratio threshold for fairness. Default 3.0.
     queue_threshold : int
         For cost_fn="queue_overflow": max allowed queued vehicles per intersection.
     wait_threshold : float
@@ -758,7 +882,10 @@ def make_sumo_vec_env(
     # Reward/cost wrapper (configurable constraint-based cost)
     par_env = SumoRewardCostWrapper(
         par_env,
+        override_reward=override_reward,
         cost_fn=cost_fn,
+        fairness_tau=fairness_tau,
+        fairness_rho=fairness_rho,
         queue_threshold=queue_threshold,
         wait_threshold=wait_threshold,
         saturation_threshold=saturation_threshold,
@@ -796,6 +923,8 @@ class VecCostMonitor(VecMonitor):
         self.episode_cost_queue = np.zeros(self.num_envs, dtype=np.float64)
         self.episode_cost_wait = np.zeros(self.num_envs, dtype=np.float64)
         self.episode_cost_saturation = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_cost_fairness = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_cost_churn = np.zeros(self.num_envs, dtype=np.float64)
         self.episode_queue_violations = np.zeros(self.num_envs, dtype=np.int32)
         self.episode_wait_violations = np.zeros(self.num_envs, dtype=np.int32)
         self.episode_max_queued = np.zeros(self.num_envs, dtype=np.int32)
@@ -807,6 +936,8 @@ class VecCostMonitor(VecMonitor):
         self.episode_cost_queue[:] = 0.0
         self.episode_cost_wait[:] = 0.0
         self.episode_cost_saturation[:] = 0.0
+        self.episode_cost_fairness[:] = 0.0
+        self.episode_cost_churn[:] = 0.0
         self.episode_queue_violations[:] = 0
         self.episode_wait_violations[:] = 0
         self.episode_max_queued[:] = 0
@@ -822,6 +953,8 @@ class VecCostMonitor(VecMonitor):
             self.episode_cost_queue[i] += infos[i].get("cost_queue", 0.0)
             self.episode_cost_wait[i] += infos[i].get("cost_wait", 0.0)
             self.episode_cost_saturation[i] += infos[i].get("cost_saturation", 0.0)
+            self.episode_cost_fairness[i] += infos[i].get("cost_fairness", 0.0)
+            self.episode_cost_churn[i] += infos[i].get("cost_churn", 0.0)
             # Track per-step metrics
             queued = infos[i].get("queued", 0)
             max_wait = infos[i].get("max_wait", 0.0)
@@ -843,6 +976,8 @@ class VecCostMonitor(VecMonitor):
                     "cost_queue": float(self.episode_cost_queue[i]),
                     "cost_wait": float(self.episode_cost_wait[i]),
                     "cost_saturation": float(self.episode_cost_saturation[i]),
+                    "cost_fairness": float(self.episode_cost_fairness[i]),
+                    "cost_churn": float(self.episode_cost_churn[i]),
                     "max_queued": int(self.episode_max_queued[i]),
                     "max_wait": float(self.episode_max_wait[i]),
                     "t": round(time.time() - self.t_start, 6),
@@ -857,6 +992,8 @@ class VecCostMonitor(VecMonitor):
                 self.episode_cost_queue[i] = 0.0
                 self.episode_cost_wait[i] = 0.0
                 self.episode_cost_saturation[i] = 0.0
+                self.episode_cost_fairness[i] = 0.0
+                self.episode_cost_churn[i] = 0.0
                 self.episode_queue_violations[i] = 0
                 self.episode_wait_violations[i] = 0
                 self.episode_max_queued[i] = 0

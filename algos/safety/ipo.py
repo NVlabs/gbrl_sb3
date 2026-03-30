@@ -434,6 +434,10 @@ class IPO(PPO):
                         self.logger.record("rollout/ep_cost_wait_mean", safe_mean([ep_info["cost_wait"] for ep_info in self.ep_info_buffer]))
                     if "cost_saturation" in self.ep_info_buffer[0]:
                         self.logger.record("rollout/ep_cost_saturation_mean", safe_mean([ep_info["cost_saturation"] for ep_info in self.ep_info_buffer]))
+                    if "cost_fairness" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_fairness_mean", safe_mean([ep_info["cost_fairness"] for ep_info in self.ep_info_buffer]))
+                    if "cost_churn" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_cost_churn_mean", safe_mean([ep_info["cost_churn"] for ep_info in self.ep_info_buffer]))
                     if "normalized_score" in self.ep_info_buffer[0]:
                         self.logger.record("rollout/normalized_score", safe_mean([ep_info["normalized_score"] for ep_info in self.ep_info_buffer]))
                     if "completion_rate" in self.ep_info_buffer[0]:
