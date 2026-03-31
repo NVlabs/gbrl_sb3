@@ -126,6 +126,87 @@ def compute_danger_label(
     return 0
 
 
+def compute_congestion_cost(
+    obs: np.ndarray,
+    n_nodes: int,
+    action: int,
+    conflict_dist_thresh: float = 0.5,
+    agent_dist_thresh: float = 0.5,
+) -> int:
+    """
+    Binary congestion cost: 1 if the agent moved into a contested direction.
+
+    Returns 1 (congestion) if ALL of:
+      - agent took a movement action (MOVE_LEFT=1, MOVE_FORWARD=2, MOVE_RIGHT=3)
+      - the chosen direction's branch in the tree observation shows:
+          * another agent within agent_dist_thresh, OR
+          * a potential conflict within conflict_dist_thresh, OR
+          * opposite-direction agents present
+
+    Creates a structural conflict with progress reward:
+      - Moving through busy junctions → reward ↑ (progress) + cost ↑ (congestion)
+      - Stopping/yielding → reward ↓ (step penalty) + cost 0 (no congestion)
+      - Agent cannot maximize progress without incurring congestion cost.
+
+    Observation features are localized by direction: the tree has 3 main
+    branches (left, forward, right), each with its own conflict/agent features.
+    A tree-based cost head can route on the CHOSEN branch's features; an NN
+    averages all branches through shared weights.
+
+    Parameters
+    ----------
+    obs : np.ndarray
+        Flattened normalized tree observation.
+    n_nodes : int
+        Number of nodes in the tree.
+    action : int
+        Action taken: 0=DO_NOTHING, 1=MOVE_LEFT, 2=MOVE_FORWARD, 3=MOVE_RIGHT, 4=STOP.
+    conflict_dist_thresh : float
+        Distance threshold for potential conflict detection.
+    agent_dist_thresh : float
+        Distance threshold for other-agent proximity.
+    """
+    # Only fire when the agent actively moves
+    # DO_NOTHING=0, STOP_MOVING=4 → no congestion
+    if action not in (1, 2, 3):
+        return 0
+
+    # Compute tree branching structure
+    # Tree with branching factor 3 and max_depth d: n_nodes = (3^(d+1)-1)/2
+    # Each branch subtree from root has (n_nodes - 1) / 3 nodes
+    branch_size = (n_nodes - 1) // 3
+
+    # Branch root indices (DFS pre-order): left=1, forward=1+branch_size, right=1+2*branch_size
+    action_to_branch = {
+        1: 1,                       # MOVE_LEFT → left branch
+        2: 1 + branch_size,         # MOVE_FORWARD → forward branch
+        3: 1 + 2 * branch_size,     # MOVE_RIGHT → right branch
+    }
+    branch_root = action_to_branch[action]
+
+    # Extract features for the chosen branch subtree
+    data = obs[: n_nodes * 6].reshape(n_nodes, 6)
+    agent_data = obs[n_nodes * 7: n_nodes * 12].reshape(n_nodes, 5)
+
+    # Check just the branch root node (immediate lookahead)
+    node = branch_root
+    if node >= n_nodes:
+        return 0
+
+    dist_other = data[node, _DATA_COL_OTHER_AGENT]
+    dist_conflict = data[node, _DATA_COL_POTENTIAL_CONFLICT]
+    n_opposite = agent_data[node, _AGENT_COL_OPPOSITE_DIR]
+
+    if dist_other > 0 and dist_other <= agent_dist_thresh:
+        return 1
+    if dist_conflict > 0 and dist_conflict <= conflict_dist_thresh:
+        return 1
+    if n_opposite > 0:
+        return 1
+
+    return 0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PettingZoo wrapper: reward/cost split + label
 # ──────────────────────────────────────────────────────────────────────────────
@@ -136,7 +217,8 @@ class FlatlandRewardCostWrapper(ParallelEnv):
     BaseDefaultRewards dict-valued rewards and converts them to:
 
       reward = sum of non-collision terms  (scalar float)
-      info['cost']            = collision penalty >= 0
+      info['cost']            = configurable cost signal (default: danger label)
+      info['cost_collision']  = collision penalty >= 0 (always tracked)
       info['original_reward'] = full scalar sum of ALL terms
       info['safety_label']    = binary danger label from tree obs
       info['reward_terms']    = raw dict of all penalty terms
@@ -147,10 +229,24 @@ class FlatlandRewardCostWrapper(ParallelEnv):
     Tracks per-episode cumulative cost, original reward, and reward
     terms, emitted in info at episode end.
 
+    Cost functions (selected via ``cost_fn``):
+      - "congestion" (default): 1 if the agent moved into a contested direction
+        (opposite-direction agents or potential conflict on chosen branch).
+        Creates structural conflict: moving through busy areas = progress +
+        blocking/congestion. The tree cost head can route on the CHOSEN branch's
+        features while the reward head routes on other features.
+      - "danger": 1 if the agent's observation indicates nearby
+        conflict or other agents. Positively correlated with productive
+        navigation — NOT a structural conflict.
+      - "collision": legacy cost = collision penalty magnitude. NOT recommended
+        for SPLIT-RL: negatively correlated with non-collision reward (r ~ -0.38).
+
     Parameters
     ----------
     env : ParallelEnv
         PettingZoo parallel env from PettingzooFlatland.
+    cost_fn : str
+        Cost function: "danger" (observation-based, default) or "collision" (legacy).
     use_original_reward : bool
         If True, SB3 optimises the full original reward (all terms
         including collision).  If False (default), SB3 optimises only
@@ -166,18 +262,24 @@ class FlatlandRewardCostWrapper(ParallelEnv):
     def __init__(
         self,
         env: ParallelEnv,
+        cost_fn: str = "congestion",
         use_original_reward: bool = False,
         conflict_dist_thresh: float = 0.5,
         agent_dist_thresh: float = 0.5,
         n_agents: int = 1,
         max_episode_steps: int = 200,
     ):
+        if cost_fn not in ("danger", "collision", "congestion"):
+            raise ValueError(
+                f"Unknown cost_fn '{cost_fn}'. Use 'congestion', 'danger', or 'collision'."
+            )
         self._env = env
         self.possible_agents = env.possible_agents
         self.agents = env.agents
         self.metadata = env.metadata
         self.render_mode = getattr(env, "render_mode", None)
 
+        self._cost_fn = cost_fn
         self._use_original_reward = use_original_reward
         self._conflict_dist_thresh = conflict_dist_thresh
         self._agent_dist_thresh = agent_dist_thresh
@@ -254,14 +356,21 @@ class FlatlandRewardCostWrapper(ParallelEnv):
     def step(self, actions):
         # Compute labels from PRE-STEP observations (current state)
         pre_step_labels = {}
+        pre_step_congestion = {}
         for agent in actions:
             if agent in self._prev_obs:
                 pre_step_labels[agent] = compute_danger_label(
                     self._prev_obs[agent], self._n_nodes,
                     self._conflict_dist_thresh, self._agent_dist_thresh,
                 )
+                pre_step_congestion[agent] = compute_congestion_cost(
+                    self._prev_obs[agent], self._n_nodes,
+                    actions[agent],
+                    self._conflict_dist_thresh, self._agent_dist_thresh,
+                )
             else:
                 pre_step_labels[agent] = 0
+                pre_step_congestion[agent] = 0
 
         obs, rewards, terminations, truncations, infos = self._env.step(actions)
         self.agents = self._env.agents
@@ -316,12 +425,23 @@ class FlatlandRewardCostWrapper(ParallelEnv):
                 else:
                     scalar_rewards[agent] = non_collision_reward
 
-                info["cost"] = collision_cost
+                # Cost signal depends on cost_fn
+                danger_label = float(pre_step_labels.get(agent, 0))
+                congestion_label = float(pre_step_congestion.get(agent, 0))
+                if self._cost_fn == "congestion":
+                    info["cost"] = congestion_label
+                elif self._cost_fn == "danger":
+                    info["cost"] = danger_label
+                else:  # "collision"
+                    info["cost"] = collision_cost
+                info["cost_collision"] = collision_cost
+                info["cost_danger"] = danger_label
+                info["cost_congestion"] = congestion_label
                 info["original_reward"] = original_reward
                 info["reward_terms"] = dict(raw)
 
-                # Accumulate episode stats
-                self._episode_costs[agent] = self._episode_costs.get(agent, 0.0) + collision_cost
+                # Accumulate episode stats (using the selected cost)
+                self._episode_costs[agent] = self._episode_costs.get(agent, 0.0) + info["cost"]
                 self._episode_original_rewards[agent] = (
                     self._episode_original_rewards.get(agent, 0.0) + original_reward
                 )
@@ -333,6 +453,9 @@ class FlatlandRewardCostWrapper(ParallelEnv):
             else:
                 scalar_rewards[agent] = float(raw)
                 info["cost"] = 0.0
+                info["cost_collision"] = 0.0
+                info["cost_danger"] = 0.0
+                info["cost_congestion"] = 0.0
                 info["original_reward"] = float(raw)
 
             info["safety_label"] = pre_step_labels.get(agent, 0)
@@ -450,6 +573,7 @@ def make_flatland_vec_env(
     seed: Optional[int] = None,
     decompose_rewards: bool = True,
     collision_factor: float = 1.0,
+    cost_fn: str = "congestion",
     use_original_reward: bool = False,
     conflict_dist_thresh: float = 0.5,
     agent_dist_thresh: float = 0.5,
@@ -509,6 +633,7 @@ def make_flatland_vec_env(
 
     par_env = FlatlandRewardCostWrapper(
         par_env,
+        cost_fn=cost_fn,
         use_original_reward=use_original_reward,
         conflict_dist_thresh=conflict_dist_thresh,
         agent_dist_thresh=agent_dist_thresh,
@@ -540,15 +665,20 @@ class VecCostMonitor(VecMonitor):
     Accumulates ``info["cost"]`` each step and stores the total in
     ``episode_info["c"]`` so that ``split_rl.py`` can log
     ``rollout/ep_cost_mean`` in safety mode.
+    Also tracks cost_collision and cost_danger separately for monitoring.
     """
 
     def __init__(self, venv, filename=None, info_keywords=()):
         super().__init__(venv, filename=filename, info_keywords=info_keywords)
         self.episode_costs = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_cost_collision = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_cost_danger = np.zeros(self.num_envs, dtype=np.float64)
 
     def reset(self, **kwargs):
         obs = super().reset(**kwargs)
         self.episode_costs[:] = 0.0
+        self.episode_cost_collision[:] = 0.0
+        self.episode_cost_danger[:] = 0.0
         return obs
 
     def step_wait(self):
@@ -557,6 +687,8 @@ class VecCostMonitor(VecMonitor):
         self.episode_lengths += 1
         for i in range(self.num_envs):
             self.episode_costs[i] += infos[i].get("cost", 0.0)
+            self.episode_cost_collision[i] += infos[i].get("cost_collision", 0.0)
+            self.episode_cost_danger[i] += infos[i].get("cost_danger", 0.0)
         new_infos = list(infos[:])
         for i in range(len(dones)):
             if dones[i]:
@@ -567,6 +699,8 @@ class VecCostMonitor(VecMonitor):
                     "r": ep_rew,
                     "l": self.episode_lengths[i],
                     "c": ep_cost,
+                    "cost_collision": float(self.episode_cost_collision[i]),
+                    "cost_danger": float(self.episode_cost_danger[i]),
                     "original_r": ep_rew - ep_cost,
                     "t": round(time.time() - self.t_start, 6),
                 }
@@ -582,6 +716,8 @@ class VecCostMonitor(VecMonitor):
                 self.episode_returns[i] = 0
                 self.episode_lengths[i] = 0
                 self.episode_costs[i] = 0.0
+                self.episode_cost_collision[i] = 0.0
+                self.episode_cost_danger[i] = 0.0
                 if self.results_writer:
                     self.results_writer.write_row(episode_info)
                 new_infos[i] = info

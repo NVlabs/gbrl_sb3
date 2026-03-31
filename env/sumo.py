@@ -25,8 +25,8 @@ Observations: [phase_one_hot, min_green, lane_densities, lane_queues]
   - For shared policy, all intersections must have the SAME obs/action dims.
     SUMO-RL RESCO benchmarks satisfy this for grid networks (grid4x4, arterial4x4).
 Actions: Discrete(n_phases) — select next green phase.
-Rewards: per-agent scalar — throughput (default) or diff-waiting-time.
-Cost:    fairness + phase-churn (default "conflict"), or legacy queue/wait/saturation.
+Rewards: per-agent scalar — negative pressure (default) or diff-waiting-time.
+Cost:    fairness (default), or legacy queue/wait/saturation/conflict.
 Label:   cost-advantage based (computed post-rollout in SPLIT-RL), with
          event-proximal fallback from wrapper.
 """
@@ -48,7 +48,10 @@ import supersuit as ss
 # ──────────────────────────────────────────────────────────────────────────────
 
 COST_FN_REGISTRY: Dict[str, str] = {
-    "conflict": "Per-agent: 1 if fairness OR phase-churn fires (genuinely conflicts with throughput)",
+    "service_gap": "Per-agent: 1 when any side-street lane has demand but hasn't been served for > tau_service steps",
+    "directional": "Per-agent: max(0, side-street waiting increase) — service deficit constraint",
+    "starvation": "Per-agent: 1 if max halting vehicles on non-priority lanes > starvation_threshold (CC-like conflict with directional reward)",
+    "conflict": "Per-agent: 1 if fairness OR phase-churn fires",
     "fairness": "Per-agent: 1 if max_wait > tau_abs AND max_wait/(mean_wait+eps) > rho",
     "phase_churn": "Per-agent: 1 if phase changed this step",
     "combined": "Per-agent: sum of all legacy costs (queue + wait + saturation)",
@@ -85,9 +88,11 @@ class SumoRewardCostWrapper(ParallelEnv):
       - "lane_saturation": per-agent, 1 if any lane queue ratio > saturation_threshold
       - "emergency": global, from native TraCI failure events
 
-    The "conflict" cost + throughput reward creates a genuine trade-off:
-    throughput wants maximum vehicle flow, but fairness penalizes lane starvation
-    and phase-churn penalizes excessive signal switching.
+    The "fairness" cost + throughput reward creates a genuine trade-off:
+    throughput wants maximum vehicle flow (greedy phase holding), but fairness
+    penalizes lane starvation when one lane's max wait dwarfs the mean.
+    NOTE: "conflict" (fairness OR churn) is NOT recommended — churn is
+    negatively correlated with throughput, masking the fairness signal.
 
     Parameters
     ----------
@@ -119,6 +124,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         env: ParallelEnv,
         override_reward: Optional[str] = None,
         cost_fn: str = "conflict",
+        starvation_threshold: int = 3,
         fairness_tau: float = 120.0,
         fairness_rho: float = 3.0,
         queue_threshold: int = 10,
@@ -126,14 +132,18 @@ class SumoRewardCostWrapper(ParallelEnv):
         saturation_threshold: float = 0.8,
         teleport_weight: float = 1.0,
         label_horizon: int = 3,
+        use_categorical_phase: bool = False,
+        mainline_direction: str = "auto",
+        tau_service: int = 6,
+        side_queue_cap: float = 0.7,
     ):
         if cost_fn not in COST_FN_REGISTRY:
             raise ValueError(
                 f"Unknown cost_fn '{cost_fn}'. Available: {list(COST_FN_REGISTRY.keys())}"
             )
-        if override_reward is not None and override_reward != "throughput":
+        if override_reward is not None and override_reward not in ("throughput", "directional", "ns_wait", "arterial", "mainline"):
             raise ValueError(
-                f"Unknown override_reward '{override_reward}'. Use 'throughput' or None."
+                f"Unknown override_reward '{override_reward}'. Use 'mainline', 'arterial', 'throughput', 'directional', 'ns_wait', or None."
             )
         self._env = env
         self.possible_agents = env.possible_agents
@@ -149,7 +159,37 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._wait_threshold = wait_threshold
         self._saturation_threshold = saturation_threshold
         self._teleport_weight = teleport_weight
+        self._starvation_threshold = starvation_threshold
         self._label_horizon = label_horizon
+        self._use_categorical_phase = use_categorical_phase
+        self._mainline_direction = mainline_direction
+        self._tau_service = tau_service
+        self._side_queue_cap = side_queue_cap
+
+        # Number of green phases per agent (for obs transformation)
+        self._n_green_phases: Optional[int] = None
+
+        # Per-agent lane split for directional reward/starvation cost
+        # Populated in reset() once TraCI is available
+        self._priority_lanes: Dict[str, List[str]] = {}
+        self._non_priority_lanes: Dict[str, List[str]] = {}
+
+        # Per-agent mainline/side-street lane indices (into ts.lanes)
+        # Populated in reset() via _classify_mainline_side()
+        self._mainline_lane_indices: Dict[str, List[int]] = {}
+        self._side_lane_indices: Dict[str, List[int]] = {}
+        # Previous-step accumulated waiting for diff computation
+        self._prev_mainline_wait: Dict[str, float] = {}
+        self._prev_side_wait: Dict[str, float] = {}
+        # Per-agent consecutive steps without side-street service
+        self._side_consecutive_unserved: Dict[str, int] = {}
+
+        # Phase → served lane indices mapping (populated in reset)
+        # phase_to_lanes[agent_id][green_phase_idx] = [lane_idx, ...]
+        self._phase_to_lanes: Dict[str, Dict[int, List[int]]] = {}
+        # Per-agent, per-side-lane steps since that lane was last served
+        # steps_since_served[agent_id][lane_idx] = int
+        self._steps_since_served: Dict[str, Dict[int, int]] = {}
 
         # Cache original observation/action spaces
         raw_obs_spaces = {
@@ -173,6 +213,11 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._max_obs_dim = max(obs_dims)
         self._needs_obs_padding = not all(d == self._max_obs_dim for d in obs_dims)
         self._agent_obs_dims = {a: raw_obs_spaces[a].shape[0] for a in self.possible_agents}
+
+        if self._use_categorical_phase:
+            # Detect n_phases from action space for later VecEnv-level transformation
+            sample_agent = self.possible_agents[0]
+            self._n_green_phases = self.action_spaces[sample_agent].n
 
         if self._needs_obs_padding:
             padded_space = gym.spaces.Box(
@@ -204,16 +249,8 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Episode accumulators
         self._episode_costs: Dict = {}
         self._episode_original_rewards: Dict = {}
-        # Per-agent metric accumulators for logging
-        self._episode_queue_violations: Dict[str, int] = {}
-        self._episode_wait_violations: Dict[str, int] = {}
         self._episode_max_queued: Dict[str, int] = {}
         self._episode_max_wait: Dict[str, float] = {}
-        self._episode_cost_queue: Dict[str, float] = {}
-        self._episode_cost_wait: Dict[str, float] = {}
-        self._episode_cost_saturation: Dict[str, float] = {}
-        self._episode_cost_fairness: Dict[str, float] = {}
-        self._episode_cost_churn: Dict[str, float] = {}
 
     def observation_space(self, agent):
         return self.observation_spaces[agent]
@@ -221,8 +258,13 @@ class SumoRewardCostWrapper(ParallelEnv):
     def action_space(self, agent):
         return self.action_spaces[agent]
 
-    def _pad_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Zero-pad observations to max_obs_dim for non-uniform networks."""
+    def _transform_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Zero-pad observations for non-uniform networks.
+
+        Categorical phase transformation is handled at the VecEnv level
+        (VecCategoricalPhase wrapper) because SuperSuit cannot concatenate
+        object arrays.
+        """
         if not self._needs_obs_padding:
             return obs
         padded = {}
@@ -285,6 +327,212 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         sumo_env._original_sumo_step = original_step
         sumo_env._sumo_step = types.MethodType(patched_sumo_step, sumo_env)
+
+    # ── Lane direction classification ────────────────────────────────────
+
+    def _classify_lanes_by_direction(self):
+        """Classify each agent's incoming lanes as NS or EW using geometry.
+
+        Uses TraCI junction positions to determine whether each incoming
+        lane comes from a North/South direction or East/West direction.
+        Populates self._ns_lane_indices and self._ew_lane_indices with
+        indices into ts.lanes (the incoming lane list).
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        self._ns_lane_indices.clear()
+        self._ew_lane_indices.clear()
+        self._prev_ns_wait.clear()
+        self._prev_ew_wait.clear()
+
+        for agent_id in self.possible_agents:
+            ts = self._get_traffic_signal(agent_id)
+            if ts is None:
+                continue
+
+            agent_pos = sumo.junction.getPosition(agent_id)
+            ns_idx = []
+            ew_idx = []
+
+            for i, lane in enumerate(ts.lanes):
+                edge = '_'.join(lane.split('_')[:-1])
+                src_node = sumo.edge.getFromJunction(edge)
+                src_pos = sumo.junction.getPosition(src_node)
+
+                dx = src_pos[0] - agent_pos[0]
+                dy = src_pos[1] - agent_pos[1]
+
+                if abs(dy) >= abs(dx):
+                    ns_idx.append(i)  # North or South
+                else:
+                    ew_idx.append(i)  # East or West
+
+            self._ns_lane_indices[agent_id] = ns_idx
+            self._ew_lane_indices[agent_id] = ew_idx
+            self._prev_ns_wait[agent_id] = 0.0
+            self._prev_ew_wait[agent_id] = 0.0
+
+    def _classify_mainline_side(self):
+        """Classify lanes as mainline vs side-street by traffic volume proxy.
+
+        For asymmetric networks (arterial4x4): the direction with more
+        incoming lanes is the mainline (higher capacity = higher demand).
+        For symmetric networks (grid4x4): picks EW as mainline arbitrarily
+        (both directions have equal lane counts, so the split is symmetric).
+
+        Also builds the phase→served-lanes mapping needed for service-gap
+        tracking, and initialises per-side-lane steps_since_served counters.
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        self._mainline_lane_indices.clear()
+        self._side_lane_indices.clear()
+        self._prev_mainline_wait.clear()
+        self._prev_side_wait.clear()
+        self._phase_to_lanes.clear()
+        self._steps_since_served.clear()
+        self._side_consecutive_unserved.clear()
+
+        for agent_id in self.possible_agents:
+            ts = self._get_traffic_signal(agent_id)
+            if ts is None:
+                continue
+
+            agent_pos = sumo.junction.getPosition(agent_id)
+
+            # Classify each lane as NS or EW
+            ns_idx = []
+            ew_idx = []
+            for i, lane in enumerate(ts.lanes):
+                edge = '_'.join(lane.split('_')[:-1])
+                src_node = sumo.edge.getFromJunction(edge)
+                src_pos = sumo.junction.getPosition(src_node)
+                dx = src_pos[0] - agent_pos[0]
+                dy = src_pos[1] - agent_pos[1]
+                if abs(dy) >= abs(dx):
+                    ns_idx.append(i)
+                else:
+                    ew_idx.append(i)
+
+            # Mainline = direction with more lanes (or EW if tied)
+            if len(ew_idx) >= len(ns_idx):
+                self._mainline_lane_indices[agent_id] = ew_idx
+                self._side_lane_indices[agent_id] = ns_idx
+            else:
+                self._mainline_lane_indices[agent_id] = ns_idx
+                self._side_lane_indices[agent_id] = ew_idx
+
+            self._prev_mainline_wait[agent_id] = 0.0
+            self._prev_side_wait[agent_id] = 0.0
+            self._side_consecutive_unserved[agent_id] = 0
+
+            # Build phase → served lane indices mapping
+            connections = sumo.trafficlight.getControlledLinks(agent_id)
+            logic = sumo.trafficlight.getAllProgramLogics(agent_id)[0]
+            phase_map = {}
+            green_idx = 0
+            for phase in logic.phases:
+                if 'G' not in phase.state and 'g' not in phase.state:
+                    continue
+                served = set()
+                for ci, c in enumerate(phase.state):
+                    if c in ('G', 'g') and ci < len(connections):
+                        for (in_lane, _, _) in connections[ci]:
+                            if in_lane in ts.lanes:
+                                served.add(ts.lanes.index(in_lane))
+                phase_map[green_idx] = sorted(served)
+                green_idx += 1
+            self._phase_to_lanes[agent_id] = phase_map
+
+            # Init steps_since_served for each side-street lane
+            side_idx = self._side_lane_indices[agent_id]
+            self._steps_since_served[agent_id] = {li: 0 for li in side_idx}
+
+    def _update_service_tracking(self, agent_id: str):
+        """Update steps_since_served counters based on current green phase.
+
+        Call AFTER each env.step(). Checks which lanes the current green
+        phase serves, resets their counter to 0, increments all others.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return
+
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        counters = self._steps_since_served.get(agent_id, {})
+        side_idx = self._side_lane_indices.get(agent_id, [])
+
+        any_side_served = False
+        for li in side_idx:
+            if li in served_lanes:
+                counters[li] = 0
+                any_side_served = True
+            else:
+                counters[li] = counters.get(li, 0) + 1
+
+        # Track consecutive steps with NO side-street service at all
+        if any_side_served:
+            self._side_consecutive_unserved[agent_id] = 0
+        else:
+            self._side_consecutive_unserved[agent_id] = \
+                self._side_consecutive_unserved.get(agent_id, 0) + 1
+
+    def _compute_mainline_reward(self, agent_id: str) -> float:
+        """Diff-waiting-time on mainline incoming lanes only.
+
+        r_t = (W_main(t-1) - W_main(t)) / 100
+
+        Positive when mainline waiting decreases (mainline served).
+        Negative when mainline waiting increases (mainline starved).
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        ml_idx = self._mainline_lane_indices.get(agent_id, [])
+        if not ml_idx:
+            return 0.0
+        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        ml_wait = sum(wait_per_lane[i] for i in ml_idx) / 100.0
+        prev = self._prev_mainline_wait.get(agent_id, 0.0)
+        self._prev_mainline_wait[agent_id] = ml_wait
+        return -(ml_wait - prev)
+
+    def _compute_service_gap_cost(self, agent_id: str) -> float:
+        """Binary service-gap cost: 1 when side-street guarantee is violated.
+
+        c_t = 1[ max_{l in side} steps_since_served_l > tau  AND  q_l > 0 ]
+
+        Fires ONLY when a side-street lane has actual demand (queue > 0)
+        AND hasn't been given green for > tau_service consecutive steps.
+        This prevents false triggers on empty side-streets.
+
+        The conflict with mainline reward is structural:
+          - Holding mainline green → mainline reward ↑
+          - But side-street steps_since_served grows → cost fires
+          - Must periodically serve side-streets → mainline reward ↓
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+
+        side_idx = self._side_lane_indices.get(agent_id, [])
+        if not side_idx:
+            return 0.0
+
+        counters = self._steps_since_served.get(agent_id, {})
+        lane_queues = ts.get_lanes_queue()
+
+        for li in side_idx:
+            steps_unserved = counters.get(li, 0)
+            has_demand = lane_queues[li] > 0 if li < len(lane_queues) else False
+            if steps_unserved > self._tau_service and has_demand:
+                return 1.0
+        return 0.0
 
     # ── Per-agent cost functions ──────────────────────────────────────────
 
@@ -353,21 +601,113 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if current_phase != last_phase else 0.0
 
     def _compute_agent_throughput(self, agent_id: str) -> float:
-        """Vehicle count on outgoing lanes — proxy for throughput.
+        """Negative pressure as throughput proxy.
 
-        Counts vehicles that have cleared through the intersection.
-        This is a pure productivity signal: higher = more cars moved.
+        pressure = #vehicles_incoming - #vehicles_outgoing.
+        Lower pressure (more negative) = vehicles flowing through = good.
+        We return -pressure so that HIGHER = BETTER (standard reward direction).
+
+        Unlike the raw out-lane vehicle count (getLastStepVehicleNumber),
+        pressure is a *differential* quantity: it measures the NET flow
+        through the intersection, not cumulative lane occupancy.  This
+        avoids the pathological case where congested outgoing lanes
+        produce artificially high "throughput" rewards.
         """
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0.0
-        return float(sum(
-            ts.sumo.lane.getLastStepVehicleNumber(lane) for lane in ts.out_lanes
-        ))
+        return float(-ts.get_pressure())
+
+    def _compute_agent_directional_reward(self, agent_id: str) -> float:
+        """Number of moving vehicles on priority lanes only.
+
+        Creates a CC-like structural conflict with starvation cost:
+        - Hold green for priority direction -> vehicles flow -> reward UP
+          but non-priority lanes starve -> cost UP
+        - Give green to non-priority -> reward DOWN but cost DOWN
+        - Agent CANNOT optimize both simultaneously.
+
+        moving = total_vehicles - halting_vehicles on priority lanes.
+        Always >= 0.  Higher = more throughput on the priority direction.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        priority = self._priority_lanes.get(agent_id, [])
+        if not priority:
+            return 0.0
+        moving = sum(
+            ts.sumo.lane.getLastStepVehicleNumber(l)
+            - ts.sumo.lane.getLastStepHaltingNumber(l)
+            for l in priority
+        )
+        return float(moving)
+
+    def _compute_agent_cost_starvation(self, agent_id: str) -> float:
+        """1 if max halting vehicles on any non-priority lane > threshold.
+
+        CC-latency analogue: non-priority lanes accumulate stopped vehicles
+        when the agent holds green for its priority direction.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        non_priority = self._non_priority_lanes.get(agent_id, [])
+        if not non_priority:
+            return 0.0
+        halting = [ts.sumo.lane.getLastStepHaltingNumber(l) for l in non_priority]
+        return 1.0 if max(halting) > self._starvation_threshold else 0.0
+
+    def _compute_directional_ns_reward(self, agent_id: str) -> float:
+        """Diff-waiting-time on mainline incoming lanes.
+
+        Returns -(mainline_wait_now - mainline_wait_prev), so positive
+        when mainline waiting decreases (= mainline is being served).
+        Named 'ns_wait' / 'arterial' in override_reward for compat.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        ml_idx = self._mainline_lane_indices.get(agent_id, [])
+        if not ml_idx:
+            return 0.0
+        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        ml_wait = sum(wait_per_lane[i] for i in ml_idx) / 100.0
+        prev = self._prev_mainline_wait.get(agent_id, 0.0)
+        self._prev_mainline_wait[agent_id] = ml_wait
+        return -(ml_wait - prev)
+
+    def _compute_directional_ew_cost(self, agent_id: str) -> float:
+        """Side-street service deficit: max(0, side waiting increase).
+
+        Returns max(0, side_wait_now - side_wait_prev) / 100.
+        Positive when side-street waiting grows (service deficit),
+        zero when side-street is being served (no deficit).
+
+        Constrained RL framing:
+          Reward = mainline delay reduction (maximize)
+          Cost   = side-street service deficit (minimize, subject to budget)
+          Green time is finite: serving mainline starves side-streets.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        side_idx = self._side_lane_indices.get(agent_id, [])
+        if not side_idx:
+            return 0.0
+        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        side_wait = sum(wait_per_lane[i] for i in side_idx) / 100.0
+        prev = self._prev_side_wait.get(agent_id, 0.0)
+        self._prev_side_wait[agent_id] = side_wait
+        return max(0.0, side_wait - prev)
 
     def _compute_agent_cost(self, agent_id: str) -> float:
         """Dispatch to the selected cost function."""
-        if self._cost_fn == "conflict":
+        if self._cost_fn == "service_gap":
+            return self._compute_service_gap_cost(agent_id)
+        elif self._cost_fn == "directional":
+            return self._compute_directional_ew_cost(agent_id)
+        elif self._cost_fn == "conflict":
             # Binary OR: 1 if fairness or phase-churn fires
             c_fair = self._compute_agent_cost_fairness(agent_id)
             c_churn = self._compute_agent_cost_phase_churn(agent_id)
@@ -444,6 +784,36 @@ class SumoRewardCostWrapper(ParallelEnv):
         """Fallback label: 1 if any cost fired in last label_horizon steps for this agent."""
         return int(any(self._failure_history[agent_id]))
 
+    def _directional_label(self, agent_id: str) -> int:
+        """Sharp event label: 1 when side-street service guarantee is violated.
+
+        Fires when ANY of these events occur:
+          1. Side-street not served for ``tau_service`` consecutive steps
+             (no-service timeout — a vehicle has been waiting > tau*delta_time).
+          2. Average side-street queue ratio exceeds ``side_queue_cap``
+             (queue overflow — approaching gridlock on side-street).
+
+        These are sharp, operationally meaningful events — not dense
+        continuous thresholds.  The label tells the tree: 'at this state,
+        the cost gradient should shape the leaf because the side-street
+        guarantee is being violated.'
+        """
+        # Event 1: no service for tau_service consecutive steps
+        if self._side_consecutive_unserved.get(agent_id, 0) >= self._tau_service:
+            return 1
+
+        # Event 2: side-street queue above cap
+        ts = self._get_traffic_signal(agent_id)
+        if ts is not None:
+            side_idx = self._side_lane_indices.get(agent_id, [])
+            if side_idx:
+                lane_queues = ts.get_lanes_queue()
+                avg_side_q = sum(lane_queues[i] for i in side_idx) / len(side_idx)
+                if avg_side_q > self._side_queue_cap:
+                    return 1
+
+        return 0
+
     def reset(self, seed=None, options=None):
         obs, infos = self._env.reset(seed=seed, options=options)
         self.agents = list(self._env.agents) if hasattr(self._env, 'agents') else list(self.possible_agents)
@@ -459,16 +829,24 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Patch _sumo_step for emergency cost (only if needed)
         self._patch_sumo_step()
 
+        # Compute per-agent lane splits for directional reward / starvation cost
+        if self._override_reward == "directional" or self._cost_fn == "starvation":
+            self._priority_lanes.clear()
+            self._non_priority_lanes.clear()
+            for agent_id in self.possible_agents:
+                ts = self._get_traffic_signal(agent_id)
+                if ts is not None:
+                    n = len(ts.in_lanes)
+                    self._priority_lanes[agent_id] = list(ts.in_lanes[:n // 2])
+                    self._non_priority_lanes[agent_id] = list(ts.in_lanes[n // 2:])
+
+        # Classify NS vs EW lanes for directional reward/cost split
+        if self._override_reward in ("ns_wait", "arterial", "mainline") or self._cost_fn in ("directional", "service_gap"):
+            self._classify_mainline_side()
+
         # Reset episode accumulators
         self._episode_costs = {agent: 0.0 for agent in self.possible_agents}
         self._episode_original_rewards = {agent: 0.0 for agent in self.possible_agents}
-        self._episode_cost_queue = {a: 0.0 for a in self.possible_agents}
-        self._episode_cost_wait = {a: 0.0 for a in self.possible_agents}
-        self._episode_cost_saturation = {a: 0.0 for a in self.possible_agents}
-        self._episode_cost_fairness = {a: 0.0 for a in self.possible_agents}
-        self._episode_cost_churn = {a: 0.0 for a in self.possible_agents}
-        self._episode_queue_violations = {a: 0 for a in self.possible_agents}
-        self._episode_wait_violations = {a: 0 for a in self.possible_agents}
         self._episode_max_queued = {a: 0 for a in self.possible_agents}
         self._episode_max_wait = {a: 0.0 for a in self.possible_agents}
 
@@ -480,7 +858,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             info["safety_label"] = 0
             new_infos[agent] = info
 
-        return self._pad_obs(obs), new_infos
+        return self._transform_obs(obs), new_infos
 
     def step(self, actions):
         obs, rewards, terminations, truncations, infos = self._env.step(actions)
@@ -497,36 +875,44 @@ class SumoRewardCostWrapper(ParallelEnv):
             original_reward = float(rewards[agent])
             info = dict(infos.get(agent, {}))
 
-            # ── Reward: throughput override or original ──
+            # ── Reward: throughput/directional override or original ──
             if self._override_reward == "throughput":
                 reward = self._compute_agent_throughput(agent)
+            elif self._override_reward == "directional":
+                reward = self._compute_agent_directional_reward(agent)
+            elif self._override_reward in ("ns_wait", "arterial"):
+                reward = self._compute_directional_ns_reward(agent)
+            elif self._override_reward == "mainline":
+                reward = self._compute_mainline_reward(agent)
             else:
                 reward = original_reward
 
-            # ── Always compute ALL cost primitives for monitoring ──
-            # Legacy costs
-            c_queue = self._compute_agent_cost_queue_overflow(agent)
-            c_wait = self._compute_agent_cost_max_wait(agent)
-            c_sat = self._compute_agent_cost_lane_saturation(agent)
-            # New conflict costs
-            c_fair = self._compute_agent_cost_fairness(agent)
-            c_churn = self._compute_agent_cost_phase_churn(agent)
-
-            # ── Determine the training cost signal ──
-            if self._cost_fn == "conflict":
+            # ── Compute the training cost signal ──
+            if self._cost_fn == "service_gap":
+                self._update_service_tracking(agent)
+                cost = self._compute_service_gap_cost(agent)
+            elif self._cost_fn == "directional":
+                cost = self._compute_directional_ew_cost(agent)
+            elif self._cost_fn == "starvation":
+                cost = self._compute_agent_cost_starvation(agent)
+            elif self._cost_fn == "conflict":
+                c_fair = self._compute_agent_cost_fairness(agent)
+                c_churn = self._compute_agent_cost_phase_churn(agent)
                 cost = 1.0 if (c_fair > 0 or c_churn > 0) else 0.0
             elif self._cost_fn == "fairness":
-                cost = c_fair
+                cost = self._compute_agent_cost_fairness(agent)
             elif self._cost_fn == "phase_churn":
-                cost = c_churn
+                cost = self._compute_agent_cost_phase_churn(agent)
             elif self._cost_fn == "combined":
-                cost = c_queue + c_wait + c_sat
+                cost = (self._compute_agent_cost_queue_overflow(agent) +
+                        self._compute_agent_cost_max_wait(agent) +
+                        self._compute_agent_cost_lane_saturation(agent))
             elif self._cost_fn == "queue_overflow":
-                cost = c_queue
+                cost = self._compute_agent_cost_queue_overflow(agent)
             elif self._cost_fn == "max_wait":
-                cost = c_wait
+                cost = self._compute_agent_cost_max_wait(agent)
             elif self._cost_fn == "lane_saturation":
-                cost = c_sat
+                cost = self._compute_agent_cost_lane_saturation(agent)
             elif self._cost_fn == "emergency":
                 cost = emergency_cost
             else:
@@ -535,21 +921,30 @@ class SumoRewardCostWrapper(ParallelEnv):
             # Per-agent metrics (always logged, regardless of cost_fn)
             metrics = self._get_agent_metrics(agent)
 
+            # Update side-street service tracking for directional label
+            if self._cost_fn == "directional":
+                if cost > 0:
+                    self._side_consecutive_unserved[agent] = (
+                        self._side_consecutive_unserved.get(agent, 0) + 1
+                    )
+                else:
+                    self._side_consecutive_unserved[agent] = 0
+            # service_gap tracking already called above in cost dispatch
+
             # Update per-agent label history
             has_cost = cost > 0
             self._update_failure_history(agent, has_cost)
-            fallback_label = self._event_proximal_label(agent)
+
+            # Label: directional (state-based) or fallback (event-proximal)
+            if self._cost_fn == "directional":
+                label = self._directional_label(agent)
+            else:
+                label = self._event_proximal_label(agent)
 
             new_rewards[agent] = reward
             info["cost"] = cost
             info["original_reward"] = original_reward
-            info["safety_label"] = fallback_label
-            # All cost components (always logged for monitoring)
-            info["cost_queue"] = c_queue
-            info["cost_wait"] = c_wait
-            info["cost_saturation"] = c_sat
-            info["cost_fairness"] = c_fair
-            info["cost_churn"] = c_churn
+            info["safety_label"] = label
             # Per-agent traffic metrics
             info["queued"] = metrics["queued"]
             info["max_wait"] = metrics["max_wait"]
@@ -562,30 +957,6 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._episode_original_rewards[agent] = (
                 self._episode_original_rewards.get(agent, 0.0) + original_reward
             )
-            # Per-component episode cost totals
-            self._episode_cost_queue[agent] = (
-                self._episode_cost_queue.get(agent, 0.0) + c_queue
-            )
-            self._episode_cost_wait[agent] = (
-                self._episode_cost_wait.get(agent, 0.0) + c_wait
-            )
-            self._episode_cost_saturation[agent] = (
-                self._episode_cost_saturation.get(agent, 0.0) + c_sat
-            )
-            self._episode_cost_fairness[agent] = (
-                self._episode_cost_fairness.get(agent, 0.0) + c_fair
-            )
-            self._episode_cost_churn[agent] = (
-                self._episode_cost_churn.get(agent, 0.0) + c_churn
-            )
-            if metrics["queued"] > self._queue_threshold:
-                self._episode_queue_violations[agent] = (
-                    self._episode_queue_violations.get(agent, 0) + 1
-                )
-            if metrics["max_wait"] > self._wait_threshold:
-                self._episode_wait_violations[agent] = (
-                    self._episode_wait_violations.get(agent, 0) + 1
-                )
             self._episode_max_queued[agent] = max(
                 self._episode_max_queued.get(agent, 0), metrics["queued"]
             )
@@ -597,19 +968,12 @@ class SumoRewardCostWrapper(ParallelEnv):
             if terminations.get(agent, False) or truncations.get(agent, False):
                 info["episode_cost"] = self._episode_costs.get(agent, 0.0)
                 info["episode_original_reward"] = self._episode_original_rewards.get(agent, 0.0)
-                info["episode_cost_queue"] = self._episode_cost_queue.get(agent, 0.0)
-                info["episode_cost_wait"] = self._episode_cost_wait.get(agent, 0.0)
-                info["episode_cost_saturation"] = self._episode_cost_saturation.get(agent, 0.0)
-                info["episode_cost_fairness"] = self._episode_cost_fairness.get(agent, 0.0)
-                info["episode_cost_churn"] = self._episode_cost_churn.get(agent, 0.0)
-                info["episode_queue_violations"] = self._episode_queue_violations.get(agent, 0)
-                info["episode_wait_violations"] = self._episode_wait_violations.get(agent, 0)
                 info["episode_max_queued"] = self._episode_max_queued.get(agent, 0)
                 info["episode_max_wait"] = self._episode_max_wait.get(agent, 0.0)
 
             new_infos[agent] = info
 
-        return self._pad_obs(obs), new_rewards, terminations, truncations, new_infos
+        return self._transform_obs(obs), new_rewards, terminations, truncations, new_infos
 
     def render(self):
         return self._env.render()
@@ -794,15 +1158,20 @@ def make_sumo_vec_env(
     env_name: str = "sumo-grid4x4-v0",
     n_envs: int = 1,
     seed: Optional[int] = None,
-    override_reward: Optional[str] = "throughput",
-    cost_fn: str = "conflict",
-    fairness_tau: float = 120.0,
+    override_reward: Optional[str] = "mainline",
+    cost_fn: str = "service_gap",
+    starvation_threshold: int = 3,
+    fairness_tau: float = 60.0,
     fairness_rho: float = 3.0,
     queue_threshold: int = 10,
     wait_threshold: float = 200.0,
     saturation_threshold: float = 0.8,
     teleport_weight: float = 1.0,
     label_horizon: int = 3,
+    use_categorical_phase: bool = False,
+    mainline_direction: str = "auto",
+    tau_service: int = 6,
+    side_queue_cap: float = 0.7,
     use_gui: bool = False,
     **override_kwargs,
 ):
@@ -824,12 +1193,17 @@ def make_sumo_vec_env(
     seed : int or None
         Random seed for SUMO.
     override_reward : str or None
-        If "throughput", replace sumo-rl reward with outgoing vehicle count.
+        If "mainline", reward = diff-waiting-time on mainline lanes only (default).
+        If "arterial" or "ns_wait", reward = diff-waiting-time on NS lanes only.
+        If "directional", reward = moving vehicles on priority lanes.
+        If "throughput", replace sumo-rl reward with negative pressure.
         None keeps the original sumo-rl reward (e.g., diff-waiting-time).
     cost_fn : str
-        Cost function. See COST_FN_REGISTRY. Default "conflict" (fairness OR churn).
+        Cost function. See COST_FN_REGISTRY. Default "service_gap".
+    starvation_threshold : int
+        For cost_fn="starvation": max halting vehicles per non-priority lane. Default 3.
     fairness_tau : float
-        Absolute floor for fairness cost (seconds). Default 120.
+        Absolute floor for fairness cost (seconds). Default 60.
     fairness_rho : float
         Relative ratio threshold for fairness. Default 3.0.
     queue_threshold : int
@@ -884,6 +1258,7 @@ def make_sumo_vec_env(
         par_env,
         override_reward=override_reward,
         cost_fn=cost_fn,
+        starvation_threshold=starvation_threshold,
         fairness_tau=fairness_tau,
         fairness_rho=fairness_rho,
         queue_threshold=queue_threshold,
@@ -891,6 +1266,10 @@ def make_sumo_vec_env(
         saturation_threshold=saturation_threshold,
         teleport_weight=teleport_weight,
         label_horizon=label_horizon,
+        use_categorical_phase=use_categorical_phase,
+        mainline_direction=mainline_direction,
+        tau_service=tau_service,
+        side_queue_cap=side_queue_cap,
     )
 
     # PettingZoo → SB3 VecEnv via SuperSuit
@@ -904,10 +1283,86 @@ def make_sumo_vec_env(
     if not hasattr(inner, "seed"):
         inner.seed = lambda s=None: None
 
+    # Flag for GBRL mixed-mode detection
+    if use_categorical_phase:
+        n_phases = config.get("n_agents", None)
+        # Get n_phases from action space
+        n_phases = vec_env.action_space.n  # Discrete action = n_green_phases
+        vec_env = VecCategoricalPhase(vec_env, n_phases=n_phases)
+
     # Add VecCostMonitor for episode tracking
     vec_env = VecCostMonitor(vec_env)
 
     return vec_env
+
+
+class VecCategoricalPhase(VecMonitor.__bases__[0] if hasattr(VecMonitor, '__bases__') else object):
+    """VecEnv wrapper that replaces one-hot phase with a categorical string.
+
+    Converts float32 obs of shape (n_envs, n_phases + 1 + 2*n_lanes) to
+    object obs of shape (n_envs, 1 + 1 + 2*n_lanes) where column 0 is a
+    categorical string "p0"..."p7" and the rest are float64.
+
+    Must be placed AFTER SuperSuit (which requires float arrays) and BEFORE
+    any GBRL-facing wrapper (VecCostMonitor, training loop).
+    """
+
+    def __init__(self, venv, n_phases: int):
+        self.venv = venv
+        self._n_phases = n_phases
+        self.is_mixed = True
+        self.is_categorical = True
+
+        # Proxy attributes from inner venv
+        self.num_envs = venv.num_envs
+        self.observation_space = venv.observation_space
+        self.action_space = venv.action_space
+        if hasattr(venv, 'reward_range'):
+            self.reward_range = venv.reward_range
+        if hasattr(venv, 'metadata'):
+            self.metadata = venv.metadata
+
+    def _convert_obs(self, obs: np.ndarray) -> np.ndarray:
+        """Convert float obs batch to mixed object array with categorical phase."""
+        n_envs, obs_dim = obs.shape
+        n_phases = self._n_phases
+        new_dim = obs_dim - n_phases + 1  # replace n_phases cols with 1 col
+        mixed = np.empty((n_envs, new_dim), dtype=object)
+        # Phase: argmax of one-hot → categorical string
+        phase_ids = np.argmax(obs[:, :n_phases], axis=1)
+        for i in range(n_envs):
+            mixed[i, 0] = f"p{phase_ids[i]}"
+        # Remaining features: min_green + density + queue
+        mixed[:, 1:] = obs[:, n_phases:].astype(np.float64)
+        return mixed
+
+    def reset(self, **kwargs):
+        obs = self.venv.reset(**kwargs)
+        return self._convert_obs(obs)
+
+    def step_async(self, actions):
+        self.venv.step_async(actions)
+
+    def step_wait(self):
+        obs, rewards, dones, infos = self.venv.step_wait()
+        return self._convert_obs(obs), rewards, dones, infos
+
+    def step(self, actions):
+        obs, rewards, dones, infos = self.venv.step(actions)
+        return self._convert_obs(obs), rewards, dones, infos
+
+    def close(self):
+        self.venv.close()
+
+    def seed(self, seed=None):
+        if hasattr(self.venv, 'seed'):
+            return self.venv.seed(seed)
+
+    def render(self, **kwargs):
+        return self.venv.render(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.venv, name)
 
 
 class VecCostMonitor(VecMonitor):
@@ -919,27 +1374,20 @@ class VecCostMonitor(VecMonitor):
 
     def __init__(self, venv, filename=None, info_keywords=()):
         super().__init__(venv, filename=filename, info_keywords=info_keywords)
+        # Propagate mixed/categorical flags from inner env for GBRL detection
+        if getattr(venv, 'is_mixed', False):
+            self.is_mixed = True
+        if getattr(venv, 'is_categorical', False):
+            self.is_categorical = True
         self.episode_costs = np.zeros(self.num_envs, dtype=np.float64)
-        self.episode_cost_queue = np.zeros(self.num_envs, dtype=np.float64)
-        self.episode_cost_wait = np.zeros(self.num_envs, dtype=np.float64)
-        self.episode_cost_saturation = np.zeros(self.num_envs, dtype=np.float64)
-        self.episode_cost_fairness = np.zeros(self.num_envs, dtype=np.float64)
-        self.episode_cost_churn = np.zeros(self.num_envs, dtype=np.float64)
-        self.episode_queue_violations = np.zeros(self.num_envs, dtype=np.int32)
-        self.episode_wait_violations = np.zeros(self.num_envs, dtype=np.int32)
+        self.episode_original_rewards = np.zeros(self.num_envs, dtype=np.float64)
         self.episode_max_queued = np.zeros(self.num_envs, dtype=np.int32)
         self.episode_max_wait = np.zeros(self.num_envs, dtype=np.float64)
 
     def reset(self, **kwargs):
         obs = super().reset(**kwargs)
         self.episode_costs[:] = 0.0
-        self.episode_cost_queue[:] = 0.0
-        self.episode_cost_wait[:] = 0.0
-        self.episode_cost_saturation[:] = 0.0
-        self.episode_cost_fairness[:] = 0.0
-        self.episode_cost_churn[:] = 0.0
-        self.episode_queue_violations[:] = 0
-        self.episode_wait_violations[:] = 0
+        self.episode_original_rewards[:] = 0.0
         self.episode_max_queued[:] = 0
         self.episode_max_wait[:] = 0.0
         return obs
@@ -950,12 +1398,8 @@ class VecCostMonitor(VecMonitor):
         self.episode_lengths += 1
         for i in range(self.num_envs):
             self.episode_costs[i] += infos[i].get("cost", 0.0)
-            self.episode_cost_queue[i] += infos[i].get("cost_queue", 0.0)
-            self.episode_cost_wait[i] += infos[i].get("cost_wait", 0.0)
-            self.episode_cost_saturation[i] += infos[i].get("cost_saturation", 0.0)
-            self.episode_cost_fairness[i] += infos[i].get("cost_fairness", 0.0)
-            self.episode_cost_churn[i] += infos[i].get("cost_churn", 0.0)
-            # Track per-step metrics
+            self.episode_original_rewards[i] += infos[i].get("original_reward", 0.0)
+            # Track per-step traffic metrics
             queued = infos[i].get("queued", 0)
             max_wait = infos[i].get("max_wait", 0.0)
             if queued > self.episode_max_queued[i]:
@@ -972,12 +1416,7 @@ class VecCostMonitor(VecMonitor):
                     "r": ep_rew,
                     "l": self.episode_lengths[i],
                     "c": ep_cost,
-                    "original_r": ep_rew,
-                    "cost_queue": float(self.episode_cost_queue[i]),
-                    "cost_wait": float(self.episode_cost_wait[i]),
-                    "cost_saturation": float(self.episode_cost_saturation[i]),
-                    "cost_fairness": float(self.episode_cost_fairness[i]),
-                    "cost_churn": float(self.episode_cost_churn[i]),
+                    "original_r": float(self.episode_original_rewards[i]),
                     "max_queued": int(self.episode_max_queued[i]),
                     "max_wait": float(self.episode_max_wait[i]),
                     "t": round(time.time() - self.t_start, 6),
@@ -989,13 +1428,7 @@ class VecCostMonitor(VecMonitor):
                 self.episode_returns[i] = 0
                 self.episode_lengths[i] = 0
                 self.episode_costs[i] = 0.0
-                self.episode_cost_queue[i] = 0.0
-                self.episode_cost_wait[i] = 0.0
-                self.episode_cost_saturation[i] = 0.0
-                self.episode_cost_fairness[i] = 0.0
-                self.episode_cost_churn[i] = 0.0
-                self.episode_queue_violations[i] = 0
-                self.episode_wait_violations[i] = 0
+                self.episode_original_rewards[i] = 0.0
                 self.episode_max_queued[i] = 0
                 self.episode_max_wait[i] = 0.0
                 if self.results_writer:
