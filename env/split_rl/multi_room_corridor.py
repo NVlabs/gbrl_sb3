@@ -514,27 +514,67 @@ class BoxKeyEnv(MiniGridEnv):
         # Outer walls
         self.grid.wall_rect(0, 0, width, height)
 
-        # Vertical wall splitting the room
-        wall_x = width // 2
-        for y in range(0, height):
-            self.grid.set(wall_x, y, Wall())
+        # Randomly choose wall orientation and which side the agent starts on
+        is_vertical = self._rand_bool()
+        flip_sides = self._rand_bool()
 
-        # Randomize door position along the wall
-        door_y = self._rand_int(2, height - 2)
-        door = Door(self.box_color, is_locked=True)
-        self.grid.set(wall_x, door_y, door)
+        if is_vertical:
+            wall_pos = width // 2
+            for y in range(0, height):
+                self.grid.set(wall_pos, y, Wall())
 
-        # Box with key inside at a random position on the left side
+            door_along = self._rand_int(2, height - 2)
+            door = Door(self.box_color, is_locked=True)
+            self.grid.set(wall_pos, door_along, door)
+
+            region_a_top, region_a_size = (1, 1), (wall_pos - 2, height - 2)
+            region_b_top, region_b_size = (wall_pos + 1, 1), (width - 2 - wall_pos, height - 2)
+
+            # Reject entire column adjacent to door wall on agent's side
+            # so the box never blocks the approach to the door
+            adj_a = {(wall_pos - 1, y) for y in range(1, height - 1)}
+            adj_b = {(wall_pos + 1, y) for y in range(1, height - 1)}
+        else:
+            wall_pos = height // 2
+            for x in range(0, width):
+                self.grid.set(x, wall_pos, Wall())
+
+            door_along = self._rand_int(2, width - 2)
+            door = Door(self.box_color, is_locked=True)
+            self.grid.set(door_along, wall_pos, door)
+
+            region_a_top, region_a_size = (1, 1), (width - 2, wall_pos - 2)
+            region_b_top, region_b_size = (1, wall_pos + 1), (width - 2, height - 2 - wall_pos)
+
+            # Reject entire row adjacent to door wall on agent's side
+            adj_a = {(x, wall_pos - 1) for x in range(1, width - 1)}
+            adj_b = {(x, wall_pos + 1) for x in range(1, width - 1)}
+
+        # Assign agent room (with box) and goal room
+        if not flip_sides:
+            agent_top, agent_size = region_a_top, region_a_size
+            goal_top, goal_size = region_b_top, region_b_size
+            door_neighbors = adj_a
+        else:
+            agent_top, agent_size = region_b_top, region_b_size
+            goal_top, goal_size = region_a_top, region_a_size
+            door_neighbors = adj_b
+
+        # Box with key inside — random position in agent's room, never in the
+        # column/row directly adjacent to the door wall
         key = Key(self.box_color)
         box = Box(self.box_color)
         box.contains = key
-        self.place_obj(box, top=(1, 1), size=(wall_x - 1, height - 2))
+        self.place_obj(
+            box, top=agent_top, size=agent_size,
+            reject_fn=lambda env, pos: (int(pos[0]), int(pos[1])) in door_neighbors,
+        )
 
-        # Goal at a random position on the right side
-        self.place_obj(Goal(), top=(wall_x + 1, 1), size=(width - 2 - wall_x, height - 2))
+        # Goal in the far room
+        self.place_obj(Goal(), top=goal_top, size=goal_size)
 
-        # Agent starts at a random position on the left side
-        self.place_agent(top=(1, 1), size=(wall_x - 1, height - 2))
+        # Agent starts at a random position in the near room
+        self.place_agent(top=agent_top, size=agent_size)
 
         self.mission = "open the box, pick up the key, unlock the door, and reach the goal"
 

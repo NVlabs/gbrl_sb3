@@ -370,7 +370,7 @@ class SafetyEvalCallback(EvalCallback):
         self.evaluations_costs = []
 
     def _update_video_prefix(self):
-        """Update VecVideoRecorder name_prefix with current training step."""
+        """Update VecVideoRecorder name_prefix with current training step and arm trigger."""
         from stable_baselines3.common.vec_env import VecVideoRecorder
         env = self.eval_env
         while env is not None:
@@ -378,6 +378,14 @@ class SafetyEvalCallback(EvalCallback):
                 # Replace the step number in the prefix
                 base = env.name_prefix.rsplit('_step', 1)[0]
                 env.name_prefix = f"{base}_step{self.num_timesteps}"
+                # Arm the trigger if enough training steps have elapsed
+                trigger = env.record_video_trigger
+                video_freq = getattr(trigger, 'video_freq', 0)
+                if video_freq > 0:
+                    last = getattr(trigger, 'last_record_timestep', 0)
+                    if self.num_timesteps >= last + video_freq:
+                        trigger.armed = True
+                        trigger.last_record_timestep = self.num_timesteps
                 break
             env = getattr(env, 'venv', None)
     

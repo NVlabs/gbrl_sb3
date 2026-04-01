@@ -441,15 +441,22 @@ def _build_callbacks(args, eval_env):
         if args.eval_kwargs.get('record', False):
             video_path = ROOT_PATH / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
             os.makedirs(video_path, exist_ok=True)
-            video_length = args.eval_kwargs.get('video_length', 5000)
+            video_length = args.eval_kwargs.get('video_length', 200)
+            video_freq = args.eval_kwargs.get('video_freq', 100000)
+            # Flag-based trigger: armed by the eval callback every video_freq
+            # training steps.  Fires at most once per eval round.
+            def _video_trigger(step):
+                if getattr(_video_trigger, 'armed', False):
+                    _video_trigger.armed = False
+                    return True
+                return False
+            _video_trigger.armed = True           # record first eval round
+            _video_trigger.video_freq = video_freq
+            _video_trigger.last_record_timestep = 0
             eval_env = VecVideoRecorder(
                 eval_env,
                 video_folder=str(video_path),
-                # Trigger on every reset (each eval episode gets its own video).
-                # VecVideoRecorder.step_id is monotonic and never resets, so
-                # step-based thresholds break. Instead, always return True —
-                # each reset() closes the old recording and starts a new one.
-                record_video_trigger=lambda step: True,
+                record_video_trigger=_video_trigger,
                 name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                 video_length=video_length)
 
@@ -460,7 +467,7 @@ def _build_callbacks(args, eval_env):
             eval_norm_kwargs['norm_reward'] = False
             eval_env = VecNormalize(eval_env, **eval_norm_kwargs)
 
-        eval_callback_cls = EvalCallback if args.env_name not in SAFETY_ENVS else SafetyEvalCallback
+        eval_callback_cls = SafetyEvalCallback
         callback_list.append(eval_callback_cls(
             eval_env,
             callback_on_new_best=None,

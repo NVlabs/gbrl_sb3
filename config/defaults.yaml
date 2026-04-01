@@ -10,6 +10,7 @@ env:
     min_evals: 5
     record: True
     video_length: 200
+    video_freq: 100000
     max_no_improvement_evals: 10
     n_eval_episodes: 10
     max_episode_steps: 100

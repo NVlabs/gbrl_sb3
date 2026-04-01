@@ -181,14 +181,25 @@ if __name__ == '__main__':
             if not os.path.exists(video_path):
                 os.makedirs(video_path, exist_ok=True)
 
-            # Record every eval episode — trigger always returns True so that
-            # each reset() in VecVideoRecorder starts a new recording.
-            # (step_id is monotonically increasing and never resets, so any
-            # threshold-based trigger would only fire once.)
-            video_length = args.eval_kwargs.get('video_length', 5000)
+            n_eval_eps = args.eval_kwargs.get('n_eval_episodes', 5)
+            video_length = args.eval_kwargs.get('video_length', 2000)
+
+            # Fire once per eval round (1st episode out of every n_eval_eps).
+            # Detect reset() vs step_wait() by checking whether step_id changed:
+            # VecVideoRecorder increments step_id in step_wait BEFORE calling
+            # the trigger, but does NOT increment it in reset().
+            _trigger_state = {'prev_step_id': 0, 'reset_count': 0}
+            def _once_per_eval_round(step_id, _s=_trigger_state, _n=n_eval_eps):
+                is_reset = (step_id == _s['prev_step_id'])
+                _s['prev_step_id'] = step_id
+                if is_reset:
+                    _s['reset_count'] += 1
+                    return (_s['reset_count'] - 1) % _n == 0
+                return False
+
             eval_env = VecVideoRecorder(eval_env,
                                         video_folder=str(video_path),
-                                        record_video_trigger=lambda step: True,
+                                        record_video_trigger=_once_per_eval_round,
                                         name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                                         video_length=video_length)
 
@@ -200,7 +211,7 @@ if __name__ == '__main__':
             eval_norm_kwargs['norm_reward'] = False
             eval_env = VecNormalize(eval_env, **eval_norm_kwargs)
 
-        eval_callback = EvalCallback if args.env_name not in SAFETY_ENVS else SafetyEvalCallback
+        eval_callback = SafetyEvalCallback
         callback_list.append(eval_callback(
                                     eval_env,
                                     callback_on_new_best=None,
