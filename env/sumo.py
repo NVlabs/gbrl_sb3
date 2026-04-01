@@ -815,6 +815,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 0
 
     def reset(self, seed=None, options=None):
+        self._traci_dead = False  # clear crash flag for new episode
         obs, infos = self._env.reset(seed=seed, options=options)
         self.agents = list(self._env.agents) if hasattr(self._env, 'agents') else list(self.possible_agents)
 
@@ -860,34 +861,56 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         return self._transform_obs(obs), new_infos
 
+    def _force_terminate_episode(self, reason: str):
+        """Return safe dummy outputs when TraCI/SUMO connection is dead."""
+        import warnings
+        warnings.warn(f"SUMO/TraCI crashed, forcing episode termination: {reason}")
+        self._traci_dead = True
+        obs = {a: np.zeros(self.observation_spaces[a].shape, dtype=np.float32)
+               for a in self.possible_agents}
+        rewards = {a: 0.0 for a in self.possible_agents}
+        terminations = {a: True for a in self.possible_agents}
+        truncations = {a: True for a in self.possible_agents}
+        infos = {}
+        for a in self.possible_agents:
+            infos[a] = {
+                "cost": 0.0, "original_reward": 0.0, "safety_label": 0,
+                "queued": 0, "max_wait": 0.0, "max_lane_queue": 0,
+                "avg_speed": 0.0, "pressure": 0.0,
+                "episode_cost": self._episode_costs.get(a, 0.0),
+                "episode_original_reward": self._episode_original_rewards.get(a, 0.0),
+                "episode_max_queued": self._episode_max_queued.get(a, 0),
+                "episode_max_wait": self._episode_max_wait.get(a, 0.0),
+            }
+        self.agents = []
+        return self._transform_obs(obs), rewards, terminations, truncations, infos
+
     def step(self, actions):
+        # If a previous step already killed the TraCI connection, keep
+        # returning terminal observations until the env is reset.
+        if getattr(self, '_traci_dead', False):
+            return self._force_terminate_episode("TraCI connection already dead")
+
         try:
             obs, rewards, terminations, truncations, infos = self._env.step(actions)
         except Exception as e:
-            # TraCI socket / SUMO process died mid-step — force-terminate episode.
-            # Cannot call any TraCI-dependent methods after this, so return early.
-            import warnings
-            warnings.warn(f"SUMO/TraCI crashed during step, forcing episode termination: {e}")
-            obs = {a: np.zeros(self.observation_spaces[a].shape, dtype=np.float32)
-                   for a in self.possible_agents}
-            rewards = {a: 0.0 for a in self.possible_agents}
-            terminations = {a: True for a in self.possible_agents}
-            truncations = {a: True for a in self.possible_agents}
-            infos = {}
-            for a in self.possible_agents:
-                infos[a] = {
-                    "cost": 0.0, "original_reward": 0.0, "safety_label": 0,
-                    "queued": 0, "max_wait": 0.0, "max_lane_queue": 0,
-                    "avg_speed": 0.0, "pressure": 0.0,
-                    "episode_cost": self._episode_costs.get(a, 0.0),
-                    "episode_original_reward": self._episode_original_rewards.get(a, 0.0),
-                    "episode_max_queued": self._episode_max_queued.get(a, 0),
-                    "episode_max_wait": self._episode_max_wait.get(a, 0.0),
-                }
-            self.agents = []
-            return self._transform_obs(obs), rewards, terminations, truncations, infos
+            return self._force_terminate_episode(str(e))
+
         self.agents = list(self._env.agents) if hasattr(self._env, 'agents') else list(self.possible_agents)
 
+        # ── Post-step processing (reward/cost/metrics) also uses TraCI ──
+        # Wrap in try/except so a mid-step SUMO crash doesn't kill training.
+        try:
+            return self._process_step(obs, rewards, terminations, truncations, infos)
+        except Exception as e:
+            return self._force_terminate_episode(str(e))
+
+    def _process_step(self, obs, rewards, terminations, truncations, infos):
+        """Compute reward overrides, costs, and per-agent metrics.
+
+        Separated from step() so the outer try/except can catch TraCI
+        failures in any of the downstream calls.
+        """
         # For emergency cost_fn, compute once (global)
         emergency_cost = None
         if self._cost_fn == "emergency":

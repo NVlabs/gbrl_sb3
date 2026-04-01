@@ -275,37 +275,96 @@ class MoveBallEnv(MiniGridEnv):
         # Outer walls
         self.grid.wall_rect(0, 0, width, height)
 
-        # Vertical wall splitting the room into left and right halves
-        wall_x = width // 2
-        for y in range(0, height):
-            self.grid.set(wall_x, y, Wall())
+        # Randomly choose wall orientation: vertical or horizontal
+        is_vertical = self._rand_bool()
+        # Randomly choose which side the agent starts on
+        flip_sides = self._rand_bool()
 
-        # Randomize doorway position along the wall
-        door_y = self._rand_int(2, height - 2)
-        self.grid.set(wall_x, door_y, None)
+        if is_vertical:
+            # Vertical wall splitting left / right
+            wall_pos = width // 2
+            for y in range(0, height):
+                self.grid.set(wall_pos, y, Wall())
 
-        # Blue ball blocking the doorway (on the left side of the opening)
+            # Randomize doorway position along the wall
+            door_along = self._rand_int(2, height - 2)
+            self.grid.set(wall_pos, door_along, None)
+            door_xy = (wall_pos, door_along)
+
+            # Define the two room regions
+            region_a_top, region_a_size = (1, 1), (wall_pos - 2, height - 2)
+            region_b_top, region_b_size = (wall_pos + 1, 1), (width - 2 - wall_pos, height - 2)
+
+            # Ball position: always adjacent to doorway on the agent's side
+            if not flip_sides:
+                ball_xy = (wall_pos - 1, door_along)
+                obstructing = {
+                    (wall_pos - 1, door_along),
+                    (wall_pos, door_along),
+                    (wall_pos + 1, door_along),
+                }
+            else:
+                ball_xy = (wall_pos + 1, door_along)
+                obstructing = {
+                    (wall_pos + 1, door_along),
+                    (wall_pos, door_along),
+                    (wall_pos - 1, door_along),
+                }
+        else:
+            # Horizontal wall splitting top / bottom
+            wall_pos = height // 2
+            for x in range(0, width):
+                self.grid.set(x, wall_pos, Wall())
+
+            # Randomize doorway position along the wall
+            door_along = self._rand_int(2, width - 2)
+            self.grid.set(door_along, wall_pos, None)
+            door_xy = (door_along, wall_pos)
+
+            # Define the two room regions
+            region_a_top, region_a_size = (1, 1), (width - 2, wall_pos - 2)
+            region_b_top, region_b_size = (1, wall_pos + 1), (width - 2, height - 2 - wall_pos)
+
+            # Ball position: always adjacent to doorway on the agent's side
+            if not flip_sides:
+                ball_xy = (door_along, wall_pos - 1)
+                obstructing = {
+                    (door_along, wall_pos - 1),
+                    (door_along, wall_pos),
+                    (door_along, wall_pos + 1),
+                }
+            else:
+                ball_xy = (door_along, wall_pos + 1)
+                obstructing = {
+                    (door_along, wall_pos + 1),
+                    (door_along, wall_pos),
+                    (door_along, wall_pos - 1),
+                }
+
+        # Assign agent / goal rooms based on flip
+        if not flip_sides:
+            agent_top, agent_size = region_a_top, region_a_size
+            goal_top, goal_size = region_b_top, region_b_size
+        else:
+            agent_top, agent_size = region_b_top, region_b_size
+            goal_top, goal_size = region_a_top, region_a_size
+
+        # Blue ball blocking the doorway (on agent's side)
         ball = Ball("blue")
-        self.grid.set(wall_x - 1, door_y, ball)
+        self.grid.set(*ball_xy, ball)
 
         # Store positions for reward shaping
-        self.ball_init_pos = (wall_x - 1, door_y)
-        self.door_pos = (wall_x, door_y)
-        self.wall_x = wall_x
-        # Cells that would obstruct passage through the doorway
-        self.obstructing_cells = {
-            (wall_x - 1, door_y),  # original ball position (left of door)
-            (wall_x, door_y),       # the doorway itself
-            (wall_x + 1, door_y),   # right of door
-        }
+        self.ball_init_pos = ball_xy
+        self.door_pos = door_xy
+        self.obstructing_cells = obstructing
         self.ball_dropped_reward_given = False
-        self.ball_cleared = False  # True once ball is dropped outside obstructing cells
+        self.ball_cleared = False
 
-        # Goal at a random position on the right side
-        self.place_obj(Goal(), top=(wall_x + 1, 1), size=(width - 2 - wall_x, height - 2))
+        # Goal in the far room
+        self.place_obj(Goal(), top=goal_top, size=goal_size)
 
-        # Agent starts at a random position on the left side
-        self.place_agent(top=(1, 1), size=(wall_x - 2, height - 2))
+        # Agent starts at a random position in the near room
+        self.place_agent(top=agent_top, size=agent_size)
 
         self.mission = "move the blue ball blocking the entrance and reach the goal"
 

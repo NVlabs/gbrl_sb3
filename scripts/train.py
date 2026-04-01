@@ -181,12 +181,15 @@ if __name__ == '__main__':
             if not os.path.exists(video_path):
                 os.makedirs(video_path, exist_ok=True)
 
-            # Record every eval round (trigger fires on first step of each new episode)
+            # Record every eval episode — trigger always returns True so that
+            # each reset() in VecVideoRecorder starts a new recording.
+            # (step_id is monotonically increasing and never resets, so any
+            # threshold-based trigger would only fire once.)
             video_length = args.eval_kwargs.get('video_length', 5000)
             eval_env = VecVideoRecorder(eval_env,
                                         video_folder=str(video_path),
-                                        record_video_trigger=lambda step: step == 0,
-                                        name_prefix=f'{args.save_name}_seed_{args.seed}_step0',
+                                        record_video_trigger=lambda step: True,
+                                        name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                                         video_length=video_length)
 
         # Apply VecNormalize AFTER VecVideoRecorder so it's the outermost wrapper.

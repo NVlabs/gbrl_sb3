@@ -441,19 +441,15 @@ def _build_callbacks(args, eval_env):
         if args.eval_kwargs.get('record', False):
             video_path = ROOT_PATH / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
             os.makedirs(video_path, exist_ok=True)
-            video_freq = args.eval_kwargs.get('video_freq', args.eval_kwargs.get('eval_freq', 100000))
-            last_recorded = [-1]  # mutable closure state
-            def _video_trigger(step, freq=video_freq, state=last_recorded):
-                threshold = step // freq
-                if threshold > state[0]:
-                    state[0] = threshold
-                    return True
-                return False
-            video_length = args.eval_kwargs.get('video_length', 500)
+            video_length = args.eval_kwargs.get('video_length', 5000)
             eval_env = VecVideoRecorder(
                 eval_env,
                 video_folder=str(video_path),
-                record_video_trigger=_video_trigger,
+                # Trigger on every reset (each eval episode gets its own video).
+                # VecVideoRecorder.step_id is monotonic and never resets, so
+                # step-based thresholds break. Instead, always return True —
+                # each reset() closes the old recording and starts a new one.
+                record_video_trigger=lambda step: True,
                 name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                 video_length=video_length)
 
