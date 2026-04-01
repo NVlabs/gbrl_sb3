@@ -861,7 +861,31 @@ class SumoRewardCostWrapper(ParallelEnv):
         return self._transform_obs(obs), new_infos
 
     def step(self, actions):
-        obs, rewards, terminations, truncations, infos = self._env.step(actions)
+        try:
+            obs, rewards, terminations, truncations, infos = self._env.step(actions)
+        except Exception as e:
+            # TraCI socket / SUMO process died mid-step — force-terminate episode.
+            # Cannot call any TraCI-dependent methods after this, so return early.
+            import warnings
+            warnings.warn(f"SUMO/TraCI crashed during step, forcing episode termination: {e}")
+            obs = {a: np.zeros(self.observation_spaces[a].shape, dtype=np.float32)
+                   for a in self.possible_agents}
+            rewards = {a: 0.0 for a in self.possible_agents}
+            terminations = {a: True for a in self.possible_agents}
+            truncations = {a: True for a in self.possible_agents}
+            infos = {}
+            for a in self.possible_agents:
+                infos[a] = {
+                    "cost": 0.0, "original_reward": 0.0, "safety_label": 0,
+                    "queued": 0, "max_wait": 0.0, "max_lane_queue": 0,
+                    "avg_speed": 0.0, "pressure": 0.0,
+                    "episode_cost": self._episode_costs.get(a, 0.0),
+                    "episode_original_reward": self._episode_original_rewards.get(a, 0.0),
+                    "episode_max_queued": self._episode_max_queued.get(a, 0),
+                    "episode_max_wait": self._episode_max_wait.get(a, 0.0),
+                }
+            self.agents = []
+            return self._transform_obs(obs), rewards, terminations, truncations, infos
         self.agents = list(self._env.agents) if hasattr(self._env, 'agents') else list(self.possible_agents)
 
         # For emergency cost_fn, compute once (global)
@@ -979,7 +1003,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         return self._env.render()
 
     def close(self):
-        self._env.close()
+        try:
+            self._env.close()
+        except Exception:
+            pass  # TraCI connection already dead
 
     def state(self):
         return self._env.state()

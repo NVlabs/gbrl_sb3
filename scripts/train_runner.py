@@ -291,7 +291,7 @@ def _build_env(args):
     from env.flatland import make_flatland_vec_env
     from env.highway import make_highway_vec_env
     from env.sumo import make_sumo_vec_env
-    from utils.helpers import make_ram_atari_env, make_cost_vec_env
+    from utils.helpers import make_ram_atari_env, make_cost_vec_env, make_minigrid_vec_env
     from config.args import SAFETY_ENVS
 
     CATEGORICAL_ALGOS = [a for a in ['ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl',
@@ -320,7 +320,7 @@ def _build_env(args):
         from minigrid.wrappers import FlatObsWrapper
         wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
         vec_env_cls = CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-        vec_env_fnc = make_cost_vec_env if args.env_name in SAFETY_ENVS else make_vec_env
+        vec_env_fnc = make_cost_vec_env if args.env_name in SAFETY_ENVS else make_minigrid_vec_env
         env = vec_env_fnc(args.env_name, n_envs=args.num_envs, seed=args.seed,
                           env_kwargs=args.env_kwargs, wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.evaluate:
@@ -441,12 +441,21 @@ def _build_callbacks(args, eval_env):
         if args.eval_kwargs.get('record', False):
             video_path = ROOT_PATH / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
             os.makedirs(video_path, exist_ok=True)
+            video_freq = args.eval_kwargs.get('video_freq', args.eval_kwargs.get('eval_freq', 100000))
+            last_recorded = [-1]  # mutable closure state
+            def _video_trigger(step, freq=video_freq, state=last_recorded):
+                threshold = step // freq
+                if threshold > state[0]:
+                    state[0] = threshold
+                    return True
+                return False
+            video_length = args.eval_kwargs.get('video_length', 500)
             eval_env = VecVideoRecorder(
                 eval_env,
                 video_folder=str(video_path),
-                record_video_trigger=lambda x: x == args.eval_kwargs['eval_freq'],
+                record_video_trigger=_video_trigger,
                 name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
-                video_length=args.eval_kwargs.get('video_length', 2000))
+                video_length=video_length)
 
         # Apply VecNormalize AFTER VecVideoRecorder
         if args.wrapper == 'normalize':
@@ -542,7 +551,10 @@ def train_runner():
                 print("AutoResume timer already expired at startup — exiting.")
                 sys.exit(0)
             auto_resume_details = AutoResume.get_resume_details()
-        else:
+        elif bool(os.getenv("AUTORESUME")):
+            # Only auto-detect local resume state when AUTORESUME is explicitly set.
+            # Without it, checkpoints are still saved on interrupt but won't
+            # auto-resume on the next run.  Use --resume_dir for manual resume.
             auto_resume_details = _load_local_resume(sweep_id=sweep_id_env)
             if auto_resume_details:
                 print(f"Found local resume state: {auto_resume_details}")

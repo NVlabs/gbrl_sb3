@@ -814,6 +814,9 @@ class SPLIT_RL(OnPolicyAlgorithm):
                         if "completion_rate" in self.ep_info_buffer[0]:
                             self.logger.record("rollout/completion_rate",
                                             safe_mean([ep_info["completion_rate"] for ep_info in self.ep_info_buffer]))
+                    if "is_success" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/success_rate",
+                            safe_mean([ep_info["is_success"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)

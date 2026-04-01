@@ -167,3 +167,23 @@ def register_minigrid_tests():
         entry_point="env.safety.corner:Corner",
         kwargs={"reward_penalty": True},
     )
+    register(
+        id="MiniGrid-MultiRoomCorridor-v0",
+        entry_point="env.split_rl.multi_room_corridor:MultiRoomCorridorEnv",
+        kwargs={},
+    )
+    register(
+        id="MiniGrid-MoveBall-v0",
+        entry_point="env.split_rl.multi_room_corridor:MoveBallEnv",
+        kwargs={},
+    )
+    register(
+        id="MiniGrid-KeyDoor-v0",
+        entry_point="env.split_rl.multi_room_corridor:KeyDoorEnv",
+        kwargs={},
+    )
+    register(
+        id="MiniGrid-BoxKey-v0",
+        entry_point="env.split_rl.multi_room_corridor:BoxKeyEnv",
+        kwargs={},
+    )

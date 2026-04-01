@@ -368,6 +368,18 @@ class SafetyEvalCallback(EvalCallback):
         self.best_mean_cost = np.inf
         self.last_mean_cost = np.inf
         self.evaluations_costs = []
+
+    def _update_video_prefix(self):
+        """Update VecVideoRecorder name_prefix with current training step."""
+        from stable_baselines3.common.vec_env import VecVideoRecorder
+        env = self.eval_env
+        while env is not None:
+            if isinstance(env, VecVideoRecorder):
+                # Replace the step number in the prefix
+                base = env.name_prefix.rsplit('_step', 1)[0]
+                env.name_prefix = f"{base}_step{self.num_timesteps}"
+                break
+            env = getattr(env, 'venv', None)
     
     def _on_step(self) -> bool:
         continue_training = True
@@ -384,10 +396,13 @@ class SafetyEvalCallback(EvalCallback):
                         "and warning above."
                     ) from e
 
+            # Update video recorder prefix with training step so filenames are meaningful
+            self._update_video_prefix()
+
             # Reset success rate buffer
             self._is_success_buffer = []
 
-            episode_rewards, episode_costs, episode_lengths = evaluate_policy_safety(
+            episode_rewards, episode_costs, episode_lengths, episode_original_rewards, episode_max_queued, episode_max_wait = evaluate_policy_safety(
                 self.model,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -422,15 +437,22 @@ class SafetyEvalCallback(EvalCallback):
             mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)
             mean_cost, std_cost = np.mean(episode_costs), np.std(episode_costs)
             mean_ep_length, std_ep_length = np.mean(episode_lengths), np.std(episode_lengths)
+            mean_original_reward = np.mean(episode_original_rewards) if episode_original_rewards else mean_reward
+            mean_max_queued = np.mean(episode_max_queued) if episode_max_queued else 0
+            mean_max_wait = np.mean(episode_max_wait) if episode_max_wait else 0.0
             self.last_mean_reward = mean_reward
 
             if self.verbose >= 1:
                 print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}, episode_cost={mean_cost:.2f} +/- {std_cost:.2f}")
                 print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
+                print(f"Original reward: {mean_original_reward:.2f}, Max queued: {mean_max_queued:.1f}, Max wait: {mean_max_wait:.1f}")
             # Add to current Logger
             self.logger.record("eval/mean_reward", float(mean_reward))
             self.logger.record("eval/mean_cost", float(mean_cost))
             self.logger.record("eval/mean_ep_length", mean_ep_length)
+            self.logger.record("eval/mean_original_reward", float(mean_original_reward))
+            self.logger.record("eval/mean_max_queued", float(mean_max_queued))
+            self.logger.record("eval/mean_max_wait", float(mean_max_wait))
 
             if len(self._is_success_buffer) > 0:
                 success_rate = np.mean(self._is_success_buffer)

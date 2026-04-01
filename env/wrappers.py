@@ -47,6 +47,16 @@ IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 MAX_TEXT_LENGTH = 128 - 1
 
 
+class SuccessMonitor(Monitor):
+    """Monitor that adds is_success (terminated and not truncated) to episode info."""
+
+    def step(self, action: ActType) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
+        observation, reward, terminated, truncated, info = super().step(action)
+        if terminated or truncated:
+            info["episode"]["is_success"] = terminated and not truncated
+        return observation, reward, terminated, truncated, info
+
+
 class MiniGridCategoricalObservationWrapper(ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)

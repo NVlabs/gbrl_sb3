@@ -75,6 +75,9 @@ def evaluate_policy(
     episode_rewards = []
     episode_costs = []
     episode_lengths = []
+    episode_original_rewards = []
+    episode_max_queued = []
+    episode_max_wait = []
 
     episode_counts = np.zeros(n_envs, dtype="int")
     # Divides episodes among different sub environments in the vector as evenly as possible
@@ -121,12 +124,18 @@ def evaluate_policy(
                             episode_rewards.append(info["episode"]["r"])
                             episode_lengths.append(info["episode"]["l"])
                             episode_costs.append(info["episode"]["c"])
+                            episode_original_rewards.append(info["episode"].get("original_r", info["episode"]["r"]))
+                            episode_max_queued.append(info["episode"].get("max_queued", 0))
+                            episode_max_wait.append(info["episode"].get("max_wait", 0.0))
                             # Only increment at the real end of an episode
                             episode_counts[i] += 1
                     else:
                         episode_rewards.append(current_rewards[i])
                         episode_lengths.append(current_lengths[i])
                         episode_costs.append(current_costs[i])
+                        episode_original_rewards.append(current_rewards[i])
+                        episode_max_queued.append(0)
+                        episode_max_wait.append(0.0)
                         episode_counts[i] += 1
                     current_rewards[i] = 0
                     current_costs[i] = 0
@@ -143,5 +152,5 @@ def evaluate_policy(
     if reward_threshold is not None:
         assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
     if return_episode_rewards:
-        return episode_rewards, episode_costs, episode_lengths
+        return episode_rewards, episode_costs, episode_lengths, episode_original_rewards, episode_max_queued, episode_max_wait
     return mean_reward, mean_cost, std_reward

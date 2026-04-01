@@ -18,6 +18,7 @@ from stable_baselines3.common.callbacks import (
     CallbackList, CheckpointCallback, EvalCallback,
     StopTrainingOnNoModelImprovement)
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import (DummyVecEnv, VecFrameStack,
                                               VecNormalize, VecVideoRecorder)
 
@@ -33,7 +34,7 @@ from env.mujoco_wrappers import MujocoTreeObsWrapper
 from env.flatland import make_flatland_vec_env
 from env.highway import make_highway_vec_env
 from env.sumo import make_sumo_vec_env
-from utils.helpers import make_ram_atari_env, set_seed, make_cost_vec_env
+from utils.helpers import make_ram_atari_env, set_seed, make_cost_vec_env, make_minigrid_vec_env
 
 warnings.filterwarnings("ignore")
 
@@ -98,7 +99,7 @@ if __name__ == '__main__':
         from minigrid.wrappers import FlatObsWrapper
         wrapper_class = MiniGridCategoricalObservationWrapper if args.algo_type in CATEGORICAL_ALGOS else FlatObsWrapper
         vec_env_cls = CategoricalDummyVecEnv if args.algo_type in CATEGORICAL_ALGOS else DummyVecEnv
-        vec_env_fnc = make_cost_vec_env if args.env_name in SAFETY_ENVS else make_vec_env
+        vec_env_fnc = make_cost_vec_env if args.env_name in SAFETY_ENVS else make_minigrid_vec_env
         env = vec_env_fnc(args.env_name, n_envs=args.num_envs, seed=args.seed, env_kwargs=args.env_kwargs,
                            wrapper_class=wrapper_class, vec_env_cls=vec_env_cls)
         if args.evaluate:
@@ -180,12 +181,13 @@ if __name__ == '__main__':
             if not os.path.exists(video_path):
                 os.makedirs(video_path, exist_ok=True)
 
+            # Record every eval round (trigger fires on first step of each new episode)
+            video_length = args.eval_kwargs.get('video_length', 5000)
             eval_env = VecVideoRecorder(eval_env,
                                         video_folder=str(video_path),
-                                        # record_video_trigger=lambda x: x == int(args.eval_kwargs['eval_freq'] / args.num_envs),
-                                        record_video_trigger=lambda x: x == args.eval_kwargs['eval_freq'],
-                                        name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
-                                        video_length=args.eval_kwargs.get('video_length', 2000))
+                                        record_video_trigger=lambda step: step == 0,
+                                        name_prefix=f'{args.save_name}_seed_{args.seed}_step0',
+                                        video_length=video_length)
 
         # Apply VecNormalize AFTER VecVideoRecorder so it's the outermost wrapper.
         # This ensures sync_envs_normalization can find VecNormalize on eval_env.
@@ -236,3 +238,15 @@ if __name__ == '__main__':
             algo.get_vec_normalize_env().save(vec_normalize_path)
             if args.verbose >= 2:
                 print(f"Saving model VecNormalize to {vec_normalize_path}")
+
+    # Final evaluation and video recording after training
+    if args.evaluate and eval_env is not None:
+        print("\n" + "=" * 60)
+        print("Final evaluation after training")
+        print("=" * 60)
+        n_final_episodes = args.eval_kwargs.get('n_eval_episodes', 10)
+        mean_reward, std_reward = evaluate_policy(
+            algo, eval_env, n_eval_episodes=n_final_episodes,
+            deterministic=args.eval_kwargs.get('deterministic', True))
+        print(f"Final eval: mean_reward={mean_reward:.2f} +/- {std_reward:.2f} over {n_final_episodes} episodes")
+        print("=" * 60)

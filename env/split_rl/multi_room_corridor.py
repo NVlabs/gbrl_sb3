@@ -1,0 +1,491 @@
+##############################################################################
+# Copyright (c) 2024, NVIDIA Corporation. All rights reserved.
+#
+# This work is made available under the Nvidia Source Code License-NC.
+# To view a copy of this license, visit
+# https://nvlabs.github.io/gbrl_sb3/license.html
+#
+##############################################################################
+from __future__ import annotations
+
+from typing import Any, SupportsFloat
+
+import numpy as np
+from gymnasium.core import ActType, ObsType
+from minigrid.core.constants import STATE_TO_IDX
+from minigrid.core.grid import Grid
+from minigrid.core.mission import MissionSpace
+from minigrid.core.world_object import Ball, Box, Door, Goal, Key, Wall
+from minigrid.minigrid_env import MiniGridEnv
+
+
+class MultiRoomCorridorEnv(MiniGridEnv):
+    """
+    Multi-room environment with 4 rooms connected via a narrow corridor.
+
+    Layout:
+    - 3 rooms at the bottom arranged horizontally (left, middle, right)
+    - A narrow corridor connects the middle room upward to a 4th room at the top
+    - Top room: contains the GOAL behind a locked door (e.g. green)
+    - Bottom-right room: contains a BOX with the same color key as the top door
+      (green key in green box). Connected to middle room by a different colored
+      locked door (e.g. purple).
+    - Bottom-left room: contains the key (purple) to unlock the bottom-right door.
+      Entrance blocked by a blue ball that must be moved.
+    - Bottom-middle room: starting room. Agent spawns here.
+
+    Solution sequence:
+    1. Move the blue ball blocking the bottom-left room entrance
+    2. Enter bottom-left room, pick up the purple key
+    3. Use purple key to unlock door to bottom-right room
+    4. Open the box in bottom-right room to get the green key
+    5. Travel through corridor to top room
+    6. Use green key to unlock the top room door
+    7. Reach the goal
+    """
+
+    def __init__(self, width=19, height=19, max_steps=None,
+                 top_door_color="green", right_door_color="purple", **kwargs):
+        self.top_door_color = top_door_color
+        self.right_door_color = right_door_color
+
+        if max_steps is None:
+            max_steps = 4 * width * height
+
+        mission_space = MissionSpace(mission_func=self._gen_mission)
+
+        super().__init__(
+            mission_space=mission_space,
+            width=width,
+            height=height,
+            see_through_walls=False,
+            max_steps=max_steps,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _gen_mission():
+        return "move the ball, collect keys, unlock doors, and reach the goal"
+
+    def _gen_grid(self, width, height):
+        self.grid = Grid(width, height)
+
+        # Fill everything with walls first
+        self.grid.wall_rect(0, 0, width, height)
+
+        # ============================================================
+        # Define geometry
+        # ============================================================
+        # We split the grid into a top section (top room + corridor)
+        # and bottom section (3 rooms).
+        #
+        # Bottom rooms occupy the lower portion of the grid.
+        # The corridor is a narrow vertical passage from the middle
+        # bottom room up to the top room.
+        #
+        # Heights:
+        #   top room:    rows 1 .. (top_room_h)
+        #   corridor:    rows (top_room_h+1) .. (corridor_end)
+        #   bottom rooms: rows (bottom_start) .. (height-2)
+        #
+        # The corridor is 1 tile wide centered on the grid.
+
+        corridor_x = width // 2  # center column for corridor
+        corridor_width = 1  # single tile wide
+
+        # Vertical splits:
+        # top room: rows 1 to top_room_bottom (exclusive)
+        # corridor: rows corridor_top to corridor_bottom (inclusive)
+        # bottom rooms: rows bottom_top to height-2 (inclusive)
+
+        top_room_bottom = height // 3       # wall row separating top room from corridor
+        bottom_top = 2 * height // 3        # wall row separating corridor from bottom rooms
+        corridor_top = top_room_bottom + 1
+        corridor_bottom = bottom_top - 1
+
+        # Horizontal splits for bottom rooms:
+        # left room: cols 1 to left_wall (exclusive)
+        # middle room: cols left_wall+1 to right_wall (exclusive)
+        # right room: cols right_wall+1 to width-2 (inclusive)
+        left_wall_x = width // 3
+        right_wall_x = 2 * width // 3
+
+        # ============================================================
+        # Carve out the TOP ROOM (rows 1..top_room_bottom-1)
+        # ============================================================
+        for y in range(1, top_room_bottom):
+            for x in range(1, width - 1):
+                self.grid.set(x, y, None)
+
+        # Build the wall row at top_room_bottom
+        for x in range(0, width):
+            self.grid.set(x, top_room_bottom, Wall())
+
+        # ============================================================
+        # Carve out the CORRIDOR (single column)
+        # ============================================================
+        for y in range(corridor_top, corridor_bottom + 1):
+            self.grid.set(corridor_x, y, None)
+
+        # ============================================================
+        # Build the wall row at bottom_top
+        # ============================================================
+        for x in range(0, width):
+            self.grid.set(x, bottom_top, Wall())
+
+        # ============================================================
+        # Carve out the 3 BOTTOM ROOMS
+        # ============================================================
+        for y in range(bottom_top + 1, height - 1):
+            for x in range(1, width - 1):
+                self.grid.set(x, y, None)
+
+        # Build internal vertical walls for bottom rooms
+        # Left wall (separating left and middle rooms)
+        for y in range(bottom_top, height):
+            self.grid.set(left_wall_x, y, Wall())
+
+        # Right wall (separating middle and right rooms)
+        for y in range(bottom_top, height):
+            self.grid.set(right_wall_x, y, Wall())
+
+        # ============================================================
+        # DOORS
+        # ============================================================
+
+        # 1. Door from corridor into top room (locked, top_door_color)
+        #    Opening in the top_room_bottom wall at corridor_x
+        top_door = Door(self.top_door_color, is_locked=True)
+        self.grid.set(corridor_x, top_room_bottom, top_door)
+        self.top_door_pos = (corridor_x, top_room_bottom)
+
+        # 2. Door from corridor into middle bottom room
+        #    Opening in the bottom_top wall at corridor_x (open passage)
+        self.grid.set(corridor_x, bottom_top, None)
+
+        # 3. Door from middle room to left room (passage blocked by ball)
+        #    Opening in the left_wall at a middle row
+        left_door_y = (bottom_top + 1 + height - 2) // 2
+        self.grid.set(left_wall_x, left_door_y, None)  # open passage
+        self.left_entrance_pos = (left_wall_x, left_door_y)
+
+        # 4. Door from middle room to right room (locked, right_door_color)
+        right_door_y = (bottom_top + 1 + height - 2) // 2
+        right_door = Door(self.right_door_color, is_locked=True)
+        self.grid.set(right_wall_x, right_door_y, right_door)
+        self.right_door_pos = (right_wall_x, right_door_y)
+
+        # ============================================================
+        # OBJECTS
+        # ============================================================
+
+        # Blue ball blocking the entrance to the left room
+        # Place it on the middle-room side of the entrance (one tile right of wall)
+        ball_x = left_wall_x + 1
+        ball_y = left_door_y
+        blue_ball = Ball("blue")
+        self.grid.set(ball_x, ball_y, blue_ball)
+
+        # Purple key in the bottom-left room (unlocks right room door)
+        left_room_center_x = (1 + left_wall_x) // 2
+        left_room_center_y = (bottom_top + 1 + height - 2) // 2
+        right_key = Key(self.right_door_color)
+        self.put_obj(right_key, left_room_center_x, left_room_center_y)
+
+        # Green box with green key inside, in the bottom-right room
+        right_room_center_x = (right_wall_x + 1 + width - 2) // 2
+        right_room_center_y = (bottom_top + 1 + height - 2) // 2
+        top_key = Key(self.top_door_color)
+        green_box = Box(self.top_door_color)
+        green_box.contains = top_key
+        self.put_obj(green_box, right_room_center_x, right_room_center_y)
+
+        # Goal in the top room
+        goal_x = width // 2
+        goal_y = 1
+        self.put_obj(Goal(), goal_x, goal_y)
+
+        # ============================================================
+        # AGENT start in the middle bottom room
+        # ============================================================
+        agent_x = (left_wall_x + 1 + right_wall_x) // 2
+        agent_y = (bottom_top + 1 + height - 2) // 2
+        self.agent_pos = np.array([agent_x, agent_y])
+        self.agent_dir = 0  # facing right
+
+        self.mission = "move the ball, collect keys, unlock doors, and reach the goal"
+
+        # Store goal position for distance-based reward
+        self.goal_pos = np.array([goal_x, goal_y], dtype=np.float64)
+
+    def _distance_to_goal(self):
+        return np.linalg.norm(self.agent_pos - self.goal_pos)
+
+    def reset(self, **kwargs):
+        obs, info = super().reset(**kwargs)
+        self.prev_distance = self._distance_to_goal()
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        # Distance-delta reward: positive when getting closer to goal
+        curr_distance = self._distance_to_goal()
+        reward = (self.prev_distance - curr_distance) * 0.1
+        self.prev_distance = curr_distance
+
+        # Terminal reward on reaching the goal
+        if terminated and not truncated:
+            reward += 1.0 - min(self.step_count / self.max_steps, 1.0)
+
+        return obs, reward, terminated, truncated, info
+
+
+class MoveBallEnv(MiniGridEnv):
+    """
+    Subtask 1: Move a blue ball that obstructs an entrance.
+
+    A small room with a doorway. A blue ball blocks the doorway.
+    The agent must pick up the ball, move it elsewhere, and walk
+    through the doorway to reach a goal on the other side.
+    """
+
+    def __init__(self, width=8, height=8, max_steps=None, **kwargs):
+        if max_steps is None:
+            max_steps = 4 * width * height
+
+        mission_space = MissionSpace(mission_func=self._gen_mission)
+
+        super().__init__(
+            mission_space=mission_space,
+            width=width,
+            height=height,
+            see_through_walls=False,
+            max_steps=max_steps,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _gen_mission():
+        return "move the blue ball blocking the entrance and reach the goal"
+
+    def _gen_grid(self, width, height):
+        self.grid = Grid(width, height)
+
+        # Outer walls
+        self.grid.wall_rect(0, 0, width, height)
+
+        # Vertical wall splitting the room into left and right halves
+        wall_x = width // 2
+        for y in range(0, height):
+            self.grid.set(wall_x, y, Wall())
+
+        # Randomize doorway position along the wall
+        door_y = self._rand_int(2, height - 2)
+        self.grid.set(wall_x, door_y, None)
+
+        # Blue ball blocking the doorway (on the left side of the opening)
+        ball = Ball("blue")
+        self.grid.set(wall_x - 1, door_y, ball)
+
+        # Store positions for reward shaping
+        self.ball_init_pos = (wall_x - 1, door_y)
+        self.door_pos = (wall_x, door_y)
+        self.wall_x = wall_x
+        # Cells that would obstruct passage through the doorway
+        self.obstructing_cells = {
+            (wall_x - 1, door_y),  # original ball position (left of door)
+            (wall_x, door_y),       # the doorway itself
+            (wall_x + 1, door_y),   # right of door
+        }
+        self.ball_dropped_reward_given = False
+        self.ball_cleared = False  # True once ball is dropped outside obstructing cells
+
+        # Goal at a random position on the right side
+        self.place_obj(Goal(), top=(wall_x + 1, 1), size=(width - 2 - wall_x, height - 2))
+
+        # Agent starts at a random position on the left side
+        self.place_agent(top=(1, 1), size=(wall_x - 2, height - 2))
+
+        self.mission = "move the blue ball blocking the entrance and reach the goal"
+
+    def step(self, action):
+        # Check if agent was carrying the ball before this step
+        was_carrying_ball = self.carrying is not None and isinstance(self.carrying, Ball)
+
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        reward = 0
+
+        # Detect pickup: wasn't carrying → now carrying
+        is_carrying_ball = self.carrying is not None and isinstance(self.carrying, Ball)
+        if not was_carrying_ball and is_carrying_ball and self.ball_dropped_reward_given and not self.ball_cleared:
+            # Penalty for picking ball back up after a bad drop (still blocking)
+            reward = -0.5
+
+        # One-time reward/penalty when the ball is dropped
+        if was_carrying_ball and not is_carrying_ball and not self.ball_dropped_reward_given:
+            self.ball_dropped_reward_given = True
+            # Find where the ball ended up (the cell the agent was facing when it dropped)
+            fwd_pos = self.front_pos
+            drop_pos = (fwd_pos[0], fwd_pos[1])
+            if drop_pos in self.obstructing_cells:
+                # Penalty: dropped ball back in a position that blocks the doorway
+                reward = -0.5
+            else:
+                # Bonus: dropped ball somewhere that clears the path
+                reward = 0.5
+                self.ball_cleared = True
+
+        # Terminal reward on reaching the goal
+        if terminated and not truncated:
+            reward += 1.0 - min(self.step_count / self.max_steps, 1.0)
+
+        return obs, reward, terminated, truncated, info
+
+
+class KeyDoorEnv(MiniGridEnv):
+    """
+    Subtask 2: Pick up a key and use it to unlock a door.
+
+    A room split by a locked door. The key is on the agent's
+    side. The agent must pick up the key, unlock the door, and
+    reach the goal on the other side.
+    """
+
+    def __init__(self, width=8, height=8, max_steps=None,
+                 door_color="purple", **kwargs):
+        self.door_color = door_color
+
+        if max_steps is None:
+            max_steps = 4 * width * height
+
+        mission_space = MissionSpace(mission_func=self._gen_mission)
+
+        super().__init__(
+            mission_space=mission_space,
+            width=width,
+            height=height,
+            see_through_walls=False,
+            max_steps=max_steps,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _gen_mission():
+        return "pick up the key, unlock the door, and reach the goal"
+
+    def _gen_grid(self, width, height):
+        self.grid = Grid(width, height)
+
+        # Outer walls
+        self.grid.wall_rect(0, 0, width, height)
+
+        # Vertical wall splitting the room
+        wall_x = width // 2
+        for y in range(0, height):
+            self.grid.set(wall_x, y, Wall())
+
+        # Randomize door position along the wall
+        door_y = self._rand_int(2, height - 2)
+        door = Door(self.door_color, is_locked=True)
+        self.grid.set(wall_x, door_y, door)
+
+        # Key at a random position on the left side
+        self.place_obj(Key(self.door_color), top=(1, 1), size=(wall_x - 1, height - 2))
+
+        # Goal at a random position on the right side (not adjacent to door)
+        def not_adjacent_to_door(env, pos):
+            return abs(pos[0] - wall_x) <= 1 and abs(pos[1] - door_y) <= 1
+        self.place_obj(Goal(), top=(wall_x + 1, 1), size=(width - 2 - wall_x, height - 2),
+                       reject_fn=not_adjacent_to_door)
+
+        # Agent starts at a random position on the left side
+        self.place_agent(top=(1, 1), size=(wall_x - 1, height - 2))
+
+        self.mission = "pick up the key, unlock the door, and reach the goal"
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        reward = 0
+
+        # Terminal reward on reaching the goal
+        if terminated and not truncated:
+            reward = 1.0 - min(self.step_count / self.max_steps, 1.0)
+
+        return obs, reward, terminated, truncated, info
+
+
+class BoxKeyEnv(MiniGridEnv):
+    """
+    Subtask 3: Open a box and pick up a key inside.
+
+    A small room with a colored box. Inside the box is a key
+    of the same color. The agent must open (toggle) the box to
+    reveal the key, pick it up, and then reach a locked door
+    to complete the task.
+    """
+
+    def __init__(self, width=8, height=8, max_steps=None,
+                 box_color="green", **kwargs):
+        self.box_color = box_color
+
+        if max_steps is None:
+            max_steps = 4 * width * height
+
+        mission_space = MissionSpace(mission_func=self._gen_mission)
+
+        super().__init__(
+            mission_space=mission_space,
+            width=width,
+            height=height,
+            see_through_walls=False,
+            max_steps=max_steps,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _gen_mission():
+        return "open the box, pick up the key, unlock the door, and reach the goal"
+
+    def _gen_grid(self, width, height):
+        self.grid = Grid(width, height)
+
+        # Outer walls
+        self.grid.wall_rect(0, 0, width, height)
+
+        # Vertical wall splitting the room
+        wall_x = width // 2
+        for y in range(0, height):
+            self.grid.set(wall_x, y, Wall())
+
+        # Randomize door position along the wall
+        door_y = self._rand_int(2, height - 2)
+        door = Door(self.box_color, is_locked=True)
+        self.grid.set(wall_x, door_y, door)
+
+        # Box with key inside at a random position on the left side
+        key = Key(self.box_color)
+        box = Box(self.box_color)
+        box.contains = key
+        self.place_obj(box, top=(1, 1), size=(wall_x - 1, height - 2))
+
+        # Goal at a random position on the right side
+        self.place_obj(Goal(), top=(wall_x + 1, 1), size=(width - 2 - wall_x, height - 2))
+
+        # Agent starts at a random position on the left side
+        self.place_agent(top=(1, 1), size=(wall_x - 1, height - 2))
+
+        self.mission = "open the box, pick up the key, unlock the door, and reach the goal"
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        reward = 0
+
+        # Terminal reward on reaching the goal
+        if terminated and not truncated:
+            reward = 1.0 - min(self.step_count / self.max_steps, 1.0)
+
+        return obs, reward, terminated, truncated, info
