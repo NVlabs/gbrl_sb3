@@ -169,7 +169,7 @@ def parse_args():
                                                          'football', 'equation', 'rickety_bridge',
                                                          'flatland', 'sumo', 'highway'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'split_rl',
-                                                          'awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
+                                                          'awr_gbrl', 'split_awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
                                                           'ppo_lag', 'cpo', 'cup', 'ipo'])
     parser.add_argument('--env_name', type=str)
     # env args
@@ -361,6 +361,10 @@ def parse_args():
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
     # safety
     parser.add_argument('--lambda_objs', type=float, nargs='+')
+    # split AWR
+    parser.add_argument('--expert_datasets', type=json_string_to_dict)
+    parser.add_argument('--expert_buffer_per_label', type=int)
+    parser.add_argument('--n_objs', type=int)
     # PPO Lagrangian
     parser.add_argument('--cost_limit', type=float)
     parser.add_argument('--lagrangian_multiplier_init', type=float)
@@ -687,7 +691,7 @@ def process_policy_kwargs(args):
                     "generator_type": args.generator_type,
                     "feature_weights": args.feature_weights,
                     "lambda_penalty": args.lambda_penalty,
-                    "n_objs": 2 if safety_mode or guidance_mode else 1,
+                    "n_objs": getattr(args, 'n_objs', None) or (2 if safety_mode or guidance_mode else 1),
                     'lambda_objs': args.lambda_objs,
                     }
     algo_kwargs = {}
@@ -995,6 +999,66 @@ def process_policy_kwargs(args):
             "vf_coef": args.vf_coef,
             "min_log_std_lr": args.min_log_std_lr,
             "policy_bound_loss_weight": args.policy_bound_loss_weight,
+            "device": args.device,
+            "seed": args.seed,
+            "verbose": args.verbose,
+        }
+    elif args.algo_type == 'split_awr_gbrl':
+        algo_kwargs = {
+            "normalize_advantage": args.normalize_advantage,
+            "max_policy_grad_norm": args.max_policy_grad_norm,
+            "max_value_grad_norm": args.max_value_grad_norm,
+            "ent_coef": args.ent_coef,
+            "batch_size": args.batch_size,
+            "beta": args.beta,
+            "buffer_size": args.buffer_size,
+            "value_batch_size": args.value_batch_size,
+            "reward_mode": args.reward_mode,
+            "gradient_steps": args.gradient_steps,
+            "learning_starts": args.learning_starts,
+            "learning_rate": args.learning_rate,
+            "gae_lambda": args.gae_lambda,
+            "gamma": args.gamma,
+            "train_freq": args.train_freq,
+            "weights_max": args.weights_max,
+            "expert_datasets": getattr(args, 'expert_datasets', None) or {},
+            "expert_buffer_per_label": getattr(args, 'expert_buffer_per_label', None) or 0,
+            "n_objs": getattr(args, 'n_objs', None) or 4,
+            "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
+                "log_std_init": args.log_std_init,
+                "shared_tree_struct": args.shared_tree_struct,
+                "squash": args.squash,
+                "tree_struct": {
+                    "max_depth": args.max_depth,
+                    "n_bins": args.n_bins,
+                    "min_data_in_leaf": args.min_data_in_leaf,
+                    "par_th": args.par_th,
+                    "grow_policy": args.grow_policy,
+                },
+                "tree_optimizer": {
+                    "params": tree_params,
+                    "policy_optimizer": {
+                        "policy_algo": args.policy_algo,
+                        "policy_lr": args.policy_lr,
+                        "policy_beta_1": args.policy_beta_1,
+                        "policy_beta_2": args.policy_beta_2,
+                        "policy_eps": args.policy_eps,
+                        "policy_shrinkage": args.policy_shrinkage,
+                    },
+                    "value_optimizer": {
+                        "value_algo": args.value_algo,
+                        "value_lr": args.value_lr,
+                        "value_beta_1": args.value_beta_1,
+                        "value_beta_2": args.value_beta_2,
+                        "value_eps": args.value_eps,
+                        "value_shrinkage": args.value_shrinkage,
+                    },
+                },
+            },
+            "fixed_std": args.fixed_std,
+            "log_std_lr": args.log_std_lr,
+            "vf_coef": args.vf_coef,
+            "min_log_std_lr": args.min_log_std_lr,
             "device": args.device,
             "seed": args.seed,
             "verbose": args.verbose,

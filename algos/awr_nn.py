@@ -229,6 +229,11 @@ class AWR(OffPolicyAlgorithm):
         self.logger.record("train/policy_loss", np.mean(policy_losses))
 
 
+    def dump_logs(self) -> None:
+        from utils.helpers import log_ep_info_metrics
+        super().dump_logs()
+        log_ep_info_metrics(self.logger, self.ep_info_buffer)
+
     def learn(
         self,
         total_timesteps: int,

@@ -445,7 +445,7 @@ def _build_callbacks(args, eval_env):
             eval_env = VecVideoRecorder(
                 eval_env,
                 video_folder=str(video_path),
-                record_video_trigger=lambda x: x == int(args.eval_kwargs['eval_freq'] / args.num_envs),
+                record_video_trigger=lambda x: x == 0,
                 name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                 video_length=args.eval_kwargs.get('video_length', 2000))
 

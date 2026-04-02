@@ -53,7 +53,9 @@ class SuccessMonitor(Monitor):
     def step(self, action: ActType) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         observation, reward, terminated, truncated, info = super().step(action)
         if terminated or truncated:
-            info["episode"]["is_success"] = terminated and not truncated
+            is_success = terminated and not truncated
+            info["is_success"] = is_success
+            info["episode"]["is_success"] = is_success
         return observation, reward, terminated, truncated, info
 
 

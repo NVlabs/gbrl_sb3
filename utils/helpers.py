@@ -658,3 +658,52 @@ def make_minigrid_vec_env(
     vec_env = vec_env_cls([make_env(i + start_index) for i in range(n_envs)], **vec_env_kwargs)
     vec_env.seed(seed)
     return vec_env
+
+
+def log_ep_info_metrics(logger, ep_info_buffer) -> None:
+    """Log all conditional rollout metrics from ep_info_buffer.
+
+    Call this from any algorithm's rollout logging block to get consistent
+    metrics across all on-policy and off-policy algorithms.
+    """
+    from stable_baselines3.common.utils import safe_mean
+    if not ep_info_buffer or len(ep_info_buffer) == 0:
+        return
+    first = ep_info_buffer[0]
+    if not first or len(first) == 0:
+        return
+    # Cost metrics
+    if "c" in first:
+        logger.record("rollout/ep_cost_mean",
+                       safe_mean([ep["c"] for ep in ep_info_buffer]))
+    if "max_queued" in first:
+        logger.record("rollout/ep_max_queued_mean",
+                       safe_mean([ep["max_queued"] for ep in ep_info_buffer]))
+    if "max_wait" in first:
+        logger.record("rollout/ep_max_wait_mean",
+                       safe_mean([ep["max_wait"] for ep in ep_info_buffer]))
+    if "cost_queue" in first:
+        logger.record("rollout/ep_cost_queue_mean",
+                       safe_mean([ep["cost_queue"] for ep in ep_info_buffer]))
+    if "cost_wait" in first:
+        logger.record("rollout/ep_cost_wait_mean",
+                       safe_mean([ep["cost_wait"] for ep in ep_info_buffer]))
+    if "cost_saturation" in first:
+        logger.record("rollout/ep_cost_saturation_mean",
+                       safe_mean([ep["cost_saturation"] for ep in ep_info_buffer]))
+    if "cost_fairness" in first:
+        logger.record("rollout/ep_cost_fairness_mean",
+                       safe_mean([ep["cost_fairness"] for ep in ep_info_buffer]))
+    if "cost_churn" in first:
+        logger.record("rollout/ep_cost_churn_mean",
+                       safe_mean([ep["cost_churn"] for ep in ep_info_buffer]))
+    # Score / completion / success
+    if "normalized_score" in first:
+        logger.record("rollout/normalized_score",
+                       safe_mean([ep["normalized_score"] for ep in ep_info_buffer]))
+    if "completion_rate" in first:
+        logger.record("rollout/completion_rate",
+                       safe_mean([ep["completion_rate"] for ep in ep_info_buffer]))
+    if "is_success" in first:
+        logger.record("rollout/success_rate",
+                       safe_mean([ep["is_success"] for ep in ep_info_buffer]))

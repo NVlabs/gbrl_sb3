@@ -796,29 +796,13 @@ class SPLIT_RL(OnPolicyAlgorithm):
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     self.logger.record("rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    if self.safety_mode:
-                        self.logger.record("rollout/ep_cost_mean",
-                                        safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
-                        if "original_r" in self.ep_info_buffer[0]:
-                            self.logger.record("rollout/ep_original_rew_mean",
-                                            safe_mean([ep_info["original_r"] for ep_info in self.ep_info_buffer]))
-                        if "max_queued" in self.ep_info_buffer[0]:
-                            self.logger.record("rollout/ep_max_queued_mean",
-                                            safe_mean([ep_info["max_queued"] for ep_info in self.ep_info_buffer]))
-                        if "max_wait" in self.ep_info_buffer[0]:
-                            self.logger.record("rollout/ep_max_wait_mean",
-                                            safe_mean([ep_info["max_wait"] for ep_info in self.ep_info_buffer]))
-                        if "normalized_score" in self.ep_info_buffer[0]:
-                            self.logger.record("rollout/normalized_score",
-                                            safe_mean([ep_info["normalized_score"] for ep_info in self.ep_info_buffer]))
-                        if "completion_rate" in self.ep_info_buffer[0]:
-                            self.logger.record("rollout/completion_rate",
-                                            safe_mean([ep_info["completion_rate"] for ep_info in self.ep_info_buffer]))
-                    if "is_success" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/success_rate",
-                            safe_mean([ep_info["is_success"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    if self.safety_mode and "original_r" in self.ep_info_buffer[0]:
+                        self.logger.record("rollout/ep_original_rew_mean",
+                                        safe_mean([ep_info["original_r"] for ep_info in self.ep_info_buffer]))
+                    from utils.helpers import log_ep_info_metrics
+                    log_ep_info_metrics(self.logger, self.ep_info_buffer)
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")

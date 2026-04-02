@@ -290,6 +290,11 @@ class DQN_GBRL(OffPolicyAlgorithm):
             action, state = self.policy.predict(observation, state, episode_start, deterministic)
         return action, state
 
+    def dump_logs(self) -> None:
+        from utils.helpers import log_ep_info_metrics
+        super().dump_logs()
+        log_ep_info_metrics(self.logger, self.ep_info_buffer)
+
     def learn(
         self: SelfDQN,
         total_timesteps: int,

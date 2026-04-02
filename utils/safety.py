@@ -123,7 +123,7 @@ def evaluate_policy(
                             # has been wrapped with it. Use those rewards instead.
                             episode_rewards.append(info["episode"]["r"])
                             episode_lengths.append(info["episode"]["l"])
-                            episode_costs.append(info["episode"]["c"])
+                            episode_costs.append(info["episode"].get("c", 0.0))
                             episode_original_rewards.append(info["episode"].get("original_r", info["episode"]["r"]))
                             episode_max_queued.append(info["episode"].get("max_queued", 0))
                             episode_max_wait.append(info["episode"].get("max_wait", 0.0))

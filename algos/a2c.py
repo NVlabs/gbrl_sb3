@@ -449,6 +449,8 @@ class A2C_GBRL(OnPolicyAlgorithm):
                                        self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in
                                        self.ep_info_buffer]))
+                    from utils.helpers import log_ep_info_metrics
+                    log_ep_info_metrics(self.logger, self.ep_info_buffer)
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")

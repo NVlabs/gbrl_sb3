@@ -15,3 +15,4 @@ results/
 *venv*/
 tmp/
 *.log
+datasets/

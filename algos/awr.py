@@ -435,6 +435,11 @@ class AWR_GBRL(OffPolicyAlgorithm):
         self._n_updates += self.policy_gradient_steps
         return policy_losses, value_losses, entropy_losses
 
+    def dump_logs(self) -> None:
+        from utils.helpers import log_ep_info_metrics
+        super().dump_logs()
+        log_ep_info_metrics(self.logger, self.ep_info_buffer)
+
     def learn(
         self,
         total_timesteps: int,

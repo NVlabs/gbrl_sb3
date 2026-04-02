@@ -346,6 +346,11 @@ class SAC_GBRL(OffPolicyAlgorithm):
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
+    def dump_logs(self) -> None:
+        from utils.helpers import log_ep_info_metrics
+        super().dump_logs()
+        log_ep_info_metrics(self.logger, self.ep_info_buffer)
+
     def learn(
         self: SelfSAC,
         total_timesteps: int,

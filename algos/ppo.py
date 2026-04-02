@@ -669,39 +669,8 @@ class PPO_GBRL(OnPolicyAlgorithm):
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                    if "c" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_cost_mean",
-                            safe_mean([ep_info["c"] for ep_info in self.ep_info_buffer]))
-                    if "max_queued" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_max_queued_mean",
-                            safe_mean([ep_info["max_queued"] for ep_info in self.ep_info_buffer]))
-                    if "max_wait" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_max_wait_mean",
-                            safe_mean([ep_info["max_wait"] for ep_info in self.ep_info_buffer]))
-                    if "cost_queue" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_cost_queue_mean",
-                            safe_mean([ep_info["cost_queue"] for ep_info in self.ep_info_buffer]))
-                    if "cost_wait" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_cost_wait_mean",
-                            safe_mean([ep_info["cost_wait"] for ep_info in self.ep_info_buffer]))
-                    if "cost_saturation" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_cost_saturation_mean",
-                            safe_mean([ep_info["cost_saturation"] for ep_info in self.ep_info_buffer]))
-                    if "cost_fairness" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_cost_fairness_mean",
-                            safe_mean([ep_info["cost_fairness"] for ep_info in self.ep_info_buffer]))
-                    if "cost_churn" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/ep_cost_churn_mean",
-                            safe_mean([ep_info["cost_churn"] for ep_info in self.ep_info_buffer]))
-                    if "normalized_score" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/normalized_score",
-                            safe_mean([ep_info["normalized_score"] for ep_info in self.ep_info_buffer]))
-                    if "completion_rate" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/completion_rate",
-                            safe_mean([ep_info["completion_rate"] for ep_info in self.ep_info_buffer]))
-                    if "is_success" in self.ep_info_buffer[0]:
-                        self.logger.record("rollout/success_rate",
-                            safe_mean([ep_info["is_success"] for ep_info in self.ep_info_buffer]))
+                    from utils.helpers import log_ep_info_metrics
+                    log_ep_info_metrics(self.logger, self.ep_info_buffer)
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")

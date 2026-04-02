@@ -49,19 +49,21 @@ from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
 from algos.sac import SAC_GBRL
 from algos.split_rl import SPLIT_RL
+from algos.split_awr import SPLIT_AWR_GBRL
 from algos.safety.ppo import VanillaPPO as PPO
 
 from config.args import parse_args, process_logging, process_policy_kwargs, SAFETY_ENVS
 
 NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'split_rl': SPLIT_RL,
                 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL,
-                'awr_gbrl': AWR_GBRL, 'ppo_nn': PPO,
+                'awr_gbrl': AWR_GBRL, 'split_awr_gbrl': SPLIT_AWR_GBRL,
+                'ppo_nn': PPO,
                 'ppo_lag': PPOLag, "cpo": CPO, 'cup': CUP, 'ipo': IPO,
                 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL,
                 'awr_nn': AWR, 'dqn_nn': DQN}
-CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo or algo == 'split_rl']
+CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo or algo in ('split_rl', 'split_awr_gbrl')]
 ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl', 'split_rl']
-OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl']
+OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl', 'split_awr_gbrl']
 
 if __name__ == '__main__':
     args = parse_args()
@@ -183,7 +185,7 @@ if __name__ == '__main__':
 
             eval_env = VecVideoRecorder(eval_env,
                                         video_folder=str(video_path),
-                                        record_video_trigger=lambda x: x == int(args.eval_kwargs['eval_freq'] / args.num_envs),
+                                        record_video_trigger=lambda x: x == 0,
                                         name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
                                         video_length=args.eval_kwargs.get('video_length', 2000))
 

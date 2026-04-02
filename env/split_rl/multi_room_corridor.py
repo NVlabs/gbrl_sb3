@@ -211,7 +211,7 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         agent_x = (left_wall_x + 1 + right_wall_x) // 2
         agent_y = (bottom_top + 1 + height - 2) // 2
         self.agent_pos = np.array([agent_x, agent_y])
-        self.agent_dir = 0  # facing right
+        self.agent_dir = self._rand_int(0, 4)  # random facing direction
 
         self.mission = "move the ball, collect keys, unlock doors, and reach the goal"
 
@@ -381,6 +381,10 @@ class MoveBallEnv(MiniGridEnv):
         if not was_carrying_ball and is_carrying_ball and self.ball_dropped_reward_given and not self.ball_cleared:
             # Penalty for picking ball back up after a bad drop (still blocking)
             reward = -0.5
+        elif not was_carrying_ball and is_carrying_ball and self.ball_cleared:
+            # Penalty for picking ball back up after successfully clearing the doorway
+            reward = -0.5
+            self.ball_cleared = False
 
         # One-time reward/penalty when the ball is dropped
         if was_carrying_ball and not is_carrying_ball and not self.ball_dropped_reward_given:

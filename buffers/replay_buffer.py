@@ -377,3 +377,106 @@ class CategoricalReplayBuffer(ReplayBuffer):
             self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
         )
         return CategoricalReplayBufferSamples(*tuple(map(self.to_torch, data)))
+
+
+class SplitAWRReplayBufferSamples(NamedTuple):
+    observations: np.ndarray
+    next_observations: np.ndarray
+    actions: th.Tensor
+    advantages: th.Tensor
+    returns: th.Tensor
+    dones: th.Tensor
+    rewards: th.Tensor
+    labels: np.ndarray
+
+
+class SplitCategoricalAWRReplayBuffer(CategoricalAWRReplayBuffer):
+    """CategoricalAWRReplayBuffer with per-transition objective labels for Split-RL.
+
+    Expert data is pre-filled at positions [0, _expert_boundary) and protected
+    from being overwritten. Online data fills [_expert_boundary, buffer_size).
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        gamma: float,
+        gae_lambda: float,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        return_type: str = 'monte-carlo',
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_mixed: bool = False,
+    ):
+        super().__init__(buffer_size, observation_space, action_space, gamma, gae_lambda,
+                         device, n_envs=n_envs, return_type=return_type,
+                         optimize_memory_usage=optimize_memory_usage,
+                         handle_timeout_termination=handle_timeout_termination,
+                         is_mixed=is_mixed)
+        self.labels = np.zeros((self.buffer_size, self.n_envs), dtype=np.int32)
+        self._expert_boundary = 0
+
+    def prefill_expert(self, observations: np.ndarray, next_observations: np.ndarray,
+                       actions: np.ndarray, rewards: np.ndarray, dones: np.ndarray,
+                       label: int) -> None:
+        """Bulk-insert expert transitions into the buffer.
+
+        Args:
+            observations: (N, obs_dim) categorical
+            next_observations: (N, obs_dim) categorical
+            actions: (N, 1) float32
+            rewards: (N, 1) float32
+            dones: (N, 1) float32
+            label: int objective label (1, 2, 3, ...)
+        """
+        n = len(observations)
+        end_pos = self.pos + n
+        if end_pos > self.buffer_size:
+            raise ValueError(
+                f"Expert data ({n} transitions) doesn't fit: "
+                f"pos={self.pos}, buffer_size={self.buffer_size}")
+
+        sl = slice(self.pos, end_pos)
+        self.observations[sl, 0] = observations
+        self.next_observations[sl, 0] = next_observations
+        self.actions[sl, 0] = actions
+        self.rewards[sl, 0] = rewards.flatten()
+        self.dones[sl, 0] = dones.flatten()
+        self.labels[sl, 0] = label
+        self.timeouts[sl, 0] = 0.0
+
+        self.pos = end_pos
+        self.valid_pos = self.pos
+        self._expert_boundary = self.pos
+
+    def add(self, obs, next_obs, action, reward, done, infos):
+        self.labels[self.pos] = 0  # online data = label 0
+        super().add(obs, next_obs, action, reward, done, infos)
+        # Protect expert data: if pos wrapped past buffer end, skip expert region
+        if self._expert_boundary > 0 and self.pos < self._expert_boundary:
+            self.pos = self._expert_boundary
+
+    def _get_samples(self, batch_inds: np.ndarray,
+                     env: Optional[VecNormalize] = None) -> SplitAWRReplayBufferSamples:
+        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+
+        if self.optimize_memory_usage:
+            next_obs = self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :]
+        else:
+            next_obs = self.next_observations[batch_inds, env_indices, :]
+
+        data = (
+            self.observations[batch_inds, env_indices, :],
+            next_obs,
+            self.actions[batch_inds, env_indices, :],
+            self.advantages[batch_inds, env_indices],
+            self.returns[batch_inds, env_indices],
+            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
+            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
+        )
+        converted = tuple(map(self.to_torch, data))
+        labels = self.labels[batch_inds, env_indices]  # keep as numpy int32
+        return SplitAWRReplayBufferSamples(*converted, labels)
