@@ -441,24 +441,13 @@ def _build_callbacks(args, eval_env):
         if args.eval_kwargs.get('record', False):
             video_path = ROOT_PATH / f'videos/{args.env_type}/{args.env_name}/{args.algo_type}'
             os.makedirs(video_path, exist_ok=True)
-            video_length = args.eval_kwargs.get('video_length', 200)
-            video_freq = args.eval_kwargs.get('video_freq', 100000)
-            # Flag-based trigger: armed by the eval callback every video_freq
-            # training steps.  Fires at most once per eval round.
-            def _video_trigger(step):
-                if getattr(_video_trigger, 'armed', False):
-                    _video_trigger.armed = False
-                    return True
-                return False
-            _video_trigger.armed = True           # record first eval round
-            _video_trigger.video_freq = video_freq
-            _video_trigger.last_record_timestep = 0
+
             eval_env = VecVideoRecorder(
                 eval_env,
                 video_folder=str(video_path),
-                record_video_trigger=_video_trigger,
+                record_video_trigger=lambda x: x == int(args.eval_kwargs['eval_freq'] / args.num_envs),
                 name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
-                video_length=video_length)
+                video_length=args.eval_kwargs.get('video_length', 2000))
 
         # Apply VecNormalize AFTER VecVideoRecorder
         if args.wrapper == 'normalize':

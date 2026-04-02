@@ -181,27 +181,11 @@ if __name__ == '__main__':
             if not os.path.exists(video_path):
                 os.makedirs(video_path, exist_ok=True)
 
-            n_eval_eps = args.eval_kwargs.get('n_eval_episodes', 5)
-            video_length = args.eval_kwargs.get('video_length', 2000)
-
-            # Fire once per eval round (1st episode out of every n_eval_eps).
-            # Detect reset() vs step_wait() by checking whether step_id changed:
-            # VecVideoRecorder increments step_id in step_wait BEFORE calling
-            # the trigger, but does NOT increment it in reset().
-            _trigger_state = {'prev_step_id': 0, 'reset_count': 0}
-            def _once_per_eval_round(step_id, _s=_trigger_state, _n=n_eval_eps):
-                is_reset = (step_id == _s['prev_step_id'])
-                _s['prev_step_id'] = step_id
-                if is_reset:
-                    _s['reset_count'] += 1
-                    return (_s['reset_count'] - 1) % _n == 0
-                return False
-
             eval_env = VecVideoRecorder(eval_env,
                                         video_folder=str(video_path),
-                                        record_video_trigger=_once_per_eval_round,
+                                        record_video_trigger=lambda x: x == int(args.eval_kwargs['eval_freq'] / args.num_envs),
                                         name_prefix=f'{args.save_name}_seed_{args.seed}_eval',
-                                        video_length=video_length)
+                                        video_length=args.eval_kwargs.get('video_length', 2000))
 
         # Apply VecNormalize AFTER VecVideoRecorder so it's the outermost wrapper.
         # This ensures sync_envs_normalization can find VecNormalize on eval_env.
