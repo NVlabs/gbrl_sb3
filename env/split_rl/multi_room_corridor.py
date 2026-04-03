@@ -365,16 +365,84 @@ class MoveBallEnv(MiniGridEnv):
 
         # Agent starts at a random position in the near room
         self.place_agent(top=agent_top, size=agent_size)
+        self.agent_dir = self._rand_int(0, 4)
 
         self.mission = "move the blue ball blocking the entrance and reach the goal"
 
     def step(self, action):
+        self.step_count += 1
+
         # Check if agent was carrying the ball before this step
         was_carrying_ball = self.carrying is not None and isinstance(self.carrying, Ball)
 
-        obs, reward, terminated, truncated, info = super().step(action)
-
         reward = 0
+        terminated = False
+        truncated = False
+        info = {}
+
+        # Get the position in front of the agent
+        fwd_pos = self.front_pos
+
+        # Get the contents of the cell in front of the agent
+        fwd_cell = self.grid.get(*fwd_pos)
+
+        # Rotate left
+        if action == self.actions.left:
+            self.agent_dir -= 1
+            if self.agent_dir < 0:
+                self.agent_dir += 4
+
+        # Rotate right
+        elif action == self.actions.right:
+            self.agent_dir = (self.agent_dir + 1) % 4
+
+        # Move forward
+        elif action == self.actions.forward:
+            if fwd_cell is None or fwd_cell.can_overlap():
+                self.agent_pos = tuple(fwd_pos)
+            if fwd_cell is not None and fwd_cell.type == "goal":
+                if self.carrying is not None:
+                    reward = -0.5  # must drop before finishing
+                else:
+                    terminated = True
+            if fwd_cell is not None and fwd_cell.type == "lava":
+                terminated = True
+
+        # Pick up an object
+        elif action == self.actions.pickup:
+            if fwd_cell and fwd_cell.can_pickup():
+                if self.carrying is None:
+                    self.carrying = fwd_cell
+                    self.carrying.cur_pos = np.array([-1, -1])
+                    self.grid.set(fwd_pos[0], fwd_pos[1], None)
+
+        # Drop an object
+        elif action == self.actions.drop:
+            if not fwd_cell and self.carrying:
+                self.grid.set(fwd_pos[0], fwd_pos[1], self.carrying)
+                self.carrying.cur_pos = fwd_pos
+                self.carrying = None
+
+        # Toggle/activate an object
+        elif action == self.actions.toggle:
+            if fwd_cell:
+                fwd_cell.toggle(self, fwd_pos)
+
+        # Done action (not used by default)
+        elif action == self.actions.done:
+            pass
+
+        else:
+            raise ValueError(f"Unknown action: {action}")
+
+        if self.step_count >= self.max_steps:
+            truncated = True
+
+        if self.render_mode == "human":
+            self.render()
+
+        obs = self.gen_obs()
+
 
         # Detect pickup: wasn't carrying → now carrying
         is_carrying_ball = self.carrying is not None and isinstance(self.carrying, Ball)
@@ -385,6 +453,9 @@ class MoveBallEnv(MiniGridEnv):
             # Penalty for picking ball back up after successfully clearing the doorway
             reward = -0.5
             self.ball_cleared = False
+        elif not was_carrying_ball and is_carrying_ball:
+            # Bonus for initially picking up the ball
+            reward = 0.5
 
         # One-time reward/penalty when the ball is dropped
         if was_carrying_ball and not is_carrying_ball and not self.ball_dropped_reward_given:
@@ -444,38 +515,173 @@ class KeyDoorEnv(MiniGridEnv):
         # Outer walls
         self.grid.wall_rect(0, 0, width, height)
 
-        # Vertical wall splitting the room
-        wall_x = width // 2
-        for y in range(0, height):
-            self.grid.set(wall_x, y, Wall())
+        # Randomly choose wall orientation and which side agent starts on
+        is_vertical = self._rand_bool()
+        flip_sides = self._rand_bool()
 
-        # Randomize door position along the wall
-        door_y = self._rand_int(2, height - 2)
-        door = Door(self.door_color, is_locked=True)
-        self.grid.set(wall_x, door_y, door)
+        if is_vertical:
+            wall_pos = width // 2
+            for y in range(0, height):
+                self.grid.set(wall_pos, y, Wall())
 
-        # Key at a random position on the left side
-        self.place_obj(Key(self.door_color), top=(1, 1), size=(wall_x - 1, height - 2))
+            door_along = self._rand_int(2, height - 2)
+            door = Door(self.door_color, is_locked=True)
+            self.grid.set(wall_pos, door_along, door)
 
-        # Goal at a random position on the right side (not adjacent to door)
+            region_a_top, region_a_size = (1, 1), (wall_pos - 2, height - 2)
+            region_b_top, region_b_size = (wall_pos + 1, 1), (width - 2 - wall_pos, height - 2)
+        else:
+            wall_pos = height // 2
+            for x in range(0, width):
+                self.grid.set(x, wall_pos, Wall())
+
+            door_along = self._rand_int(2, width - 2)
+            door = Door(self.door_color, is_locked=True)
+            self.grid.set(door_along, wall_pos, door)
+
+            region_a_top, region_a_size = (1, 1), (width - 2, wall_pos - 2)
+            region_b_top, region_b_size = (1, wall_pos + 1), (width - 2, height - 2 - wall_pos)
+
+        if not flip_sides:
+            agent_top, agent_size = region_a_top, region_a_size
+            goal_top, goal_size = region_b_top, region_b_size
+        else:
+            agent_top, agent_size = region_b_top, region_b_size
+            goal_top, goal_size = region_a_top, region_a_size
+
+        # Key at a random position on agent's side
+        self.place_obj(Key(self.door_color), top=agent_top, size=agent_size)
+
+        # Goal on the far side (not adjacent to door)
+        if is_vertical:
+            door_pos = (wall_pos, door_along)
+        else:
+            door_pos = (door_along, wall_pos)
+
         def not_adjacent_to_door(env, pos):
-            return abs(pos[0] - wall_x) <= 1 and abs(pos[1] - door_y) <= 1
-        self.place_obj(Goal(), top=(wall_x + 1, 1), size=(width - 2 - wall_x, height - 2),
+            return abs(pos[0] - door_pos[0]) <= 1 and abs(pos[1] - door_pos[1]) <= 1
+        self.place_obj(Goal(), top=goal_top, size=goal_size,
                        reject_fn=not_adjacent_to_door)
 
-        # Agent starts at a random position on the left side
-        self.place_agent(top=(1, 1), size=(wall_x - 1, height - 2))
+        # Agent starts at a random position on its side, random direction
+        self.place_agent(top=agent_top, size=agent_size)
+        self.agent_dir = self._rand_int(0, 4)
+
+        # Track state for reward shaping
+        self._has_key = False
+        self._door_opened = False
+        self._key_dropped = False
+        self.door_pos = np.array(door_pos, dtype=np.float64)
+        self._prev_dist_to_door = None
 
         self.mission = "pick up the key, unlock the door, and reach the goal"
 
     def step(self, action):
-        obs, reward, terminated, truncated, info = super().step(action)
+        self.step_count += 1
+        was_carrying_key = self.carrying is not None and isinstance(self.carrying, Key)
 
         reward = 0
+        terminated = False
+        truncated = False
+        info = {}
+
+        # Get the position in front of the agent (captured before action)
+        fwd_pos = self.front_pos
+        fwd_cell = self.grid.get(*fwd_pos)
+
+        # Rotate left
+        if action == self.actions.left:
+            self.agent_dir -= 1
+            if self.agent_dir < 0:
+                self.agent_dir += 4
+
+        # Rotate right
+        elif action == self.actions.right:
+            self.agent_dir = (self.agent_dir + 1) % 4
+
+        # Move forward
+        elif action == self.actions.forward:
+            if fwd_cell is None or fwd_cell.can_overlap():
+                self.agent_pos = tuple(fwd_pos)
+            if fwd_cell is not None and fwd_cell.type == "goal":
+                if self.carrying is not None:
+                    reward = -0.5  # must drop before finishing
+                else:
+                    terminated = True
+            if fwd_cell is not None and fwd_cell.type == "lava":
+                terminated = True
+
+        # Pick up an object
+        elif action == self.actions.pickup:
+            if fwd_cell and fwd_cell.can_pickup():
+                if self.carrying is None:
+                    self.carrying = fwd_cell
+                    self.carrying.cur_pos = np.array([-1, -1])
+                    self.grid.set(fwd_pos[0], fwd_pos[1], None)
+
+        # Drop an object
+        elif action == self.actions.drop:
+            if not fwd_cell and self.carrying:
+                self.grid.set(fwd_pos[0], fwd_pos[1], self.carrying)
+                self.carrying.cur_pos = fwd_pos
+                self.carrying = None
+
+        # Toggle/activate an object
+        elif action == self.actions.toggle:
+            if fwd_cell:
+                fwd_cell.toggle(self, fwd_pos)
+
+        # Done action (not used by default)
+        elif action == self.actions.done:
+            pass
+
+        else:
+            raise ValueError(f"Unknown action: {action}")
+
+        if self.step_count >= self.max_steps:
+            truncated = True
+
+        if self.render_mode == "human":
+            self.render()
+
+        obs = self.gen_obs()
+
+        is_carrying_key = self.carrying is not None and isinstance(self.carrying, Key)
+
+        # Bonus for picking up the key
+        if not was_carrying_key and is_carrying_key:
+            if not self._has_key:
+                reward = 0.5  # first pickup
+                self._has_key = True
+            elif self._key_dropped:
+                reward = -0.5  # penalty for re-picking after drop
+                self._key_dropped = False
+
+        # Key no longer carried — distinguish drop vs door consumption
+        if was_carrying_key and not is_carrying_key:
+            if action == self.actions.drop:
+                reward = -0.5  # penalty for dropping key
+                self._key_dropped = True
+            elif action == self.actions.toggle:
+                self._door_opened = True  # key consumed by door
+
+        # Penalty for trying to toggle the locked door without holding the key
+        if action == self.actions.toggle and not is_carrying_key and not self._door_opened:
+            if isinstance(fwd_cell, Door) and fwd_cell.is_locked:
+                reward = -0.5
+
+        # Distance-based shaping toward door when carrying the key
+        if is_carrying_key and not self._door_opened:
+            dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.door_pos)
+            if self._prev_dist_to_door is not None:
+                reward += (self._prev_dist_to_door - dist) * 0.1
+            self._prev_dist_to_door = dist
+        else:
+            self._prev_dist_to_door = None
 
         # Terminal reward on reaching the goal
         if terminated and not truncated:
-            reward = 1.0 - min(self.step_count / self.max_steps, 1.0)
+            reward += 1.0 - min(self.step_count / self.max_steps, 1.0)
 
         return obs, reward, terminated, truncated, info
 
@@ -579,16 +785,126 @@ class BoxKeyEnv(MiniGridEnv):
 
         # Agent starts at a random position in the near room
         self.place_agent(top=agent_top, size=agent_size)
+        self.agent_dir = self._rand_int(0, 4)
+
+        # Track state for reward shaping
+        self._box_opened = False
+        self._has_key = False
+        self._door_opened = False
+        self._key_dropped = False
+        if is_vertical:
+            self.door_pos = np.array([wall_pos, door_along], dtype=np.float64)
+        else:
+            self.door_pos = np.array([door_along, wall_pos], dtype=np.float64)
+        self._prev_dist_to_door = None
 
         self.mission = "open the box, pick up the key, unlock the door, and reach the goal"
 
     def step(self, action):
-        obs, reward, terminated, truncated, info = super().step(action)
+        self.step_count += 1
+        was_carrying_key = self.carrying is not None and isinstance(self.carrying, Key)
 
-        reward = 0
+        reward = 0.0
+        terminated = False
+        truncated = False
+        info = {}
+
+        # Get the position in front of the agent (captured before action)
+        fwd_pos = self.front_pos
+        fwd_cell = self.grid.get(*fwd_pos)
+
+        # Rotate left
+        if action == self.actions.left:
+            self.agent_dir -= 1
+            if self.agent_dir < 0:
+                self.agent_dir += 4
+
+        # Rotate right
+        elif action == self.actions.right:
+            self.agent_dir = (self.agent_dir + 1) % 4
+
+        # Move forward
+        elif action == self.actions.forward:
+            if fwd_cell is None or fwd_cell.can_overlap():
+                self.agent_pos = tuple(fwd_pos)
+            if fwd_cell is not None and fwd_cell.type == "goal":
+                if self.carrying is not None:
+                    reward = -0.5  # must drop before finishing
+                else:
+                    terminated = True
+            if fwd_cell is not None and fwd_cell.type == "lava":
+                terminated = True
+
+        # Pick up an object
+        elif action == self.actions.pickup:
+            if fwd_cell and fwd_cell.can_pickup():
+                if self.carrying is None:
+                    self.carrying = fwd_cell
+                    self.carrying.cur_pos = np.array([-1, -1])
+                    self.grid.set(fwd_pos[0], fwd_pos[1], None)
+
+        # Drop an object
+        elif action == self.actions.drop:
+            if not fwd_cell and self.carrying:
+                self.grid.set(fwd_pos[0], fwd_pos[1], self.carrying)
+                self.carrying.cur_pos = fwd_pos
+                self.carrying = None
+
+        # Toggle/activate an object
+        elif action == self.actions.toggle:
+            if fwd_cell:
+                fwd_cell.toggle(self, fwd_pos)
+
+        # Done action (not used by default)
+        elif action == self.actions.done:
+            pass
+
+        else:
+            raise ValueError(f"Unknown action: {action}")
+
+        if self.step_count >= self.max_steps:
+            truncated = True
+
+        if self.render_mode == "human":
+            self.render()
+
+        obs = self.gen_obs()
+
+        is_carrying_key = self.carrying is not None and isinstance(self.carrying, Key)
+
+        # Bonus for opening the box
+        if action == self.actions.toggle and isinstance(fwd_cell, Box) and not self._box_opened:
+            self._box_opened = True
+            reward = 0.5
+
+        # Bonus for picking up the key
+        if not was_carrying_key and is_carrying_key:
+            if not self._has_key:
+                reward = 0.5  # first pickup
+                self._has_key = True
+            elif self._key_dropped:
+                reward = -0.5  # penalty for re-picking after drop
+                self._key_dropped = False
+
+        # Key no longer carried — distinguish drop vs door consumption
+        if was_carrying_key and not is_carrying_key:
+            if action == self.actions.drop:
+                reward = -0.5  # penalty for dropping key
+                self._key_dropped = True
+            elif action == self.actions.toggle:
+                self._door_opened = True  # key consumed by door
+
+        # Distance-based shaping toward door when carrying the key
+        if is_carrying_key and not self._door_opened:
+            dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.door_pos)
+            if self._prev_dist_to_door is not None:
+                reward += (self._prev_dist_to_door - dist) * 0.1
+            self._prev_dist_to_door = dist
+        else:
+            self._prev_dist_to_door = None
 
         # Terminal reward on reaching the goal
         if terminated and not truncated:
-            reward = 1.0 - min(self.step_count / self.max_steps, 1.0)
+            reward += 1.0 - min(self.step_count / self.max_steps, 1.0)
 
         return obs, reward, terminated, truncated, info

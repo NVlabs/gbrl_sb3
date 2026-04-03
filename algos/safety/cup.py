@@ -364,7 +364,8 @@ class CUP(PPOLag):
         self.logger.record("train/cup_stop_iter", final_iter)
         self.logger.record("train/cup_entropy", np.mean(second_step_entropies))
         self.logger.record("train/cup_policy_ratio", np.mean(second_step_ratios))
-        self.logger.record("rollout/ep_scalarization_mean", safe_mean([ep_info["s"] for ep_info in self.ep_info_buffer]))
+        if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0 and "s" in self.ep_info_buffer[0]:
+            self.logger.record("rollout/ep_scalarization_mean", safe_mean([ep_info["s"] for ep_info in self.ep_info_buffer]))
         self.logger.record("train/lagrange_multiplier", self.lagrangian_multiplier.item())
 
     def learn(

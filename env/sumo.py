@@ -1433,6 +1433,8 @@ class VecCostMonitor(VecMonitor):
         self.episode_original_rewards = np.zeros(self.num_envs, dtype=np.float64)
         self.episode_max_queued = np.zeros(self.num_envs, dtype=np.int32)
         self.episode_max_wait = np.zeros(self.num_envs, dtype=np.float64)
+        self.episode_scalarizations = np.zeros(self.num_envs, dtype=np.float64)
+        self.cost_limit = 0.1
 
     def reset(self, **kwargs):
         obs = super().reset(**kwargs)
@@ -1440,6 +1442,7 @@ class VecCostMonitor(VecMonitor):
         self.episode_original_rewards[:] = 0.0
         self.episode_max_queued[:] = 0
         self.episode_max_wait[:] = 0.0
+        self.episode_scalarizations[:] = 0.0
         return obs
 
     def step_wait(self):
@@ -1456,6 +1459,13 @@ class VecCostMonitor(VecMonitor):
                 self.episode_max_queued[i] = queued
             if max_wait > self.episode_max_wait[i]:
                 self.episode_max_wait[i] = max_wait
+            # Scalarization: reward when under cost budget, else penalised cost
+            cost_i = infos[i].get("cost", 0.0)
+            rew_i = float(rewards[i])
+            if cost_i <= self.cost_limit:
+                self.episode_scalarizations[i] += rew_i
+            else:
+                self.episode_scalarizations[i] += -cost_i - 1.5
         new_infos = list(infos[:])
         for i in range(len(dones)):
             if dones[i]:
@@ -1469,6 +1479,7 @@ class VecCostMonitor(VecMonitor):
                     "original_r": float(self.episode_original_rewards[i]),
                     "max_queued": int(self.episode_max_queued[i]),
                     "max_wait": float(self.episode_max_wait[i]),
+                    "s": float(self.episode_scalarizations[i]),
                     "t": round(time.time() - self.t_start, 6),
                 }
                 for key in self.info_keywords:
@@ -1481,6 +1492,7 @@ class VecCostMonitor(VecMonitor):
                 self.episode_original_rewards[i] = 0.0
                 self.episode_max_queued[i] = 0
                 self.episode_max_wait[i] = 0.0
+                self.episode_scalarizations[i] = 0.0
                 if self.results_writer:
                     self.results_writer.write_row(episode_info)
                 new_infos[i] = info
