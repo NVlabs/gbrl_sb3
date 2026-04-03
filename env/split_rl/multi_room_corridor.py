@@ -491,16 +491,25 @@ class KeyDoorEnv(MiniGridEnv):
     """
     Subtask 2: Pick up a key and use it to unlock a door.
 
-    A room split by a locked door. The key is on the agent's
-    side. The agent must pick up the key, unlock the door, and
-    reach the goal on the other side.
+    The grid has a locked door separating the agent from the goal.
+    The key is on the agent's side. The agent must pick up the key,
+    find and unlock the door, and reach the goal.
+
+    Layout variants (random each episode):
+      - **simple**: single dividing wall with locked door (key and
+        door in same room half).
+      - **multi-room**: an extra interior wall with an open passage
+        partitions the agent's side into two sub-rooms. The key is
+        in the far sub-room, so the agent must navigate through the
+        passage to reach the locked door. Forces exploration.
     """
 
-    def __init__(self, width=8, height=8, min_size=6, max_size=12, max_steps=None,
-                 door_color="purple", **kwargs):
+    def __init__(self, width=8, height=8, min_size=7, max_size=12, max_steps=None,
+                 door_color="purple", multi_room_prob=0.4, **kwargs):
         self.door_color = door_color
         self.min_size = min_size
         self.max_size = max_size
+        self.multi_room_prob = multi_room_prob
 
         if max_steps is None:
             max_steps = 4 * max_size * max_size
@@ -532,56 +541,80 @@ class KeyDoorEnv(MiniGridEnv):
         # Outer walls
         self.grid.wall_rect(0, 0, width, height)
 
-        # Randomly choose wall orientation and which side agent starts on
-        is_vertical = self._rand_bool()
+        # ── Main dividing wall with locked door ──
+        # Always vertical for clarity; flip_sides randomises which half
+        # the agent starts on.
         flip_sides = self._rand_bool()
 
-        if is_vertical:
-            wall_pos = width // 2
-            for y in range(0, height):
-                self.grid.set(wall_pos, y, Wall())
+        wall_x = width // 2
+        for y in range(0, height):
+            self.grid.set(wall_x, y, Wall())
 
-            door_along = self._rand_int(2, height - 2)
-            door = Door(self.door_color, is_locked=True)
-            self.grid.set(wall_pos, door_along, door)
+        door_y = self._rand_int(2, height - 2)
+        door = Door(self.door_color, is_locked=True)
+        self.grid.set(wall_x, door_y, door)
+        door_pos = (wall_x, door_y)
 
-            region_a_top, region_a_size = (1, 1), (wall_pos - 2, height - 2)
-            region_b_top, region_b_size = (wall_pos + 1, 1), (width - 2 - wall_pos, height - 2)
-        else:
-            wall_pos = height // 2
-            for x in range(0, width):
-                self.grid.set(x, wall_pos, Wall())
-
-            door_along = self._rand_int(2, width - 2)
-            door = Door(self.door_color, is_locked=True)
-            self.grid.set(door_along, wall_pos, door)
-
-            region_a_top, region_a_size = (1, 1), (width - 2, wall_pos - 2)
-            region_b_top, region_b_size = (1, wall_pos + 1), (width - 2, height - 2 - wall_pos)
+        # Region A = left half, Region B = right half
+        region_a_top = (1, 1)
+        region_a_size = (wall_x - 1, height - 2)
+        region_b_top = (wall_x + 1, 1)
+        region_b_size = (width - wall_x - 2, height - 2)
 
         if not flip_sides:
-            agent_top, agent_size = region_a_top, region_a_size
+            agent_region_top, agent_region_size = region_a_top, region_a_size
             goal_top, goal_size = region_b_top, region_b_size
         else:
-            agent_top, agent_size = region_b_top, region_b_size
+            agent_region_top, agent_region_size = region_b_top, region_b_size
             goal_top, goal_size = region_a_top, region_a_size
 
-        # Key at a random position on agent's side
-        self.place_obj(Key(self.door_color), top=agent_top, size=agent_size)
+        # ── Multi-room variant: split agent's side with an interior wall ──
+        use_multi = (self.np_random.random() < self.multi_room_prob
+                     and agent_region_size[1] >= 5)  # need enough height
+
+        if use_multi:
+            # Horizontal interior wall splitting agent's side into top/bottom
+            interior_wall_y = agent_region_top[1] + agent_region_size[1] // 2
+            ax0 = agent_region_top[0]
+            ax1 = ax0 + agent_region_size[0]
+            for x in range(ax0, ax1):
+                self.grid.set(x, interior_wall_y, Wall())
+
+            # Open passage (gap) at a random position in interior wall
+            gap_x = self._rand_int(ax0, ax1)
+            self.grid.set(gap_x, interior_wall_y, None)
+
+            # Key sub-room = top half, agent sub-room = bottom half
+            # (or vice versa, randomized)
+            sub_a_top = (ax0, agent_region_top[1])
+            sub_a_size = (agent_region_size[0], interior_wall_y - agent_region_top[1] - 1)
+            sub_b_top = (ax0, interior_wall_y + 1)
+            sub_b_size = (agent_region_size[0],
+                          agent_region_top[1] + agent_region_size[1] - interior_wall_y - 1)
+
+            if self._rand_bool():
+                key_top, key_size = sub_a_top, sub_a_size
+                agent_top, agent_size = sub_b_top, sub_b_size
+            else:
+                key_top, key_size = sub_b_top, sub_b_size
+                agent_top, agent_size = sub_a_top, sub_a_size
+
+            # Place key in key sub-room
+            self.place_obj(Key(self.door_color), top=key_top, size=key_size)
+            # Agent starts in agent sub-room
+            self.place_agent(top=agent_top, size=agent_size)
+        else:
+            # Simple layout: key and agent in same region
+            self.place_obj(Key(self.door_color),
+                           top=agent_region_top, size=agent_region_size)
+            self.place_agent(top=agent_region_top, size=agent_region_size)
 
         # Goal on the far side (not adjacent to door)
-        if is_vertical:
-            door_pos = (wall_pos, door_along)
-        else:
-            door_pos = (door_along, wall_pos)
-
         def not_adjacent_to_door(env, pos):
             return abs(pos[0] - door_pos[0]) <= 1 and abs(pos[1] - door_pos[1]) <= 1
         goal_pos = self.place_obj(Goal(), top=goal_top, size=goal_size,
                        reject_fn=not_adjacent_to_door)
 
-        # Agent starts at a random position on its side, random direction
-        self.place_agent(top=agent_top, size=agent_size)
         self.agent_dir = self._rand_int(0, 4)
 
         # Track state for reward shaping
@@ -683,6 +716,7 @@ class KeyDoorEnv(MiniGridEnv):
                 self._key_dropped = True
             elif action == self.actions.toggle:
                 self._door_opened = True  # key consumed by door
+                reward = 0.5  # explicit bonus for unlocking the door
 
         # Penalty for trying to toggle the locked door without holding the key
         if action == self.actions.toggle and not is_carrying_key and not self._door_opened:
@@ -693,14 +727,21 @@ class KeyDoorEnv(MiniGridEnv):
         if is_carrying_key and not self._door_opened:
             dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.door_pos)
             if self._prev_dist_to_door is not None:
-                reward += (self._prev_dist_to_door - dist) * 0.2
+                delta = self._prev_dist_to_door - dist
+                # Only reward approach, don't penalise retreat (avoids
+                # wall-hugging where Euclidean gradient conflicts with
+                # the actual walkable path around obstacles).
+                if delta > 0:
+                    reward += delta * 0.15
             self._prev_dist_to_door = dist
             self._prev_dist_to_goal = None
         elif self._door_opened:
             # After door is opened, shape toward the goal
             dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.goal_pos)
             if self._prev_dist_to_goal is not None:
-                reward += (self._prev_dist_to_goal - dist) * 0.2
+                delta = self._prev_dist_to_goal - dist
+                if delta > 0:
+                    reward += delta * 0.15
             self._prev_dist_to_goal = dist
             self._prev_dist_to_door = None
         else:

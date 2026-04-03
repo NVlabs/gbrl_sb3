@@ -506,16 +506,20 @@ class SumoRewardCostWrapper(ParallelEnv):
         return -(ml_wait - prev)
 
     def _compute_side_deficit_cost(self, agent_id: str) -> float:
-        """Continuous side-street service-deficit cost.
+        """Continuous side-street service-deficit cost, bounded to [0, 1].
 
-        c_t = sum_{l in side} q_l(t) * max(0, g_l(t) - tau)
+        raw_deficit = sum_{l in side} q_l(t) * max(0, g_l(t) - tau)
+        c_t = min(raw_deficit / kappa, 1.0)
 
         where q_l is queued vehicles and g_l is steps since lane l was
-        last served.  Cost grows with both queue depth and neglect
-        duration, so a quick green flick only partially relieves it.
-        Creates genuine state-localized conflict with mainline reward:
-          - Low side deficit states -> reward dominates
-          - High side backlog + long gap -> cost dominates
+        last served.  Cost is continuous (not binary) but bounded:
+          - 0 when all side-streets are served or have no demand
+          - Ramps linearly to 1 as neglect severity grows
+          - Saturates at 1 when raw deficit >= kappa
+
+        This keeps the cost head numerically stable (bounded targets)
+        while preserving the continuous severity signal that makes a
+        cheap green flick only partially relieve the cost.
         """
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
@@ -534,7 +538,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             gap = counters.get(li, 0)
             excess = max(0, gap - self._tau_service)
             deficit += q * excess
-        return deficit
+        return min(deficit / self._deficit_kappa, 1.0)
 
     def _side_deficit_label(self, agent_id: str) -> int:
         """State-based label for side_deficit cost.
@@ -878,7 +882,20 @@ class SumoRewardCostWrapper(ParallelEnv):
 
     def reset(self, seed=None, options=None):
         self._traci_dead = False  # clear crash flag for new episode
-        obs, infos = self._env.reset(seed=seed, options=options)
+
+        # sumo_rl's reset() calls close() on the old TraCI connection.
+        # If TraCI is already dead (e.g. from a crash in the previous
+        # episode), close() will throw. Catch that and force a fresh start.
+        try:
+            obs, infos = self._env.reset(seed=seed, options=options)
+        except Exception:
+            # Kill any lingering SUMO process and retry
+            try:
+                self._env.close()
+            except Exception:
+                pass
+            obs, infos = self._env.reset(seed=seed, options=options)
+
         self.agents = list(self._env.agents) if hasattr(self._env, 'agents') else list(self.possible_agents)
 
         # Re-acquire TraCI handle (new simulation instance after reset)
@@ -904,7 +921,7 @@ class SumoRewardCostWrapper(ParallelEnv):
                     self._non_priority_lanes[agent_id] = list(ts.in_lanes[n // 2:])
 
         # Classify NS vs EW lanes for directional reward/cost split
-        if self._override_reward in ("ns_wait", "arterial", "mainline") or self._cost_fn in ("directional", "service_gap"):
+        if self._override_reward in ("ns_wait", "arterial", "mainline") or self._cost_fn in ("directional", "service_gap", "side_deficit"):
             self._classify_mainline_side()
 
         # Reset episode accumulators
