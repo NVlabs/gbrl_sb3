@@ -59,6 +59,7 @@ COST_FN_REGISTRY: Dict[str, str] = {
     "max_wait": "Per-agent: 1 if max accumulated wait on any lane > wait_threshold",
     "lane_saturation": "Per-agent: 1 if any lane queue ratio > saturation_threshold",
     "emergency": "Global: 1 if emergency stops occur (+ teleport_weight if teleports)",
+    "side_deficit": "Per-agent: continuous sum_l q_l * max(0, g_l - tau) — severity-weighted side-street neglect",
 }
 
 
@@ -136,6 +137,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         mainline_direction: str = "auto",
         tau_service: int = 6,
         side_queue_cap: float = 0.7,
+        deficit_kappa: float = 5.0,
     ):
         if cost_fn not in COST_FN_REGISTRY:
             raise ValueError(
@@ -165,6 +167,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._mainline_direction = mainline_direction
         self._tau_service = tau_service
         self._side_queue_cap = side_queue_cap
+        self._deficit_kappa = deficit_kappa
 
         # Number of green phases per agent (for obs transformation)
         self._n_green_phases: Optional[int] = None
@@ -501,6 +504,65 @@ class SumoRewardCostWrapper(ParallelEnv):
         prev = self._prev_mainline_wait.get(agent_id, 0.0)
         self._prev_mainline_wait[agent_id] = ml_wait
         return -(ml_wait - prev)
+
+    def _compute_side_deficit_cost(self, agent_id: str) -> float:
+        """Continuous side-street service-deficit cost.
+
+        c_t = sum_{l in side} q_l(t) * max(0, g_l(t) - tau)
+
+        where q_l is queued vehicles and g_l is steps since lane l was
+        last served.  Cost grows with both queue depth and neglect
+        duration, so a quick green flick only partially relieves it.
+        Creates genuine state-localized conflict with mainline reward:
+          - Low side deficit states -> reward dominates
+          - High side backlog + long gap -> cost dominates
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+
+        side_idx = self._side_lane_indices.get(agent_id, [])
+        if not side_idx:
+            return 0.0
+
+        counters = self._steps_since_served.get(agent_id, {})
+        lane_queues = ts.get_lanes_queue()
+
+        deficit = 0.0
+        for li in side_idx:
+            q = lane_queues[li] if li < len(lane_queues) else 0
+            gap = counters.get(li, 0)
+            excess = max(0, gap - self._tau_service)
+            deficit += q * excess
+        return deficit
+
+    def _side_deficit_label(self, agent_id: str) -> int:
+        """State-based label for side_deficit cost.
+
+        y_t = 1[ sum_l q_l * max(0, g_l - tau) > kappa ]
+
+        Identical quantity to the cost, thresholded.  Cleanly separates
+        low-deficit states (reward update) from urgent-neglect states
+        (cost update) for SPLIT-RL gradient routing.
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+
+        side_idx = self._side_lane_indices.get(agent_id, [])
+        if not side_idx:
+            return 0
+
+        counters = self._steps_since_served.get(agent_id, {})
+        lane_queues = ts.get_lanes_queue()
+
+        deficit = 0.0
+        for li in side_idx:
+            q = lane_queues[li] if li < len(lane_queues) else 0
+            gap = counters.get(li, 0)
+            excess = max(0, gap - self._tau_service)
+            deficit += q * excess
+        return 1 if deficit > self._deficit_kappa else 0
 
     def _compute_service_gap_cost(self, agent_id: str) -> float:
         """Binary service-gap cost: 1 when side-street guarantee is violated.
@@ -935,7 +997,10 @@ class SumoRewardCostWrapper(ParallelEnv):
                 reward = original_reward
 
             # ── Compute the training cost signal ──
-            if self._cost_fn == "service_gap":
+            if self._cost_fn == "side_deficit":
+                self._update_service_tracking(agent)
+                cost = self._compute_side_deficit_cost(agent)
+            elif self._cost_fn == "service_gap":
                 self._update_service_tracking(agent)
                 cost = self._compute_service_gap_cost(agent)
             elif self._cost_fn == "directional":
@@ -982,8 +1047,10 @@ class SumoRewardCostWrapper(ParallelEnv):
             has_cost = cost > 0
             self._update_failure_history(agent, has_cost)
 
-            # Label: directional (state-based) or fallback (event-proximal)
-            if self._cost_fn == "directional":
+            # Label: state-based for side_deficit/directional, else event-proximal
+            if self._cost_fn == "side_deficit":
+                label = self._side_deficit_label(agent)
+            elif self._cost_fn == "directional":
                 label = self._directional_label(agent)
             else:
                 label = self._event_proximal_label(agent)
@@ -1209,7 +1276,7 @@ def make_sumo_vec_env(
     n_envs: int = 1,
     seed: Optional[int] = None,
     override_reward: Optional[str] = "mainline",
-    cost_fn: str = "service_gap",
+    cost_fn: str = "side_deficit",
     starvation_threshold: int = 3,
     fairness_tau: float = 60.0,
     fairness_rho: float = 3.0,
@@ -1222,6 +1289,7 @@ def make_sumo_vec_env(
     mainline_direction: str = "auto",
     tau_service: int = 6,
     side_queue_cap: float = 0.7,
+    deficit_kappa: float = 5.0,
     use_gui: bool = False,
     **override_kwargs,
 ):
@@ -1249,7 +1317,7 @@ def make_sumo_vec_env(
         If "throughput", replace sumo-rl reward with negative pressure.
         None keeps the original sumo-rl reward (e.g., diff-waiting-time).
     cost_fn : str
-        Cost function. See COST_FN_REGISTRY. Default "service_gap".
+        Cost function. See COST_FN_REGISTRY. Default "side_deficit".
     starvation_threshold : int
         For cost_fn="starvation": max halting vehicles per non-priority lane. Default 3.
     fairness_tau : float
@@ -1266,6 +1334,8 @@ def make_sumo_vec_env(
         For cost_fn="emergency": multiplier for teleport events.
     label_horizon : int
         Number of past steps for event-proximal fallback label.
+    deficit_kappa : float
+        For cost_fn="side_deficit": label threshold. Label=1 when deficit > kappa. Default 5.0.
     use_gui : bool
         Whether to render SUMO GUI.
     **override_kwargs
@@ -1320,6 +1390,7 @@ def make_sumo_vec_env(
         mainline_direction=mainline_direction,
         tau_service=tau_service,
         side_queue_cap=side_queue_cap,
+        deficit_kappa=deficit_kappa,
     )
 
     # PettingZoo → SB3 VecEnv via SuperSuit

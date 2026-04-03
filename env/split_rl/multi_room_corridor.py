@@ -250,16 +250,19 @@ class MoveBallEnv(MiniGridEnv):
     through the doorway to reach a goal on the other side.
     """
 
-    def __init__(self, width=8, height=8, max_steps=None, **kwargs):
+    def __init__(self, width=8, height=8, min_size=6, max_size=12, max_steps=None, **kwargs):
+        self.min_size = min_size
+        self.max_size = max_size
+
         if max_steps is None:
-            max_steps = 4 * width * height
+            max_steps = 4 * max_size * max_size
 
         mission_space = MissionSpace(mission_func=self._gen_mission)
 
         super().__init__(
             mission_space=mission_space,
-            width=width,
-            height=height,
+            width=max_size,
+            height=max_size,
             see_through_walls=False,
             max_steps=max_steps,
             **kwargs,
@@ -268,6 +271,12 @@ class MoveBallEnv(MiniGridEnv):
     @staticmethod
     def _gen_mission():
         return "move the blue ball blocking the entrance and reach the goal"
+
+    def reset(self, **kwargs):
+        # Randomize grid dimensions each episode
+        self.width = self._rand_int(self.min_size, self.max_size + 1)
+        self.height = self._rand_int(self.min_size, self.max_size + 1)
+        return super().reset(**kwargs)
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -487,19 +496,21 @@ class KeyDoorEnv(MiniGridEnv):
     reach the goal on the other side.
     """
 
-    def __init__(self, width=8, height=8, max_steps=None,
+    def __init__(self, width=8, height=8, min_size=6, max_size=12, max_steps=None,
                  door_color="purple", **kwargs):
         self.door_color = door_color
+        self.min_size = min_size
+        self.max_size = max_size
 
         if max_steps is None:
-            max_steps = 4 * width * height
+            max_steps = 4 * max_size * max_size
 
         mission_space = MissionSpace(mission_func=self._gen_mission)
 
         super().__init__(
             mission_space=mission_space,
-            width=width,
-            height=height,
+            width=max_size,
+            height=max_size,
             see_through_walls=False,
             max_steps=max_steps,
             **kwargs,
@@ -508,6 +519,12 @@ class KeyDoorEnv(MiniGridEnv):
     @staticmethod
     def _gen_mission():
         return "pick up the key, unlock the door, and reach the goal"
+
+    def reset(self, **kwargs):
+        # Randomize grid dimensions each episode
+        self.width = self._rand_int(self.min_size, self.max_size + 1)
+        self.height = self._rand_int(self.min_size, self.max_size + 1)
+        return super().reset(**kwargs)
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -560,7 +577,7 @@ class KeyDoorEnv(MiniGridEnv):
 
         def not_adjacent_to_door(env, pos):
             return abs(pos[0] - door_pos[0]) <= 1 and abs(pos[1] - door_pos[1]) <= 1
-        self.place_obj(Goal(), top=goal_top, size=goal_size,
+        goal_pos = self.place_obj(Goal(), top=goal_top, size=goal_size,
                        reject_fn=not_adjacent_to_door)
 
         # Agent starts at a random position on its side, random direction
@@ -572,7 +589,9 @@ class KeyDoorEnv(MiniGridEnv):
         self._door_opened = False
         self._key_dropped = False
         self.door_pos = np.array(door_pos, dtype=np.float64)
+        self.goal_pos = np.array(goal_pos, dtype=np.float64)
         self._prev_dist_to_door = None
+        self._prev_dist_to_goal = None
 
         self.mission = "pick up the key, unlock the door, and reach the goal"
 
@@ -674,10 +693,19 @@ class KeyDoorEnv(MiniGridEnv):
         if is_carrying_key and not self._door_opened:
             dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.door_pos)
             if self._prev_dist_to_door is not None:
-                reward += (self._prev_dist_to_door - dist) * 0.1
+                reward += (self._prev_dist_to_door - dist) * 0.2
             self._prev_dist_to_door = dist
+            self._prev_dist_to_goal = None
+        elif self._door_opened:
+            # After door is opened, shape toward the goal
+            dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.goal_pos)
+            if self._prev_dist_to_goal is not None:
+                reward += (self._prev_dist_to_goal - dist) * 0.2
+            self._prev_dist_to_goal = dist
+            self._prev_dist_to_door = None
         else:
             self._prev_dist_to_door = None
+            self._prev_dist_to_goal = None
 
         # Terminal reward on reaching the goal
         if terminated and not truncated:
@@ -696,19 +724,21 @@ class BoxKeyEnv(MiniGridEnv):
     to complete the task.
     """
 
-    def __init__(self, width=8, height=8, max_steps=None,
+    def __init__(self, width=8, height=8, min_size=6, max_size=12, max_steps=None,
                  box_color="green", **kwargs):
         self.box_color = box_color
+        self.min_size = min_size
+        self.max_size = max_size
 
         if max_steps is None:
-            max_steps = 4 * width * height
+            max_steps = 4 * max_size * max_size
 
         mission_space = MissionSpace(mission_func=self._gen_mission)
 
         super().__init__(
             mission_space=mission_space,
-            width=width,
-            height=height,
+            width=max_size,
+            height=max_size,
             see_through_walls=False,
             max_steps=max_steps,
             **kwargs,
@@ -717,6 +747,12 @@ class BoxKeyEnv(MiniGridEnv):
     @staticmethod
     def _gen_mission():
         return "open the box, pick up the key, unlock the door, and reach the goal"
+
+    def reset(self, **kwargs):
+        # Randomize grid dimensions each episode
+        self.width = self._rand_int(self.min_size, self.max_size + 1)
+        self.height = self._rand_int(self.min_size, self.max_size + 1)
+        return super().reset(**kwargs)
 
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
@@ -739,11 +775,7 @@ class BoxKeyEnv(MiniGridEnv):
 
             region_a_top, region_a_size = (1, 1), (wall_pos - 2, height - 2)
             region_b_top, region_b_size = (wall_pos + 1, 1), (width - 2 - wall_pos, height - 2)
-
-            # Reject entire column adjacent to door wall on agent's side
-            # so the box never blocks the approach to the door
-            adj_a = {(wall_pos - 1, y) for y in range(1, height - 1)}
-            adj_b = {(wall_pos + 1, y) for y in range(1, height - 1)}
+            door_pos_xy = (wall_pos, door_along)
         else:
             wall_pos = height // 2
             for x in range(0, width):
@@ -755,33 +787,29 @@ class BoxKeyEnv(MiniGridEnv):
 
             region_a_top, region_a_size = (1, 1), (width - 2, wall_pos - 2)
             region_b_top, region_b_size = (1, wall_pos + 1), (width - 2, height - 2 - wall_pos)
-
-            # Reject entire row adjacent to door wall on agent's side
-            adj_a = {(x, wall_pos - 1) for x in range(1, width - 1)}
-            adj_b = {(x, wall_pos + 1) for x in range(1, width - 1)}
+            door_pos_xy = (door_along, wall_pos)
 
         # Assign agent room (with box) and goal room
         if not flip_sides:
             agent_top, agent_size = region_a_top, region_a_size
             goal_top, goal_size = region_b_top, region_b_size
-            door_neighbors = adj_a
         else:
             agent_top, agent_size = region_b_top, region_b_size
             goal_top, goal_size = region_a_top, region_a_size
-            door_neighbors = adj_b
 
-        # Box with key inside — random position in agent's room, never in the
-        # column/row directly adjacent to the door wall
+        # Box with key inside — random position in agent's room, not directly
+        # adjacent to the door (so it doesn't block the approach)
         key = Key(self.box_color)
         box = Box(self.box_color)
         box.contains = key
+        dx, dy = door_pos_xy
         self.place_obj(
             box, top=agent_top, size=agent_size,
-            reject_fn=lambda env, pos: (int(pos[0]), int(pos[1])) in door_neighbors,
+            reject_fn=lambda env, pos: abs(int(pos[0]) - dx) <= 1 and abs(int(pos[1]) - dy) <= 1,
         )
 
         # Goal in the far room
-        self.place_obj(Goal(), top=goal_top, size=goal_size)
+        goal_pos = self.place_obj(Goal(), top=goal_top, size=goal_size)
 
         # Agent starts at a random position in the near room
         self.place_agent(top=agent_top, size=agent_size)
@@ -796,7 +824,11 @@ class BoxKeyEnv(MiniGridEnv):
             self.door_pos = np.array([wall_pos, door_along], dtype=np.float64)
         else:
             self.door_pos = np.array([door_along, wall_pos], dtype=np.float64)
+        self.goal_pos = np.array(goal_pos, dtype=np.float64)
         self._prev_dist_to_door = None
+        self._prev_dist_to_goal = None
+        self._prev_dist_to_door = None
+        self._prev_dist_to_goal = None
 
         self.mission = "open the box, pick up the key, unlock the door, and reach the goal"
 
@@ -898,10 +930,19 @@ class BoxKeyEnv(MiniGridEnv):
         if is_carrying_key and not self._door_opened:
             dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.door_pos)
             if self._prev_dist_to_door is not None:
-                reward += (self._prev_dist_to_door - dist) * 0.1
+                reward += (self._prev_dist_to_door - dist) * 0.2
             self._prev_dist_to_door = dist
+            self._prev_dist_to_goal = None
+        elif self._door_opened:
+            # After door is opened, shape toward the goal
+            dist = np.linalg.norm(np.array(self.agent_pos, dtype=np.float64) - self.goal_pos)
+            if self._prev_dist_to_goal is not None:
+                reward += (self._prev_dist_to_goal - dist) * 0.2
+            self._prev_dist_to_goal = dist
+            self._prev_dist_to_door = None
         else:
             self._prev_dist_to_door = None
+            self._prev_dist_to_goal = None
 
         # Terminal reward on reaching the goal
         if terminated and not truncated:
