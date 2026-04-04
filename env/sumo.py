@@ -60,6 +60,9 @@ COST_FN_REGISTRY: Dict[str, str] = {
     "lane_saturation": "Per-agent: 1 if any lane queue ratio > saturation_threshold",
     "emergency": "Global: 1 if emergency stops occur (+ teleport_weight if teleports)",
     "side_deficit": "Per-agent: continuous sum_l q_l * max(0, g_l - tau) — severity-weighted side-street neglect",
+    "side_queue": "Per-agent: max queue ratio on side-street lanes — purely observation-based, no hidden state",
+    "bus_priority": "Per-agent: max(bus_wait/T_bus) across lanes with buses — task constraint, obs-extended",
+    "emergency_preemption": "Per-agent: max(emg_wait/T_emg) across lanes with emergencies — task constraint, obs-extended",
 }
 
 
@@ -138,6 +141,12 @@ class SumoRewardCostWrapper(ParallelEnv):
         tau_service: int = 6,
         side_queue_cap: float = 0.7,
         deficit_kappa: float = 5.0,
+        # Bus / emergency injection parameters
+        bus_injection_interval: float = 25.0,
+        bus_cost_threshold: float = 30.0,
+        bus_warn_threshold: float = 10.0,
+        emergency_injection_interval: float = 105.0,
+        emergency_cost_threshold: float = 10.0,
     ):
         if cost_fn not in COST_FN_REGISTRY:
             raise ValueError(
@@ -168,6 +177,27 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._tau_service = tau_service
         self._side_queue_cap = side_queue_cap
         self._deficit_kappa = deficit_kappa
+
+        # Bus / emergency injection parameters
+        self._bus_injection_interval = bus_injection_interval
+        self._bus_cost_threshold = bus_cost_threshold    # T_bus
+        self._bus_warn_threshold = bus_warn_threshold    # T_warn
+        self._emg_injection_interval = emergency_injection_interval
+        self._emg_cost_threshold = emergency_cost_threshold  # T_emg
+
+        # Bus / emergency runtime state (populated in reset)
+        self._boundary_edges: List[str] = []       # edges with dead-end nodes
+        self._next_bus_time: float = 0.0           # sim-time for next bus injection
+        self._next_emg_time: float = 0.0           # sim-time for next emergency injection
+        self._bus_vtype_created: bool = False
+        self._emg_vtype_created: bool = False
+        self._bus_counter: int = 0
+        self._emg_counter: int = 0
+        # Per-agent per-lane bus/emergency features (updated each step)
+        self._has_bus: Dict[str, np.ndarray] = {}
+        self._bus_wait: Dict[str, np.ndarray] = {}
+        self._has_emg: Dict[str, np.ndarray] = {}
+        self._emg_wait: Dict[str, np.ndarray] = {}
 
         # Number of green phases per agent (for obs transformation)
         self._n_green_phases: Optional[int] = None
@@ -222,7 +252,19 @@ class SumoRewardCostWrapper(ParallelEnv):
             sample_agent = self.possible_agents[0]
             self._n_green_phases = self.action_spaces[sample_agent].n
 
-        if self._needs_obs_padding:
+        # Bus/emergency obs extension: compute n_lanes from obs layout
+        # obs = [phase_one_hot(n_phases), min_green(1), density(n_lanes), queue(n_lanes)]
+        # n_lanes = (obs_dim - n_phases - 1) / 2
+        self._obs_extension_dim = 0
+        self._raw_max_obs_dim = self._max_obs_dim  # pre-extension dim for padding
+        if self._cost_fn in ("bus_priority", "emergency_preemption"):
+            n_phases_act = next(iter(self.action_spaces.values())).n
+            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
+            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
+            self._obs_extension_dim = 2 * n_lanes  # has_X + X_wait per lane
+            self._max_obs_dim += self._obs_extension_dim
+
+        if self._needs_obs_padding or self._obs_extension_dim > 0:
             padded_space = gym.spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(self._max_obs_dim,), dtype=np.float32,
@@ -264,6 +306,9 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _transform_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Zero-pad observations for non-uniform networks.
 
+        Pads to self._raw_max_obs_dim (pre-extension). Bus/emergency
+        features are appended separately by _extend_obs().
+
         Categorical phase transformation is handled at the VecEnv level
         (VecCategoricalPhase wrapper) because SuperSuit cannot concatenate
         object arrays.
@@ -273,8 +318,8 @@ class SumoRewardCostWrapper(ParallelEnv):
         padded = {}
         for agent, ob in obs.items():
             ob = np.asarray(ob, dtype=np.float32)
-            if ob.shape[0] < self._max_obs_dim:
-                ob = np.pad(ob, (0, self._max_obs_dim - ob.shape[0]))
+            if ob.shape[0] < self._raw_max_obs_dim:
+                ob = np.pad(ob, (0, self._raw_max_obs_dim - ob.shape[0]))
             padded[agent] = ob
         return padded
 
@@ -455,6 +500,288 @@ class SumoRewardCostWrapper(ParallelEnv):
             side_idx = self._side_lane_indices[agent_id]
             self._steps_since_served[agent_id] = {li: 0 for li in side_idx}
 
+    # ── Bus / Emergency vehicle injection ─────────────────────────────────
+
+    def _discover_boundary_edges(self):
+        """Find edges connected to boundary (dead-end) nodes for route generation.
+
+        Boundary nodes are those with only one connected edge — the entry/exit
+        points of the network. We collect edges that START at boundary nodes
+        (suitable as route origins) and edges that END at boundary nodes
+        (suitable as route destinations).
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        all_edges = sumo.edge.getIDList()
+        # Filter out internal edges (start with ':')
+        normal_edges = [e for e in all_edges if not e.startswith(':')]
+
+        # Count edge connections per node
+        from collections import Counter
+        node_edge_count = Counter()
+        for e in normal_edges:
+            node_edge_count[sumo.edge.getFromJunction(e)] += 1
+            node_edge_count[sumo.edge.getToJunction(e)] += 1
+
+        # Boundary nodes: those with few connections (typically 1-2)
+        # For grid/arterial networks, boundary nodes have exactly 1 edge
+        # Use threshold of 2 to also catch corner nodes
+        boundary_nodes = {n for n, c in node_edge_count.items() if c <= 2}
+
+        # Collect edges starting from boundary nodes (for origins)
+        self._origin_edges = [e for e in normal_edges
+                              if sumo.edge.getFromJunction(e) in boundary_nodes]
+        # Collect edges ending at boundary nodes (for destinations)
+        self._dest_edges = [e for e in normal_edges
+                            if sumo.edge.getToJunction(e) in boundary_nodes]
+
+        # Fallback: if we didn't find enough, use all normal edges
+        if len(self._origin_edges) < 2:
+            self._origin_edges = normal_edges
+        if len(self._dest_edges) < 2:
+            self._dest_edges = normal_edges
+
+    def _create_bus_vtype(self):
+        """Create a 'priority_bus' vehicle type via TraCI."""
+        sumo = self._get_traci()
+        if sumo is None or self._bus_vtype_created:
+            return
+        try:
+            sumo.vehicletype.copy("DEFAULT_VEHTYPE", "priority_bus")
+            sumo.vehicletype.setLength("priority_bus", 12.0)
+            sumo.vehicletype.setMaxSpeed("priority_bus", 11.1)  # ~40 km/h
+            sumo.vehicletype.setColor("priority_bus", (0, 128, 255, 255))  # blue
+            sumo.vehicletype.setVehicleClass("priority_bus", "bus")
+            self._bus_vtype_created = True
+        except Exception:
+            pass  # vtype might already exist from previous episode
+
+    def _create_emergency_vtype(self):
+        """Create an 'emergency_vehicle' vehicle type via TraCI."""
+        sumo = self._get_traci()
+        if sumo is None or self._emg_vtype_created:
+            return
+        try:
+            sumo.vehicletype.copy("DEFAULT_VEHTYPE", "emergency_vehicle")
+            sumo.vehicletype.setLength("emergency_vehicle", 7.0)
+            sumo.vehicletype.setMaxSpeed("emergency_vehicle", 30.0)
+            sumo.vehicletype.setColor("emergency_vehicle", (255, 0, 0, 255))  # red
+            sumo.vehicletype.setVehicleClass("emergency_vehicle", "emergency")
+            self._emg_vtype_created = True
+        except Exception:
+            pass
+
+    def _inject_vehicles(self, sim_time: float):
+        """Inject bus / emergency vehicles based on current simulation time.
+
+        Called each agent step (every delta_time seconds). Checks if it's
+        time to inject a new bus or emergency vehicle and does so via TraCI.
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+        rng = np.random.RandomState(int(sim_time * 1000) % (2**31))
+
+        # Bus injection
+        if self._cost_fn == "bus_priority" and sim_time >= self._next_bus_time:
+            origin = rng.choice(self._origin_edges)
+            dest = rng.choice(self._dest_edges)
+            # Ensure origin != dest
+            attempts = 0
+            while dest == origin and attempts < 10:
+                dest = rng.choice(self._dest_edges)
+                attempts += 1
+            if dest != origin:
+                bus_id = f"bus_{self._bus_counter}"
+                route_id = f"bus_route_{self._bus_counter}"
+                try:
+                    sumo.route.add(route_id, [origin, dest])
+                    sumo.vehicle.add(bus_id, route_id, typeID="priority_bus")
+                    self._bus_counter += 1
+                except Exception:
+                    pass  # route might be invalid (no path), skip
+            # Schedule next bus with some randomness
+            self._next_bus_time = sim_time + self._bus_injection_interval * (0.8 + 0.4 * rng.random())
+
+        # Emergency injection
+        if self._cost_fn == "emergency_preemption" and sim_time >= self._next_emg_time:
+            origin = rng.choice(self._origin_edges)
+            dest = rng.choice(self._dest_edges)
+            attempts = 0
+            while dest == origin and attempts < 10:
+                dest = rng.choice(self._dest_edges)
+                attempts += 1
+            if dest != origin:
+                emg_id = f"emg_{self._emg_counter}"
+                route_id = f"emg_route_{self._emg_counter}"
+                try:
+                    sumo.route.add(route_id, [origin, dest])
+                    sumo.vehicle.add(emg_id, route_id, typeID="emergency_vehicle")
+                    self._emg_counter += 1
+                except Exception:
+                    pass
+            self._next_emg_time = sim_time + self._emg_injection_interval * (0.8 + 0.4 * rng.random())
+
+    def _detect_special_vehicles(self):
+        """Detect bus/emergency vehicles on each agent's incoming lanes.
+
+        Updates self._has_bus, self._bus_wait, self._has_emg, self._emg_wait
+        for each agent. These are used for obs extension, cost, and label.
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        need_bus = self._cost_fn == "bus_priority"
+        need_emg = self._cost_fn == "emergency_preemption"
+
+        for agent_id in self.possible_agents:
+            ts = self._get_traffic_signal(agent_id)
+            if ts is None:
+                continue
+
+            n_lanes = len(ts.lanes)
+            has_bus = np.zeros(n_lanes, dtype=np.float32)
+            bus_wait = np.zeros(n_lanes, dtype=np.float32)
+            has_emg = np.zeros(n_lanes, dtype=np.float32)
+            emg_wait = np.zeros(n_lanes, dtype=np.float32)
+
+            for i, lane in enumerate(ts.lanes):
+                try:
+                    veh_ids = sumo.lane.getLastStepVehicleIDs(lane)
+                except Exception:
+                    continue
+                for vid in veh_ids:
+                    try:
+                        vclass = sumo.vehicle.getVehicleClass(vid)
+                        vwait = sumo.vehicle.getWaitingTime(vid)
+                    except Exception:
+                        continue
+                    if need_bus and vclass == "bus":
+                        has_bus[i] = 1.0
+                        bus_wait[i] = max(bus_wait[i], vwait)
+                    if need_emg and vclass == "emergency":
+                        has_emg[i] = 1.0
+                        emg_wait[i] = max(emg_wait[i], vwait)
+
+            # Normalize wait times
+            if need_bus:
+                bus_wait = np.clip(bus_wait / self._bus_cost_threshold, 0.0, 1.0)
+                self._has_bus[agent_id] = has_bus
+                self._bus_wait[agent_id] = bus_wait
+            if need_emg:
+                emg_wait = np.clip(emg_wait / self._emg_cost_threshold, 0.0, 1.0)
+                self._has_emg[agent_id] = has_emg
+                self._emg_wait[agent_id] = emg_wait
+
+    def _extend_obs_spaces(self):
+        """No-op: obs spaces are pre-extended in __init__."""
+        pass
+
+    def _extend_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Append bus/emergency features to observation vectors."""
+        if self._obs_extension_dim == 0:
+            return obs
+
+        extended = {}
+        for agent, ob in obs.items():
+            ob = np.asarray(ob, dtype=np.float32)
+
+            if self._cost_fn == "bus_priority":
+                hb = self._has_bus.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
+                bw = self._bus_wait.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
+                ob = np.concatenate([ob, hb, bw])
+            elif self._cost_fn == "emergency_preemption":
+                he = self._has_emg.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
+                ew = self._emg_wait.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
+                ob = np.concatenate([ob, he, ew])
+
+            extended[agent] = ob
+        return extended
+
+    # ── Bus priority cost/label ───────────────────────────────────────────
+
+    def _compute_bus_priority_cost(self, agent_id: str) -> float:
+        """Max bus wait ratio across incoming lanes.
+
+        cost = max over lanes of: bus_wait[lane] / T_bus  (if bus present)
+             = 0                                           (if no bus)
+
+        Continuous in [0, 1]. Ramps as bus waits longer.
+        """
+        bus_wait = self._bus_wait.get(agent_id)
+        has_bus = self._has_bus.get(agent_id)
+        if bus_wait is None or has_bus is None:
+            return 0.0
+        # bus_wait is already normalized by T_bus
+        masked = bus_wait * has_bus
+        return float(np.max(masked)) if np.any(has_bus > 0) else 0.0
+
+    def _bus_priority_label(self, agent_id: str) -> int:
+        """Label = 1 when bus is waiting on an unserved lane past T_warn.
+
+        Fires when:
+          - A bus is present on some incoming lane (has_bus[lane] = 1)
+          - That lane is NOT served by the current green phase
+          - The bus's wait time exceeds T_warn (normalized: bus_wait > T_warn/T_bus)
+
+        This is the decision frontier where the agent SHOULD switch to
+        serve the bus but diff-waiting-time says "keep serving the majority."
+        """
+        has_bus = self._has_bus.get(agent_id)
+        bus_wait = self._bus_wait.get(agent_id)
+        if has_bus is None or bus_wait is None:
+            return 0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+
+        # Get which lanes the current phase serves
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+
+        warn_ratio = self._bus_warn_threshold / self._bus_cost_threshold
+
+        for i in range(len(has_bus)):
+            if has_bus[i] > 0 and i not in served_lanes and bus_wait[i] > warn_ratio:
+                return 1
+        return 0
+
+    # ── Emergency preemption cost/label ───────────────────────────────────
+
+    def _compute_emergency_preemption_cost(self, agent_id: str) -> float:
+        """Max emergency wait ratio across incoming lanes."""
+        emg_wait = self._emg_wait.get(agent_id)
+        has_emg = self._has_emg.get(agent_id)
+        if emg_wait is None or has_emg is None:
+            return 0.0
+        masked = emg_wait * has_emg
+        return float(np.max(masked)) if np.any(has_emg > 0) else 0.0
+
+    def _emergency_preemption_label(self, agent_id: str) -> int:
+        """Label = 1 when emergency vehicle is on an unserved lane.
+
+        No wait threshold — emergency preemption is immediate.
+        """
+        has_emg = self._has_emg.get(agent_id)
+        if has_emg is None:
+            return 0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+
+        for i in range(len(has_emg)):
+            if has_emg[i] > 0 and i not in served_lanes:
+                return 1
+        return 0
+
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.
 
@@ -567,6 +894,71 @@ class SumoRewardCostWrapper(ParallelEnv):
             excess = max(0, gap - self._tau_service)
             deficit += q * excess
         return 1 if deficit > self._deficit_kappa else 0
+
+    def _compute_side_queue_cost(self, agent_id: str) -> float:
+        """Max queue ratio on side-street lanes — purely observation-based.
+
+        c_t = max_{l in side} queue_ratio_l(t)
+
+        Returns the worst (highest) side-street queue ratio ∈ [0, 1].
+        This is a continuous cost that uses only observation features
+        (lane queue ratios are part of the SUMO-RL obs vector).
+
+        Structural conflict with mainline reward:
+          - Holding mainline green → mainline waiting drops (reward ↑)
+            but side-street queues grow unchecked (cost ↑)
+          - Switching to serve side-streets → mainline waiting grows
+            (reward ↓) but side-street queues drain (cost ↓)
+          - Green time is finite: cannot serve both simultaneously
+
+        Why purely obs-based matters:
+          - The cost value head V^C(s) can learn this function exactly,
+            since max(side queue ratios) is a deterministic function of
+            the observation vector
+          - The label is also obs-based → the tree can split on the
+            side-street queue features → SPLIT-RL gradient routing is
+            meaningful, not random
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+
+        side_idx = self._side_lane_indices.get(agent_id, [])
+        if not side_idx:
+            return 0.0
+
+        lane_queues = ts.get_lanes_queue()
+        side_queues = [lane_queues[i] for i in side_idx if i < len(lane_queues)]
+        return max(side_queues) if side_queues else 0.0
+
+    def _side_queue_label(self, agent_id: str) -> int:
+        """Observation-based label for side_queue cost.
+
+        y_t = 1[ max_{l in side} queue_ratio_l > side_queue_cap ]
+
+        Fires when the worst side-street queue ratio exceeds the
+        threshold.  This is a deterministic function of the current
+        observation — the tree can predict it exactly from the
+        side-street queue features in the obs vector.
+
+        The label partitions the state space into:
+          - label=0: side-streets are manageable → optimize reward freely
+          - label=1: side-streets are overloaded → cost gradient must
+            steer the policy toward serving them
+        """
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+
+        side_idx = self._side_lane_indices.get(agent_id, [])
+        if not side_idx:
+            return 0
+
+        lane_queues = ts.get_lanes_queue()
+        side_queues = [lane_queues[i] for i in side_idx if i < len(lane_queues)]
+        if not side_queues:
+            return 0
+        return 1 if max(side_queues) > self._side_queue_cap else 0
 
     def _compute_service_gap_cost(self, agent_id: str) -> float:
         """Binary service-gap cost: 1 when side-street guarantee is violated.
@@ -794,6 +1186,8 @@ class SumoRewardCostWrapper(ParallelEnv):
             return self._compute_agent_cost_lane_saturation(agent_id)
         elif self._cost_fn == "emergency":
             return self._compute_emergency_cost()
+        elif self._cost_fn == "side_queue":
+            return self._compute_side_queue_cost(agent_id)
         return 0.0
 
     def _compute_emergency_cost(self) -> float:
@@ -921,8 +1315,36 @@ class SumoRewardCostWrapper(ParallelEnv):
                     self._non_priority_lanes[agent_id] = list(ts.in_lanes[n // 2:])
 
         # Classify NS vs EW lanes for directional reward/cost split
-        if self._override_reward in ("ns_wait", "arterial", "mainline") or self._cost_fn in ("directional", "service_gap", "side_deficit"):
+        if self._override_reward in ("ns_wait", "arterial", "mainline") or self._cost_fn in ("directional", "service_gap", "side_deficit", "side_queue"):
             self._classify_mainline_side()
+
+        # Bus / emergency injection setup
+        if self._cost_fn in ("bus_priority", "emergency_preemption"):
+            # Build phase→lane mapping (needed for label: "is lane served?")
+            if not self._phase_to_lanes:
+                self._classify_mainline_side()  # also builds phase_to_lanes
+            self._discover_boundary_edges()
+            self._bus_vtype_created = False
+            self._emg_vtype_created = False
+            self._bus_counter = 0
+            self._emg_counter = 0
+            self._next_bus_time = self._bus_injection_interval * 0.5  # first bus after ~half interval
+            self._next_emg_time = self._emg_injection_interval * 0.5
+            if self._cost_fn == "bus_priority":
+                self._create_bus_vtype()
+            elif self._cost_fn == "emergency_preemption":
+                self._create_emergency_vtype()
+            # Extend obs spaces on first reset
+            self._extend_obs_spaces()
+            # Init per-agent feature arrays
+            for agent_id in self.possible_agents:
+                ts = self._get_traffic_signal(agent_id)
+                if ts is not None:
+                    n_lanes = len(ts.lanes)
+                    self._has_bus[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._bus_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._has_emg[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._emg_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
 
         # Reset episode accumulators
         self._episode_costs = {agent: 0.0 for agent in self.possible_agents}
@@ -938,7 +1360,9 @@ class SumoRewardCostWrapper(ParallelEnv):
             info["safety_label"] = 0
             new_infos[agent] = info
 
-        return self._transform_obs(obs), new_infos
+        obs = self._transform_obs(obs)
+        obs = self._extend_obs(obs)
+        return obs, new_infos
 
     def _force_terminate_episode(self, reason: str):
         """Return safe dummy outputs when TraCI/SUMO connection is dead."""
@@ -962,7 +1386,9 @@ class SumoRewardCostWrapper(ParallelEnv):
                 "episode_max_wait": self._episode_max_wait.get(a, 0.0),
             }
         self.agents = []
-        return self._transform_obs(obs), rewards, terminations, truncations, infos
+        obs = self._transform_obs(obs)
+        obs = self._extend_obs(obs)
+        return obs, rewards, terminations, truncations, infos
 
     def step(self, actions):
         # If a previous step already killed the TraCI connection, keep
@@ -990,6 +1416,14 @@ class SumoRewardCostWrapper(ParallelEnv):
         Separated from step() so the outer try/except can catch TraCI
         failures in any of the downstream calls.
         """
+        # Inject and detect bus/emergency vehicles (once per step, before per-agent loop)
+        if self._cost_fn in ("bus_priority", "emergency_preemption"):
+            sumo = self._get_traci()
+            if sumo is not None:
+                sim_time = sumo.simulation.getTime()
+                self._inject_vehicles(sim_time)
+                self._detect_special_vehicles()
+
         # For emergency cost_fn, compute once (global)
         emergency_cost = None
         if self._cost_fn == "emergency":
@@ -1014,7 +1448,9 @@ class SumoRewardCostWrapper(ParallelEnv):
                 reward = original_reward
 
             # ── Compute the training cost signal ──
-            if self._cost_fn == "side_deficit":
+            if self._cost_fn == "side_queue":
+                cost = self._compute_side_queue_cost(agent)
+            elif self._cost_fn == "side_deficit":
                 self._update_service_tracking(agent)
                 cost = self._compute_side_deficit_cost(agent)
             elif self._cost_fn == "service_gap":
@@ -1044,6 +1480,10 @@ class SumoRewardCostWrapper(ParallelEnv):
                 cost = self._compute_agent_cost_lane_saturation(agent)
             elif self._cost_fn == "emergency":
                 cost = emergency_cost
+            elif self._cost_fn == "bus_priority":
+                cost = self._compute_bus_priority_cost(agent)
+            elif self._cost_fn == "emergency_preemption":
+                cost = self._compute_emergency_preemption_cost(agent)
             else:
                 cost = 0.0
 
@@ -1064,11 +1504,17 @@ class SumoRewardCostWrapper(ParallelEnv):
             has_cost = cost > 0
             self._update_failure_history(agent, has_cost)
 
-            # Label: state-based for side_deficit/directional, else event-proximal
-            if self._cost_fn == "side_deficit":
+            # Label: state-based for side_queue/side_deficit/directional/bus/emg, else event-proximal
+            if self._cost_fn == "side_queue":
+                label = self._side_queue_label(agent)
+            elif self._cost_fn == "side_deficit":
                 label = self._side_deficit_label(agent)
             elif self._cost_fn == "directional":
                 label = self._directional_label(agent)
+            elif self._cost_fn == "bus_priority":
+                label = self._bus_priority_label(agent)
+            elif self._cost_fn == "emergency_preemption":
+                label = self._emergency_preemption_label(agent)
             else:
                 label = self._event_proximal_label(agent)
 
@@ -1104,7 +1550,9 @@ class SumoRewardCostWrapper(ParallelEnv):
 
             new_infos[agent] = info
 
-        return self._transform_obs(obs), new_rewards, terminations, truncations, new_infos
+        obs = self._transform_obs(obs)
+        obs = self._extend_obs(obs)
+        return obs, new_rewards, terminations, truncations, new_infos
 
     def render(self):
         return self._env.render()
@@ -1293,7 +1741,7 @@ def make_sumo_vec_env(
     n_envs: int = 1,
     seed: Optional[int] = None,
     override_reward: Optional[str] = "mainline",
-    cost_fn: str = "side_deficit",
+    cost_fn: str = "side_queue",
     starvation_threshold: int = 3,
     fairness_tau: float = 60.0,
     fairness_rho: float = 3.0,
@@ -1307,6 +1755,11 @@ def make_sumo_vec_env(
     tau_service: int = 6,
     side_queue_cap: float = 0.7,
     deficit_kappa: float = 5.0,
+    bus_injection_interval: float = 25.0,
+    bus_cost_threshold: float = 30.0,
+    bus_warn_threshold: float = 10.0,
+    emergency_injection_interval: float = 105.0,
+    emergency_cost_threshold: float = 10.0,
     use_gui: bool = False,
     **override_kwargs,
 ):
@@ -1408,6 +1861,11 @@ def make_sumo_vec_env(
         tau_service=tau_service,
         side_queue_cap=side_queue_cap,
         deficit_kappa=deficit_kappa,
+        bus_injection_interval=bus_injection_interval,
+        bus_cost_threshold=bus_cost_threshold,
+        bus_warn_threshold=bus_warn_threshold,
+        emergency_injection_interval=emergency_injection_interval,
+        emergency_cost_threshold=emergency_cost_threshold,
     )
 
     # PettingZoo → SB3 VecEnv via SuperSuit
