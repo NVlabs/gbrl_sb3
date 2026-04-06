@@ -61,9 +61,10 @@ COST_FN_REGISTRY: Dict[str, str] = {
     "emergency": "Global: 1 if emergency stops occur (+ teleport_weight if teleports)",
     "side_deficit": "Per-agent: continuous sum_l q_l * max(0, g_l - tau) — severity-weighted side-street neglect",
     "side_queue": "Per-agent: max queue ratio on side-street lanes — purely observation-based, no hidden state",
-    "bus_priority": "Per-agent: max(bus_wait/T_bus) across lanes with buses — task constraint, obs-extended",
-    "convoy_priority": "Per-agent: max(convoy_wait/T_convoy) on unserved lanes with convoy vehicles — group priority, obs-extended",
+    "bus_priority": "Per-agent: max(bus_wait/T_bus) across unserved lanes with buses — volume-driven priority conflict, obs-extended with has_bus+bus_count+bus_wait",
+    "convoy_priority": "Per-agent: 1 if convoy is being split (lead passed, tail stuck on unserved lane) — platoon integrity constraint, obs-extended",
     "spillback": "Per-agent: max downstream occupancy on currently served lanes — road works / spillback protection, obs-extended",
+    "premium_priority": "Per-agent: steep cost when premium vehicle waits on unserved lane past T_premium — value-asymmetry priority, obs-extended",
 }
 
 
@@ -144,6 +145,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         deficit_kappa: float = 5.0,
         # Bus / convoy injection parameters
         bus_injection_interval: float = 25.0,
+        bus_count_per_injection: int = 1,
         bus_cost_threshold: float = 30.0,
         bus_warn_threshold: float = 10.0,
         convoy_injection_interval: float = 120.0,
@@ -151,6 +153,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         convoy_size_max: int = 8,
         convoy_cost_threshold: float = 20.0,
         convoy_warn_threshold: float = 8.0,
+        # Premium vehicle injection parameters
+        premium_injection_interval: float = 40.0,
+        premium_cost_threshold: float = 15.0,
+        premium_warn_threshold: float = 5.0,
         # Spillback / road works parameters
         roadwork_interval_mean: float = 300.0,
         roadwork_duration_mean: float = 400.0,
@@ -191,6 +197,7 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         # Bus / convoy injection parameters
         self._bus_injection_interval = bus_injection_interval
+        self._bus_count_per_injection = bus_count_per_injection
         self._bus_cost_threshold = bus_cost_threshold    # T_bus
         self._bus_warn_threshold = bus_warn_threshold    # T_warn
         self._convoy_injection_interval = convoy_injection_interval
@@ -198,6 +205,11 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._convoy_size_max = convoy_size_max
         self._convoy_cost_threshold = convoy_cost_threshold  # T_convoy
         self._convoy_warn_threshold = convoy_warn_threshold  # T_warn_convoy
+
+        # Premium vehicle injection parameters
+        self._premium_injection_interval = premium_injection_interval
+        self._premium_cost_threshold = premium_cost_threshold   # T_premium
+        self._premium_warn_threshold = premium_warn_threshold   # T_warn_premium
 
         # Spillback / road works parameters
         self._roadwork_interval_mean = roadwork_interval_mean
@@ -213,16 +225,26 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._boundary_edges: List[str] = []       # edges with dead-end nodes
         self._next_bus_time: float = 0.0           # sim-time for next bus injection
         self._next_convoy_time: float = 0.0        # sim-time for next convoy injection
+        self._next_premium_time: float = 0.0       # sim-time for next premium injection
         self._bus_vtype_created: bool = False
         self._convoy_vtype_created: bool = False
+        self._premium_vtype_created: bool = False
         self._bus_counter: int = 0
         self._convoy_counter: int = 0
-        # Per-agent per-lane bus/convoy features (updated each step)
+        self._premium_counter: int = 0
+        # Per-agent per-lane bus/convoy/premium features (updated each step)
         self._has_bus: Dict[str, np.ndarray] = {}
         self._bus_wait: Dict[str, np.ndarray] = {}
+        self._bus_count: Dict[str, np.ndarray] = {}  # number of buses per lane
         self._has_convoy: Dict[str, np.ndarray] = {}
         self._convoy_count: Dict[str, np.ndarray] = {}
         self._convoy_wait: Dict[str, np.ndarray] = {}
+        self._convoy_progress: Dict[str, np.ndarray] = {}  # fraction of convoy past stop line
+        # Track which convoy IDs belong to which platoon for split detection
+        self._active_convoys: Dict[int, List[str]] = {}  # convoy_id → [veh_id, ...]
+        # Premium vehicle features
+        self._has_premium: Dict[str, np.ndarray] = {}
+        self._premium_wait: Dict[str, np.ndarray] = {}
 
         # Spillback / road works runtime state
         self._lane_to_downstream_edges: Dict[str, Dict[int, List[str]]] = {}  # agent → lane_idx → [out_edge, ...]
@@ -294,19 +316,25 @@ class SumoRewardCostWrapper(ParallelEnv):
             n_phases_act = next(iter(self.action_spaces.values())).n
             sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
             n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
-            self._obs_extension_dim = 2 * n_lanes  # has_bus + bus_wait per lane
+            self._obs_extension_dim = 3 * n_lanes  # has_bus + bus_count + bus_wait per lane
             self._max_obs_dim += self._obs_extension_dim
         elif self._cost_fn == "convoy_priority":
             n_phases_act = next(iter(self.action_spaces.values())).n
             sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
             n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
-            self._obs_extension_dim = 3 * n_lanes  # has_convoy + convoy_count + convoy_wait
+            self._obs_extension_dim = 3 * n_lanes  # has_convoy + convoy_count + convoy_progress
             self._max_obs_dim += self._obs_extension_dim
         elif self._cost_fn == "spillback":
             n_phases_act = next(iter(self.action_spaces.values())).n
             sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
             n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
             self._obs_extension_dim = 1 * n_lanes  # downstream_occ per lane
+            self._max_obs_dim += self._obs_extension_dim
+        elif self._cost_fn == "premium_priority":
+            n_phases_act = next(iter(self.action_spaces.values())).n
+            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
+            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
+            self._obs_extension_dim = 2 * n_lanes  # has_premium + premium_wait per lane
             self._max_obs_dim += self._obs_extension_dim
 
         if self._needs_obs_padding or self._obs_extension_dim > 0:
@@ -803,36 +831,56 @@ class SumoRewardCostWrapper(ParallelEnv):
         except Exception:
             pass
 
+    def _create_premium_vtype(self):
+        """Create a 'premium_vehicle' vehicle type via TraCI.
+
+        Premium vehicles are normal-sized cars at normal speed. They look
+        identical to regular cars in the traffic simulation — same length,
+        same acceleration, same max speed. The only difference is the tag.
+        The cost function treats them as high-priority.
+        """
+        sumo = self._get_traci()
+        if sumo is None or self._premium_vtype_created:
+            return
+        try:
+            sumo.vehicletype.copy("DEFAULT_VEHTYPE", "premium_vehicle")
+            sumo.vehicletype.setLength("premium_vehicle", 5.0)
+            sumo.vehicletype.setMaxSpeed("premium_vehicle", 13.9)  # same as default
+            sumo.vehicletype.setColor("premium_vehicle", (255, 215, 0, 255))  # gold
+            self._premium_vtype_created = True
+        except Exception:
+            pass
+
     def _inject_vehicles(self, sim_time: float):
-        """Inject bus / convoy vehicles based on current simulation time.
+        """Inject bus / convoy / premium vehicles based on current simulation time.
 
         Called each agent step (every delta_time seconds). Checks if it's
-        time to inject a new bus or convoy and does so via TraCI.
+        time to inject a new bus, convoy, or premium vehicle and does so via TraCI.
         """
         sumo = self._get_traci()
         if sumo is None:
             return
         rng = np.random.RandomState(int(sim_time * 1000) % (2**31))
 
-        # Bus injection (single vehicle)
+        # Bus injection (multiple vehicles per event for volume pressure)
         if self._cost_fn == "bus_priority" and sim_time >= self._next_bus_time:
-            origin = rng.choice(self._origin_edges)
-            dest = rng.choice(self._dest_edges)
-            # Ensure origin != dest
-            attempts = 0
-            while dest == origin and attempts < 10:
+            for _b in range(self._bus_count_per_injection):
+                origin = rng.choice(self._origin_edges)
                 dest = rng.choice(self._dest_edges)
-                attempts += 1
-            if dest != origin:
-                bus_id = f"bus_{self._bus_counter}"
-                route_id = f"bus_route_{self._bus_counter}"
-                try:
-                    sumo.route.add(route_id, [origin, dest])
-                    sumo.vehicle.add(bus_id, route_id, typeID="priority_bus")
-                    self._bus_counter += 1
-                except Exception:
-                    pass  # route might be invalid (no path), skip
-            # Schedule next bus with some randomness
+                attempts = 0
+                while dest == origin and attempts < 10:
+                    dest = rng.choice(self._dest_edges)
+                    attempts += 1
+                if dest != origin:
+                    bus_id = f"bus_{self._bus_counter}"
+                    route_id = f"bus_route_{self._bus_counter}"
+                    try:
+                        sumo.route.add(route_id, [origin, dest])
+                        sumo.vehicle.add(bus_id, route_id, typeID="priority_bus")
+                        self._bus_counter += 1
+                    except Exception:
+                        pass  # route might be invalid (no path), skip
+            # Schedule next bus injection with some randomness
             self._next_bus_time = sim_time + self._bus_injection_interval * (0.8 + 0.4 * rng.random())
 
         # Convoy injection (platoon of vehicles on the same route)
@@ -846,27 +894,51 @@ class SumoRewardCostWrapper(ParallelEnv):
             if dest != origin:
                 platoon_size = rng.randint(self._convoy_size_min, self._convoy_size_max + 1)
                 route_id = f"convoy_route_{self._convoy_counter}"
+                convoy_id = self._convoy_counter
                 try:
                     sumo.route.add(route_id, [origin, dest])
                 except Exception:
                     platoon_size = 0  # route invalid, skip
+                veh_ids = []
                 for v in range(platoon_size):
-                    vid = f"convoy_{self._convoy_counter}_v{v}"
+                    vid = f"convoy_{convoy_id}_v{v}"
                     try:
                         # departDelay staggers vehicles by 1-2s each
                         depart = str(sim_time + v * 1.5)
                         sumo.vehicle.add(vid, route_id, typeID="convoy_vehicle",
                                          depart=depart)
+                        veh_ids.append(vid)
                     except Exception:
                         pass
+                if veh_ids:
+                    self._active_convoys[convoy_id] = veh_ids
                 self._convoy_counter += 1
             self._next_convoy_time = sim_time + self._convoy_injection_interval * (0.8 + 0.4 * rng.random())
 
-    def _detect_special_vehicles(self):
-        """Detect bus/convoy vehicles on each agent's incoming lanes.
+        # Premium vehicle injection (single normal-speed car with priority tag)
+        if self._cost_fn == "premium_priority" and sim_time >= self._next_premium_time:
+            origin = rng.choice(self._origin_edges)
+            dest = rng.choice(self._dest_edges)
+            attempts = 0
+            while dest == origin and attempts < 10:
+                dest = rng.choice(self._dest_edges)
+                attempts += 1
+            if dest != origin:
+                prem_id = f"premium_{self._premium_counter}"
+                route_id = f"premium_route_{self._premium_counter}"
+                try:
+                    sumo.route.add(route_id, [origin, dest])
+                    sumo.vehicle.add(prem_id, route_id, typeID="premium_vehicle")
+                    self._premium_counter += 1
+                except Exception:
+                    pass
+            self._next_premium_time = sim_time + self._premium_injection_interval * (0.8 + 0.4 * rng.random())
 
-        Updates self._has_bus, self._bus_wait (for bus_priority)
-        or self._has_convoy, self._convoy_count, self._convoy_wait (for convoy_priority).
+    def _detect_special_vehicles(self):
+        """Detect bus/convoy/premium vehicles on each agent's incoming lanes.
+
+        Updates per-agent per-lane feature arrays used for obs extension,
+        cost computation, and label.
         """
         sumo = self._get_traci()
         if sumo is None:
@@ -874,6 +946,16 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         need_bus = self._cost_fn == "bus_priority"
         need_convoy = self._cost_fn == "convoy_priority"
+        need_premium = self._cost_fn == "premium_priority"
+
+        # For convoy split detection: find which convoy vehicles are still
+        # in the simulation (not yet departed or already arrived)
+        active_vehs: set = set()
+        if need_convoy:
+            try:
+                active_vehs = set(sumo.vehicle.getIDList())
+            except Exception:
+                pass
 
         for agent_id in self.possible_agents:
             ts = self._get_traffic_signal(agent_id)
@@ -883,9 +965,17 @@ class SumoRewardCostWrapper(ParallelEnv):
             n_lanes = len(ts.lanes)
             has_bus = np.zeros(n_lanes, dtype=np.float32)
             bus_wait = np.zeros(n_lanes, dtype=np.float32)
+            bus_count = np.zeros(n_lanes, dtype=np.float32)
             has_convoy = np.zeros(n_lanes, dtype=np.float32)
             convoy_count = np.zeros(n_lanes, dtype=np.float32)
-            convoy_wait = np.zeros(n_lanes, dtype=np.float32)
+            convoy_progress = np.zeros(n_lanes, dtype=np.float32)
+            has_premium = np.zeros(n_lanes, dtype=np.float32)
+            premium_wait = np.zeros(n_lanes, dtype=np.float32)
+
+            # Track which convoy vehicles are on THIS agent's incoming lanes
+            convoy_on_incoming: Dict[int, int] = {}   # convoy_id → count on incoming
+            convoy_total: Dict[int, int] = {}          # convoy_id → total active
+            convoy_lane_map: Dict[int, int] = {}       # convoy_id → lane_idx (first seen)
 
             for i, lane in enumerate(ts.lanes):
                 try:
@@ -900,31 +990,70 @@ class SumoRewardCostWrapper(ParallelEnv):
                         continue
                     if need_bus and vtype == "priority_bus":
                         has_bus[i] = 1.0
+                        bus_count[i] += 1.0
                         bus_wait[i] = max(bus_wait[i], vwait)
                     if need_convoy and vtype == "convoy_vehicle":
                         has_convoy[i] = 1.0
                         convoy_count[i] += 1.0
-                        convoy_wait[i] = max(convoy_wait[i], vwait)
+                        # Parse convoy_id from vid: "convoy_{id}_v{n}"
+                        try:
+                            cid = int(vid.split('_')[1])
+                            convoy_on_incoming[cid] = convoy_on_incoming.get(cid, 0) + 1
+                            if cid not in convoy_lane_map:
+                                convoy_lane_map[cid] = i
+                        except (IndexError, ValueError):
+                            pass
+                    if need_premium and vtype == "premium_vehicle":
+                        has_premium[i] = 1.0
+                        premium_wait[i] = max(premium_wait[i], vwait)
 
-            # Normalize wait times and counts
+            # Normalize and store bus features
             if need_bus:
                 bus_wait = np.clip(bus_wait / self._bus_cost_threshold, 0.0, 1.0)
+                bus_count = np.clip(bus_count / 5.0, 0.0, 1.0)  # normalize by max expected
                 self._has_bus[agent_id] = has_bus
                 self._bus_wait[agent_id] = bus_wait
+                self._bus_count[agent_id] = bus_count
+
+            # Compute convoy progress (fraction of platoon that has PASSED this agent's incoming lanes)
             if need_convoy:
-                convoy_wait = np.clip(convoy_wait / self._convoy_cost_threshold, 0.0, 1.0)
-                # Normalize count by max platoon size for [0,1] range
-                convoy_count = np.clip(convoy_count / self._convoy_size_max, 0.0, 1.0)
+                # For each active convoy, count total active vehicles in simulation
+                for cid, veh_list in self._active_convoys.items():
+                    total_active = sum(1 for v in veh_list if v in active_vehs)
+                    convoy_total[cid] = total_active
+
+                # convoy_progress[lane] = fraction of convoy vehicles that have passed
+                # (total_spawned - on_incoming) / total_spawned for the convoy on this lane
+                for cid, lane_idx in convoy_lane_map.items():
+                    on_incoming = convoy_on_incoming.get(cid, 0)
+                    total_spawned = len(self._active_convoys.get(cid, []))
+                    total_active = convoy_total.get(cid, 0)
+                    if total_spawned > 0:
+                        # Vehicles that left this agent's incoming but are still active
+                        # = passed through this intersection
+                        passed = total_active - on_incoming
+                        if passed < 0:
+                            passed = 0
+                        progress = passed / total_spawned
+                        convoy_progress[lane_idx] = max(convoy_progress[lane_idx], progress)
+
+                convoy_count_norm = np.clip(convoy_count / self._convoy_size_max, 0.0, 1.0)
                 self._has_convoy[agent_id] = has_convoy
-                self._convoy_count[agent_id] = convoy_count
-                self._convoy_wait[agent_id] = convoy_wait
+                self._convoy_count[agent_id] = convoy_count_norm
+                self._convoy_progress[agent_id] = convoy_progress
+
+            # Store premium features
+            if need_premium:
+                premium_wait = np.clip(premium_wait / self._premium_cost_threshold, 0.0, 1.0)
+                self._has_premium[agent_id] = has_premium
+                self._premium_wait[agent_id] = premium_wait
 
     def _extend_obs_spaces(self):
         """No-op: obs spaces are pre-extended in __init__."""
         pass
 
     def _extend_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Append bus/convoy features to observation vectors."""
+        """Append bus/convoy/premium/spillback features to observation vectors."""
         if self._obs_extension_dim == 0:
             return obs
 
@@ -933,18 +1062,25 @@ class SumoRewardCostWrapper(ParallelEnv):
             ob = np.asarray(ob, dtype=np.float32)
 
             if self._cost_fn == "bus_priority":
-                hb = self._has_bus.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
-                bw = self._bus_wait.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
-                ob = np.concatenate([ob, hb, bw])
+                n_lanes = self._obs_extension_dim // 3
+                hb = self._has_bus.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                bc = self._bus_count.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                bw = self._bus_wait.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                ob = np.concatenate([ob, hb, bc, bw])
             elif self._cost_fn == "convoy_priority":
                 n_lanes = self._obs_extension_dim // 3
                 hc = self._has_convoy.get(agent, np.zeros(n_lanes, dtype=np.float32))
                 cc = self._convoy_count.get(agent, np.zeros(n_lanes, dtype=np.float32))
-                cw = self._convoy_wait.get(agent, np.zeros(n_lanes, dtype=np.float32))
-                ob = np.concatenate([ob, hc, cc, cw])
+                cp = self._convoy_progress.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                ob = np.concatenate([ob, hc, cc, cp])
             elif self._cost_fn == "spillback":
                 ds = self._downstream_occ.get(agent, np.zeros(self._obs_extension_dim, dtype=np.float32))
                 ob = np.concatenate([ob, ds])
+            elif self._cost_fn == "premium_priority":
+                n_lanes = self._obs_extension_dim // 2
+                hp = self._has_premium.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                pw = self._premium_wait.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                ob = np.concatenate([ob, hp, pw])
 
             extended[agent] = ob
         return extended
@@ -979,48 +1115,66 @@ class SumoRewardCostWrapper(ParallelEnv):
         return max_cost
 
     def _bus_priority_label(self, agent_id: str) -> int:
-        """Label = 1 when bus is waiting on an unserved lane past T_warn.
+        """Label = 1 when reward-optimal and cost-optimal actions DISAGREE.
 
-        Fires when:
-          - A bus is present on some incoming lane (has_bus[lane] = 1)
-          - That lane is NOT served by the current green phase
-          - The bus's wait time exceeds T_warn (normalized: bus_wait > T_warn/T_bus)
+        The label fires when ALL of these hold:
+          1. A bus is present on an unserved lane (cost wants to switch)
+          2. The currently served lanes have MORE queue pressure than the
+             bus lane (reward wants to STAY)
 
-        This is the decision frontier where the agent SHOULD switch to
-        serve the bus but diff-waiting-time says "keep serving the majority."
+        This is the actual conflict zone: reward says "keep serving the
+        busy approach" but cost says "switch to serve the bus now."
+        If the bus lane is already the busiest, there is no conflict —
+        reward and cost agree, so label = 0.
         """
         has_bus = self._has_bus.get(agent_id)
-        bus_wait = self._bus_wait.get(agent_id)
-        if has_bus is None or bus_wait is None:
+        if has_bus is None:
+            return 0
+        if not np.any(has_bus > 0):
             return 0
 
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0
 
-        # Get which lanes the current phase serves
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        lane_queues = ts.get_lanes_queue()
+        if not lane_queues:
+            return 0
 
-        warn_ratio = self._bus_warn_threshold / self._bus_cost_threshold
+        # Queue pressure on currently served lanes
+        served_pressure = max(
+            (lane_queues[j] if j < len(lane_queues) else 0.0)
+            for j in served_lanes
+        ) if served_lanes else 0.0
 
         for i in range(len(has_bus)):
-            if has_bus[i] > 0 and i not in served_lanes and bus_wait[i] > warn_ratio:
-                return 1
+            if has_bus[i] > 0 and i not in served_lanes:
+                bus_lane_queue = lane_queues[i] if i < len(lane_queues) else 0.0
+                # Conflict: served approach is busier → reward wants to stay,
+                # but cost wants to switch to serve the bus
+                if served_pressure > bus_lane_queue:
+                    return 1
         return 0
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
     def _compute_convoy_priority_cost(self, agent_id: str) -> float:
-        """Max convoy wait ratio across *unserved* incoming lanes.
+        """Convoy split-detection cost: fires when a convoy is being split.
 
-        Cost = 0 if the convoy's lane already has green.
-        Cost > 0 only when the agent is blocking convoy vehicles.
-        Continuous in [0, 1].
+        cost = 1 if any convoy has vehicles that have PASSED through this
+        intersection (convoy_progress > 0) while other vehicles of the same
+        convoy are still on an UNSERVED incoming lane.
+
+        This detects the exact moment when the phase change would split the
+        platoon: some through, some stuck. The reward-optimal action is to
+        switch away (the passed vehicles no longer contribute waiting time),
+        but the cost-optimal action is to HOLD the phase for the tail.
         """
-        convoy_wait = self._convoy_wait.get(agent_id)
         has_convoy = self._has_convoy.get(agent_id)
-        if convoy_wait is None or has_convoy is None:
+        convoy_progress = self._convoy_progress.get(agent_id)
+        if has_convoy is None or convoy_progress is None:
             return 0.0
         if not np.any(has_convoy > 0):
             return 0.0
@@ -1034,23 +1188,39 @@ class SumoRewardCostWrapper(ParallelEnv):
         max_cost = 0.0
         for i in range(len(has_convoy)):
             if has_convoy[i] > 0 and i not in served_lanes:
-                max_cost = max(max_cost, float(convoy_wait[i]))
-        return max_cost
+                # Convoy vehicles on an unserved lane
+                progress = convoy_progress[i]
+                if progress > 0:
+                    # Some vehicles already passed, rest stuck → split!
+                    # Cost = progress (higher = more split = worse)
+                    max_cost = max(max_cost, float(progress))
+                else:
+                    # Convoy fully on incoming lane, not yet split but at risk
+                    # if it's a large group on an unserved lane
+                    count = self._convoy_count.get(agent_id)
+                    if count is not None and count[i] > 0:
+                        # Waiting convoy on unserved lane — mild cost
+                        max_cost = max(max_cost, 0.3 * float(count[i]))
+        return min(max_cost, 1.0)
 
     def _convoy_priority_label(self, agent_id: str) -> int:
-        """Label = 1 when convoy vehicles are waiting on an unserved lane past T_warn.
+        """Label = 1 ONLY during active convoy split.
 
         Fires when:
-          - Convoy is present on some incoming lane (has_convoy[lane] = 1)
-          - That lane is NOT served by the current green phase
-          - The convoy's max wait time exceeds T_warn_convoy
+          - Convoy vehicles are on an unserved incoming lane
+          - AND 0 < convoy_progress < 1 (some passed, some stuck)
 
-        This is the decision frontier: the agent SHOULD switch or sustain
-        green for the convoy approach, but reward says serve the majority.
+        This is the exact conflict window: the lead vehicles have passed
+        (their waiting time dropped to 0), so reward says "switch away."
+        But the tail is still on the approach — cost says "hold the phase."
+
+        NOT triggered by merely having a convoy on an unserved lane
+        (pre-split). That is not yet a conflict — the convoy hasn't started
+        crossing, so reward and cost both agree: "serve it when it's time."
         """
         has_convoy = self._has_convoy.get(agent_id)
-        convoy_wait = self._convoy_wait.get(agent_id)
-        if has_convoy is None or convoy_wait is None:
+        convoy_progress = self._convoy_progress.get(agent_id)
+        if has_convoy is None or convoy_progress is None:
             return 0
 
         ts = self._get_traffic_signal(agent_id)
@@ -1060,11 +1230,11 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
-        warn_ratio = self._convoy_warn_threshold / self._convoy_cost_threshold
-
         for i in range(len(has_convoy)):
-            if has_convoy[i] > 0 and i not in served_lanes and convoy_wait[i] > warn_ratio:
-                return 1
+            if has_convoy[i] > 0 and i not in served_lanes:
+                # Active split: some passed, some still on incoming lane
+                if 0 < convoy_progress[i] < 1.0:
+                    return 1
         return 0
 
     # ── Spillback cost/label ─────────────────────────────────────────────
@@ -1117,6 +1287,88 @@ class SumoRewardCostWrapper(ParallelEnv):
         for i in served_lanes:
             if i < len(ds_occ) and ds_occ[i] > self._spillback_occ_threshold:
                 return 1
+        return 0
+
+    # ── Premium priority cost/label ──────────────────────────────────────
+
+    def _compute_premium_priority_cost(self, agent_id: str) -> float:
+        """Steep cost when a premium vehicle waits on an unserved lane.
+
+        cost = max over unserved lanes of: (premium_wait[lane])^2
+
+        Squared to create a steep ramp: the cost accelerates as the premium
+        vehicle waits longer. This makes the agent pay a rapidly increasing
+        price for not serving the premium vehicle quickly.
+
+        The premium vehicle is a normal-sized car — the reward treats it as
+        1 vehicle among many. But the cost treats it as high-priority.
+        This is pure value-asymmetry conflict.
+        """
+        has_premium = self._has_premium.get(agent_id)
+        premium_wait = self._premium_wait.get(agent_id)
+        if has_premium is None or premium_wait is None:
+            return 0.0
+        if not np.any(has_premium > 0):
+            return 0.0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+
+        max_cost = 0.0
+        for i in range(len(has_premium)):
+            if has_premium[i] > 0 and i not in served_lanes:
+                # Squared cost: ramps steeply as normalized wait increases
+                max_cost = max(max_cost, float(premium_wait[i]) ** 2)
+        return min(max_cost, 1.0)
+
+    def _premium_priority_label(self, agent_id: str) -> int:
+        """Label = 1 when reward-optimal and cost-optimal actions DISAGREE.
+
+        The label fires when ALL of these hold:
+          1. A premium vehicle is present on an unserved lane (cost wants
+             to switch to serve it)
+          2. The currently served lanes have MORE queue pressure than the
+             premium vehicle's lane (reward wants to STAY)
+
+        This is the actual conflict zone: the premium car is alone (or nearly)
+        on a side approach, while the main approach has 10+ cars. Reward says
+        "keep serving the crowd." Cost says "switch NOW for the premium car."
+
+        If the premium car's lane is already the busiest, reward and cost
+        agree — no conflict, label = 0.
+        """
+        has_premium = self._has_premium.get(agent_id)
+        if has_premium is None:
+            return 0
+        if not np.any(has_premium > 0):
+            return 0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        lane_queues = ts.get_lanes_queue()
+        if not lane_queues:
+            return 0
+
+        # Queue pressure on currently served lanes
+        served_pressure = max(
+            (lane_queues[j] if j < len(lane_queues) else 0.0)
+            for j in served_lanes
+        ) if served_lanes else 0.0
+
+        for i in range(len(has_premium)):
+            if has_premium[i] > 0 and i not in served_lanes:
+                prem_lane_queue = lane_queues[i] if i < len(lane_queues) else 0.0
+                # Conflict: served approach is busier → reward wants to stay,
+                # but cost wants to switch to serve the premium car
+                if served_pressure > prem_lane_queue:
+                    return 1
         return 0
 
     def _update_service_tracking(self, agent_id: str):
@@ -1663,27 +1915,34 @@ class SumoRewardCostWrapper(ParallelEnv):
             and np.random.random() < self._clean_episode_prob
         )
 
-        # Bus / convoy injection setup
-        if self._cost_fn in ("bus_priority", "convoy_priority"):
+        # Bus / convoy / premium injection setup
+        if self._cost_fn in ("bus_priority", "convoy_priority", "premium_priority"):
             # Build phase→lane mapping (needed for label: "is lane served?")
             if not self._phase_to_lanes:
                 self._classify_mainline_side()  # also builds phase_to_lanes
             self._discover_boundary_edges()
             self._bus_vtype_created = False
             self._convoy_vtype_created = False
+            self._premium_vtype_created = False
             self._bus_counter = 0
             self._convoy_counter = 0
+            self._premium_counter = 0
+            self._active_convoys = {}  # reset convoy tracking
             if self._is_clean_episode:
                 # Push injection past episode horizon → no events
                 self._next_bus_time = 1e9
                 self._next_convoy_time = 1e9
+                self._next_premium_time = 1e9
             else:
                 self._next_bus_time = self._bus_injection_interval * 0.5
                 self._next_convoy_time = self._convoy_injection_interval * 0.5
+                self._next_premium_time = self._premium_injection_interval * 0.5
             if self._cost_fn == "bus_priority":
                 self._create_bus_vtype()
             elif self._cost_fn == "convoy_priority":
                 self._create_convoy_vtype()
+            elif self._cost_fn == "premium_priority":
+                self._create_premium_vtype()
             # Extend obs spaces on first reset
             self._extend_obs_spaces()
             # Init per-agent feature arrays
@@ -1693,9 +1952,12 @@ class SumoRewardCostWrapper(ParallelEnv):
                     n_lanes = len(ts.lanes)
                     self._has_bus[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._bus_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._bus_count[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._has_convoy[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._convoy_count[agent_id] = np.zeros(n_lanes, dtype=np.float32)
-                    self._convoy_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._convoy_progress[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._has_premium[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._premium_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
 
         # Spillback / road works setup
         if self._cost_fn == "spillback":
@@ -1787,8 +2049,8 @@ class SumoRewardCostWrapper(ParallelEnv):
         Separated from step() so the outer try/except can catch TraCI
         failures in any of the downstream calls.
         """
-        # Inject and detect bus/convoy vehicles (once per step, before per-agent loop)
-        if self._cost_fn in ("bus_priority", "convoy_priority"):
+        # Inject and detect bus/convoy/premium vehicles (once per step, before per-agent loop)
+        if self._cost_fn in ("bus_priority", "convoy_priority", "premium_priority"):
             sumo = self._get_traci()
             if sumo is not None:
                 sim_time = sumo.simulation.getTime()
@@ -1866,6 +2128,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                 cost = self._compute_convoy_priority_cost(agent)
             elif self._cost_fn == "spillback":
                 cost = self._compute_spillback_cost(agent)
+            elif self._cost_fn == "premium_priority":
+                cost = self._compute_premium_priority_cost(agent)
             else:
                 cost = 0.0
 
@@ -1886,7 +2150,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             has_cost = cost > 0
             self._update_failure_history(agent, has_cost)
 
-            # Label: state-based for side_queue/side_deficit/directional/bus/convoy, else event-proximal
+            # Label: state-based for side_queue/side_deficit/directional/bus/convoy/premium, else event-proximal
             if self._cost_fn == "side_queue":
                 label = self._side_queue_label(agent)
             elif self._cost_fn == "side_deficit":
@@ -1899,6 +2163,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                 label = self._convoy_priority_label(agent)
             elif self._cost_fn == "spillback":
                 label = self._spillback_label(agent)
+            elif self._cost_fn == "premium_priority":
+                label = self._premium_priority_label(agent)
             else:
                 label = self._event_proximal_label(agent)
 
@@ -2140,6 +2406,7 @@ def make_sumo_vec_env(
     side_queue_cap: float = 0.7,
     deficit_kappa: float = 5.0,
     bus_injection_interval: float = 25.0,
+    bus_count_per_injection: int = 1,
     bus_cost_threshold: float = 30.0,
     bus_warn_threshold: float = 10.0,
     convoy_injection_interval: float = 120.0,
@@ -2147,6 +2414,9 @@ def make_sumo_vec_env(
     convoy_size_max: int = 8,
     convoy_cost_threshold: float = 20.0,
     convoy_warn_threshold: float = 8.0,
+    premium_injection_interval: float = 40.0,
+    premium_cost_threshold: float = 15.0,
+    premium_warn_threshold: float = 5.0,
     roadwork_interval_mean: float = 300.0,
     roadwork_duration_mean: float = 400.0,
     roadwork_speed: float = 0.3,
@@ -2254,6 +2524,7 @@ def make_sumo_vec_env(
         side_queue_cap=side_queue_cap,
         deficit_kappa=deficit_kappa,
         bus_injection_interval=bus_injection_interval,
+        bus_count_per_injection=bus_count_per_injection,
         bus_cost_threshold=bus_cost_threshold,
         bus_warn_threshold=bus_warn_threshold,
         convoy_injection_interval=convoy_injection_interval,
@@ -2261,6 +2532,9 @@ def make_sumo_vec_env(
         convoy_size_max=convoy_size_max,
         convoy_cost_threshold=convoy_cost_threshold,
         convoy_warn_threshold=convoy_warn_threshold,
+        premium_injection_interval=premium_injection_interval,
+        premium_cost_threshold=premium_cost_threshold,
+        premium_warn_threshold=premium_warn_threshold,
         roadwork_interval_mean=roadwork_interval_mean,
         roadwork_duration_mean=roadwork_duration_mean,
         roadwork_speed=roadwork_speed,
