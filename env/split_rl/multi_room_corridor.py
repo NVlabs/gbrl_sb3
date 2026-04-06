@@ -45,11 +45,9 @@ class MultiRoomCorridorEnv(MiniGridEnv):
     """
 
     def __init__(self, width=19, height=19, max_steps=None,
-                 top_door_color="green", right_door_color="purple",
-                 subtask_bonus=0.5, **kwargs):
+                 top_door_color="green", right_door_color="purple", **kwargs):
         self.top_door_color = top_door_color
         self.right_door_color = right_door_color
-        self.subtask_bonus = subtask_bonus
 
         if max_steps is None:
             max_steps = 4 * width * height
@@ -220,90 +218,103 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         # Store goal position for distance-based reward
         self.goal_pos = np.array([goal_x, goal_y], dtype=np.float64)
 
-        # Store object positions for subtask detection
-        self.ball_init_pos = (ball_x, ball_y)
-        self._right_key_pos = (left_room_center_x, left_room_center_y)
-        self._box_pos = (right_room_center_x, right_room_center_y)
-
-    def _distance_to_goal(self):
-        return np.linalg.norm(self.agent_pos - self.goal_pos)
-
     def reset(self, **kwargs):
         obs, info = super().reset(**kwargs)
-        self.prev_distance = self._distance_to_goal()
-        # One-time subtask completion flags
-        self._ball_cleared = False
-        self._purple_key_picked = False
-        self._right_door_opened = False
-        self._box_opened = False
-        self._green_key_picked = False
-        self._top_door_opened = False
+
+        # Milestone tracking for subtask completion
+        self._milestones = {
+            "ball_picked": False,
+            "ball_moved": False,       # ball no longer blocking entrance
+            "purple_key_picked": False,
+            "right_door_opened": False,
+            "box_opened": False,       # green key obtained from box
+            "green_key_picked": False,
+            "top_door_opened": False,
+            "goal_reached": False,
+        }
+        self._milestone_reward = 0.1  # sparse bonus per milestone
+
+        # Distance shaping: only active after green key is obtained
+        self._prev_dist_to_goal = None
+
         return obs, info
 
     def step(self, action):
-        # Snapshot state before the step
-        was_carrying = self.carrying
+        # Snapshot state before MiniGrid processes the action
+        carrying_before = self.carrying
+        ball_at_entrance = (
+            self.grid.get(*self.left_entrance_pos) is not None
+            and isinstance(self.grid.get(*self.left_entrance_pos), Ball)
+        ) if hasattr(self, 'left_entrance_pos') else False
 
         obs, reward, terminated, truncated, info = super().step(action)
 
-        # Dense distance-delta reward: positive when getting closer to goal
-        curr_distance = self._distance_to_goal()
-        reward = (self.prev_distance - curr_distance) * 0.1
-        self.prev_distance = curr_distance
+        # Start with zero reward
+        reward = 0.0
+        ms = self._milestones
 
-        bonus = self.subtask_bonus
+        # --- Milestone: ball picked up ---
+        if not ms["ball_picked"] and self.carrying is not None and isinstance(self.carrying, Ball):
+            ms["ball_picked"] = True
+            reward += self._milestone_reward
 
-        # --- One-time subtask completion bonuses ---
+        # --- Milestone: ball moved (no longer blocking entrance) ---
+        if not ms["ball_moved"] and ms["ball_picked"]:
+            # Ball is moved once the agent drops it or just by picking it up
+            # (entrance is now clear)
+            entrance_obj = self.grid.get(*self.left_entrance_pos)
+            entrance_clear = entrance_obj is None or not isinstance(entrance_obj, Ball)
+            if entrance_clear:
+                ms["ball_moved"] = True
+                reward += self._milestone_reward
 
-        # 1. Ball cleared: ball no longer at its init position
-        if not self._ball_cleared:
-            cell = self.grid.get(*self.ball_init_pos)
-            if cell is None or cell.type != 'ball':
-                self._ball_cleared = True
-                reward += bonus
+        # --- Milestone: purple key picked up ---
+        if not ms["purple_key_picked"] and self.carrying is not None and isinstance(self.carrying, Key):
+            if self.carrying.color == self.right_door_color:
+                ms["purple_key_picked"] = True
+                reward += self._milestone_reward
 
-        # 2. Purple key picked up
-        if not self._purple_key_picked and self.carrying is not None:
-            if isinstance(self.carrying, Key) and self.carrying.color == self.right_door_color:
-                self._purple_key_picked = True
-                reward += bonus
+        # --- Milestone: right door opened (purple door unlocked) ---
+        if not ms["right_door_opened"]:
+            right_door_obj = self.grid.get(*self.right_door_pos)
+            if right_door_obj is None or (isinstance(right_door_obj, Door) and right_door_obj.is_open):
+                ms["right_door_opened"] = True
+                reward += self._milestone_reward
 
-        # 3. Right door (purple) opened
-        if not self._right_door_opened:
-            cell = self.grid.get(*self.right_door_pos)
-            if isinstance(cell, Door) and cell.is_open:
-                self._right_door_opened = True
-                reward += bonus
+        # --- Milestone: box opened (toggle on box → green key appears) ---
+        if not ms["box_opened"] and self.carrying is not None and isinstance(self.carrying, Key):
+            if self.carrying.color == self.top_door_color:
+                ms["box_opened"] = True
+                ms["green_key_picked"] = True
+                reward += self._milestone_reward * 2  # box + key in one
 
-        # 4. Box opened
-        if not self._box_opened:
-            cell = self.grid.get(*self._box_pos)
-            if cell is None or (isinstance(cell, Box) and cell.contains is None):
-                # Box was toggled (key spilled out, or box replaced by key on grid)
-                # Check if a key appeared nearby or box.contains is gone
-                if cell is None or not isinstance(cell, Box):
-                    self._box_opened = True
-                    reward += bonus
-                elif cell.contains is None:
-                    self._box_opened = True
-                    reward += bonus
+        # --- Milestone: top door opened ---
+        if not ms["top_door_opened"]:
+            top_door_obj = self.grid.get(*self.top_door_pos)
+            if top_door_obj is None or (isinstance(top_door_obj, Door) and top_door_obj.is_open):
+                ms["top_door_opened"] = True
+                reward += self._milestone_reward
 
-        # 5. Green key picked up
-        if not self._green_key_picked and self.carrying is not None:
-            if isinstance(self.carrying, Key) and self.carrying.color == self.top_door_color:
-                self._green_key_picked = True
-                reward += bonus
+        # Distance shaping: always active, guides toward goal
+        agent_pos = np.array(self.agent_pos, dtype=np.float64)
+        dist_to_goal = np.linalg.norm(agent_pos - self.goal_pos)
+        if self._prev_dist_to_goal is not None:
+            # Reward for getting closer to goal (potential-based shaping)
+            dist_delta = self._prev_dist_to_goal - dist_to_goal
+            reward += 0.01 * dist_delta
+        self._prev_dist_to_goal = dist_to_goal
 
-        # 6. Top door (green) opened
-        if not self._top_door_opened:
-            cell = self.grid.get(*self.top_door_pos)
-            if isinstance(cell, Door) and cell.is_open:
-                self._top_door_opened = True
-                reward += bonus
-
-        # Terminal reward on reaching the goal
+        # --- Goal completion: big reward ---
         if terminated and not truncated:
-            reward += 1.0 - min(self.step_count / self.max_steps, 1.0)
+            ms["goal_reached"] = True
+            reward += 1.0 - 0.9 * (self.step_count / self.max_steps)
+
+        # Track milestones in info for logging
+        info["is_success"] = float(ms["goal_reached"])
+        n_milestones = sum(1 for v in ms.values() if v)
+        info["milestones_completed"] = float(n_milestones)
+        for k, v in ms.items():
+            info[f"milestone_{k}"] = float(v)
 
         return obs, reward, terminated, truncated, info
 
@@ -563,7 +574,7 @@ class KeyDoorEnv(MiniGridEnv):
     reach the goal on the other side.
     """
 
-    def __init__(self, width=8, height=8, min_size=6, max_size=12, max_steps=None,
+    def __init__(self, width=8, height=8, min_size=6, max_size=30, max_steps=None,
                  door_color="purple", **kwargs):
         self.door_color = door_color
         self.min_size = min_size

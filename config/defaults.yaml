@@ -393,7 +393,7 @@ split_awr_gbrl:
   batch_size: 1024
   vf_coef: 0.56
   fixed_std: False
-  n_objs: 4
+  n_objs: 5
   expert_buffer_per_label: 0
 awr_nn:
   wrapper_kwargs:

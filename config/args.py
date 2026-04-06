@@ -1023,7 +1023,7 @@ def process_policy_kwargs(args):
             "weights_max": args.weights_max,
             "expert_datasets": getattr(args, 'expert_datasets', None) or {},
             "expert_buffer_per_label": getattr(args, 'expert_buffer_per_label', None) or 0,
-            "n_objs": getattr(args, 'n_objs', None) or 4,
+            "n_objs": getattr(args, 'n_objs', None) or 5,
             "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
                 "log_std_init": args.log_std_init,
                 "shared_tree_struct": args.shared_tree_struct,

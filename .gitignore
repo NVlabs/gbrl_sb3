@@ -16,3 +16,4 @@ results/
 tmp/
 *.log
 datasets/
+logs/*

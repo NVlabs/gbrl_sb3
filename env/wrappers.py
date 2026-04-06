@@ -56,6 +56,10 @@ class SuccessMonitor(Monitor):
             is_success = terminated and not truncated
             info["is_success"] = is_success
             info["episode"]["is_success"] = is_success
+            # Forward milestone tracking keys to episode info
+            for k, v in info.items():
+                if k.startswith("milestone_") or k == "milestones_completed":
+                    info["episode"][k] = v
         return observation, reward, terminated, truncated, info
 
 

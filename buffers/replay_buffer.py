@@ -421,7 +421,7 @@ class SplitCategoricalAWRReplayBuffer(CategoricalAWRReplayBuffer):
 
     def prefill_expert(self, observations: np.ndarray, next_observations: np.ndarray,
                        actions: np.ndarray, rewards: np.ndarray, dones: np.ndarray,
-                       label: int) -> None:
+                       label: 'Union[int, np.ndarray]') -> None:
         """Bulk-insert expert transitions into the buffer.
 
         Args:
@@ -430,7 +430,7 @@ class SplitCategoricalAWRReplayBuffer(CategoricalAWRReplayBuffer):
             actions: (N, 1) float32
             rewards: (N, 1) float32
             dones: (N, 1) float32
-            label: int objective label (1, 2, 3, ...)
+            label: int or (N,) array of objective labels
         """
         n = len(observations)
         end_pos = self.pos + n

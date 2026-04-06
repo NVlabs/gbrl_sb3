@@ -43,11 +43,16 @@ def diagnose_sumo(
         scenario_label = "BUS PRIORITY"
         cost_desc = "max(bus_wait/T_bus) per agent"
         label_desc = "bus on unserved lane AND wait > T_warn"
-    elif scenario == "emergency_preemption":
-        cost_fn = "emergency_preemption"
-        scenario_label = "EMERGENCY PREEMPTION"
-        cost_desc = "max(emg_wait/T_emg) per agent"
-        label_desc = "emergency on unserved lane"
+    elif scenario == "convoy_priority":
+        cost_fn = "convoy_priority"
+        scenario_label = "CONVOY PRIORITY"
+        cost_desc = "max(convoy_wait/T_convoy) on unserved lanes per agent"
+        label_desc = "convoy on unserved lane AND wait > T_warn"
+    elif scenario == "spillback":
+        cost_fn = "spillback"
+        scenario_label = "SPILLBACK / ROAD WORKS"
+        cost_desc = "max downstream occ on currently served lanes per agent"
+        label_desc = "serving into blocked downstream (occ > T_occ)"
     elif scenario == "side_queue":
         cost_fn = "side_queue"
         scenario_label = "SIDE QUEUE (legacy)"
@@ -210,27 +215,49 @@ def diagnose_sumo(
     obs_dim = all_obs.shape[1]
     print(f"\n  Observation dimension: {obs_dim}")
 
-    # For bus/emergency: check the extended features
-    if scenario in ("bus_priority", "emergency_preemption"):
-        # Obs = [phase(n_p), min_green(1), density(n_l), queue(n_l), has_X(n_l), X_wait(n_l)]
+    # For bus/convoy/spillback: check the extended features
+    if scenario in ("bus_priority", "convoy_priority", "spillback"):
+        # Obs = [phase(n_p), min_green(1), density(n_l), queue(n_l), ...ext...]
         n_phases = 5 if network == "arterial" else 8
         raw_obs_dim = obs_dim
-        n_lanes = (raw_obs_dim - n_phases - 1) // 4  # 4 * n_lanes + n_phases + 1
-        ext_start = raw_obs_dim - 2 * n_lanes
-        has_x = all_obs[:, ext_start:ext_start + n_lanes]
-        x_wait = all_obs[:, ext_start + n_lanes:ext_start + 2 * n_lanes]
-
-        feat_name = "bus" if scenario == "bus_priority" else "emergency"
+        if scenario == "bus_priority":
+            n_lanes = (raw_obs_dim - n_phases - 1) // 4  # 4 * n_lanes + n_phases + 1
+            ext_start = raw_obs_dim - 2 * n_lanes
+            has_x = all_obs[:, ext_start:ext_start + n_lanes]
+            x_wait = all_obs[:, ext_start + n_lanes:ext_start + 2 * n_lanes]
+            feat_name = "bus"
+        elif scenario == "convoy_priority":
+            n_lanes = (raw_obs_dim - n_phases - 1) // 5  # 5 * n_lanes + n_phases + 1
+            ext_start = raw_obs_dim - 3 * n_lanes
+            has_x = all_obs[:, ext_start:ext_start + n_lanes]
+            x_count = all_obs[:, ext_start + n_lanes:ext_start + 2 * n_lanes]
+            x_wait = all_obs[:, ext_start + 2 * n_lanes:ext_start + 3 * n_lanes]
+            feat_name = "convoy"
+        else:  # spillback
+            n_lanes = (raw_obs_dim - n_phases - 1) // 3  # 3 * n_lanes + n_phases + 1
+            ext_start = raw_obs_dim - 1 * n_lanes
+            feat_name = "spillback"
         print(f"\n  Extended features ({feat_name}):")
         print(f"    n_lanes={n_lanes}, extension starts at obs[{ext_start}]")
-        print(f"    has_{feat_name} mean per lane: {np.mean(has_x, axis=0)}")
-        print(f"    {feat_name}_wait mean per lane: {np.mean(x_wait, axis=0)}")
-        total_presence = np.mean(np.any(has_x > 0, axis=1))
-        print(f"    Fraction of steps with {feat_name} on ANY lane: {total_presence:.3f}")
+        if scenario != "spillback":
+            print(f"    has_{feat_name} mean per lane: {np.mean(has_x, axis=0)}")
+            if scenario == "convoy_priority":
+                print(f"    convoy_count mean per lane: {np.mean(x_count, axis=0)}")
+            print(f"    {feat_name}_wait mean per lane: {np.mean(x_wait, axis=0)}")
+            total_presence = np.mean(np.any(has_x > 0, axis=1))
+            print(f"    Fraction of steps with {feat_name} on ANY lane: {total_presence:.3f}")
+        else:
+            ds_occ = all_obs[:, ext_start:ext_start + n_lanes]
+            print(f"    downstream_occ mean per lane: {np.mean(ds_occ, axis=0)}")
+            print(f"    downstream_occ max per lane: {np.max(ds_occ, axis=0)}")
+            blocked_frac = np.mean(np.any(ds_occ > 0.7, axis=1))
+            print(f"    Fraction of steps with ANY lane blocked (occ>0.7): {blocked_frac:.3f}")
 
     # 6. Per-lane queue stats
     n_phases = 5 if network == "arterial" else 8
-    orig_n_lanes = (obs_dim - n_phases - 1) // 4 if scenario in ("bus_priority", "emergency_preemption") \
+    orig_n_lanes = (obs_dim - n_phases - 1) // 4 if scenario == "bus_priority" \
+                   else (obs_dim - n_phases - 1) // 5 if scenario == "convoy_priority" \
+                   else (obs_dim - n_phases - 1) // 3 if scenario == "spillback" \
                    else (obs_dim - n_phases - 1) // 2
     density_start = n_phases + 1
     queue_start = density_start + orig_n_lanes
@@ -507,7 +534,7 @@ def main():
     parser.add_argument("--env", choices=["sumo", "flatland", "both"], default="sumo")
     parser.add_argument("--episodes", type=int, default=3, help="Episodes per env")
     parser.add_argument("--scenario", default="bus_priority",
-                        choices=["bus_priority", "emergency_preemption", "side_queue"],
+                        choices=["bus_priority", "convoy_priority", "spillback", "side_queue"],
                         help="SUMO scenario to test")
     parser.add_argument("--network", default="arterial",
                         choices=["arterial", "grid"],

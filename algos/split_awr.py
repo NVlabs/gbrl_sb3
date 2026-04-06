@@ -43,11 +43,15 @@ from policies.actor_critic_policy import ActorCriticPolicy
 IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 
 # Expert label mapping (consistent ordering)
+# Labels 1-3: expert-specific critical actions (pickup/drop/toggle)
+# Label 4: shared navigation actions (left/right/forward) from all experts
 EXPERT_LABEL_MAP = {
     'moveball': 1,
     'keydoor': 2,
     'boxkey': 3,
 }
+SHARED_NAV_LABEL = 4
+NAVIGATION_ACTIONS = {0, 1, 2}  # left, right, forward
 
 
 def raw_obs_to_categorical(image: np.ndarray, direction: int, mission: str = "") -> np.ndarray:
@@ -127,8 +131,16 @@ def load_expert_dataset(npz_path: str, label: int, mission: str = "",
         'actions': actions[:n].reshape(-1, 1).astype(np.float32),
         'rewards': rewards[:n].reshape(-1, 1).astype(np.float32),
         'dones': dones.reshape(-1, 1),
-        'labels': np.full(n, label, dtype=np.int32),
+        'labels': _split_labels_by_action(actions[:n], label),
     }
+
+
+def _split_labels_by_action(actions: np.ndarray, expert_label: int) -> np.ndarray:
+    """Assign navigation actions to SHARED_NAV_LABEL, critical actions keep expert_label."""
+    labels = np.full(len(actions), expert_label, dtype=np.int32)
+    nav_mask = np.isin(actions.flatten().astype(int), list(NAVIGATION_ACTIONS))
+    labels[nav_mask] = SHARED_NAV_LABEL
+    return labels
 
 
 class SPLIT_AWR_GBRL(OffPolicyAlgorithm):
@@ -251,9 +263,15 @@ class SPLIT_AWR_GBRL(OffPolicyAlgorithm):
             if label is None:
                 raise ValueError(f"Unknown expert '{name}'. Must be one of {list(EXPERT_LABEL_MAP.keys())}")
 
-            print(f"Loading expert: {name} (label={label}) from {path}")
+            print(f"Loading expert: {name} (label={label}, nav→{SHARED_NAV_LABEL}) from {path}")
             expert = load_expert_dataset(
                 path, label=label, max_transitions=self._expert_buffer_per_label)
+
+            labels = expert['labels']
+            n_nav = (labels == SHARED_NAV_LABEL).sum()
+            n_crit = (labels == label).sum()
+            print(f"  Split: {n_nav} navigation (label={SHARED_NAV_LABEL}) + "
+                  f"{n_crit} critical (label={label})")
 
             self.replay_buffer.prefill_expert(
                 observations=expert['observations'],
@@ -261,7 +279,7 @@ class SPLIT_AWR_GBRL(OffPolicyAlgorithm):
                 actions=expert['actions'],
                 rewards=expert['rewards'],
                 dones=expert['dones'],
-                label=label,
+                label=labels,
             )
             n = len(expert['actions'])
             print(f"  Loaded {n} transitions (buffer pos now {self.replay_buffer.pos})")

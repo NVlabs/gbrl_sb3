@@ -707,3 +707,14 @@ def log_ep_info_metrics(logger, ep_info_buffer) -> None:
     if "is_success" in first:
         logger.record("rollout/success_rate",
                        safe_mean([ep["is_success"] for ep in ep_info_buffer]))
+    # Milestone tracking (MiniGrid MultiRoomCorridor)
+    if "milestones_completed" in first:
+        logger.record("rollout/milestones_completed",
+                       safe_mean([ep["milestones_completed"] for ep in ep_info_buffer]))
+    for ms_key in ["ball_picked", "ball_moved", "purple_key_picked",
+                   "right_door_opened", "box_opened", "green_key_picked",
+                   "top_door_opened", "goal_reached"]:
+        info_key = f"milestone_{ms_key}"
+        if info_key in first:
+            logger.record(f"rollout/{info_key}",
+                           safe_mean([ep[info_key] for ep in ep_info_buffer]))

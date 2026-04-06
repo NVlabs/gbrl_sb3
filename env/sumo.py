@@ -62,7 +62,8 @@ COST_FN_REGISTRY: Dict[str, str] = {
     "side_deficit": "Per-agent: continuous sum_l q_l * max(0, g_l - tau) — severity-weighted side-street neglect",
     "side_queue": "Per-agent: max queue ratio on side-street lanes — purely observation-based, no hidden state",
     "bus_priority": "Per-agent: max(bus_wait/T_bus) across lanes with buses — task constraint, obs-extended",
-    "emergency_preemption": "Per-agent: max(emg_wait/T_emg) across lanes with emergencies — task constraint, obs-extended",
+    "convoy_priority": "Per-agent: max(convoy_wait/T_convoy) on unserved lanes with convoy vehicles — group priority, obs-extended",
+    "spillback": "Per-agent: max downstream occupancy on currently served lanes — road works / spillback protection, obs-extended",
 }
 
 
@@ -141,12 +142,22 @@ class SumoRewardCostWrapper(ParallelEnv):
         tau_service: int = 6,
         side_queue_cap: float = 0.7,
         deficit_kappa: float = 5.0,
-        # Bus / emergency injection parameters
+        # Bus / convoy injection parameters
         bus_injection_interval: float = 25.0,
         bus_cost_threshold: float = 30.0,
         bus_warn_threshold: float = 10.0,
-        emergency_injection_interval: float = 105.0,
-        emergency_cost_threshold: float = 10.0,
+        convoy_injection_interval: float = 120.0,
+        convoy_size_min: int = 5,
+        convoy_size_max: int = 8,
+        convoy_cost_threshold: float = 20.0,
+        convoy_warn_threshold: float = 8.0,
+        # Spillback / road works parameters
+        roadwork_interval_mean: float = 300.0,
+        roadwork_duration_mean: float = 400.0,
+        roadwork_speed: float = 0.3,
+        spillback_occ_threshold: float = 0.5,
+        # Scenario event probability (0.0 = events every episode, 0.25 = 25% clean)
+        clean_episode_prob: float = 0.0,
     ):
         if cost_fn not in COST_FN_REGISTRY:
             raise ValueError(
@@ -178,26 +189,48 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._side_queue_cap = side_queue_cap
         self._deficit_kappa = deficit_kappa
 
-        # Bus / emergency injection parameters
+        # Bus / convoy injection parameters
         self._bus_injection_interval = bus_injection_interval
         self._bus_cost_threshold = bus_cost_threshold    # T_bus
         self._bus_warn_threshold = bus_warn_threshold    # T_warn
-        self._emg_injection_interval = emergency_injection_interval
-        self._emg_cost_threshold = emergency_cost_threshold  # T_emg
+        self._convoy_injection_interval = convoy_injection_interval
+        self._convoy_size_min = convoy_size_min
+        self._convoy_size_max = convoy_size_max
+        self._convoy_cost_threshold = convoy_cost_threshold  # T_convoy
+        self._convoy_warn_threshold = convoy_warn_threshold  # T_warn_convoy
 
-        # Bus / emergency runtime state (populated in reset)
+        # Spillback / road works parameters
+        self._roadwork_interval_mean = roadwork_interval_mean
+        self._roadwork_duration_mean = roadwork_duration_mean
+        self._roadwork_speed = roadwork_speed            # near-zero speed on blocked edge
+        self._spillback_occ_threshold = spillback_occ_threshold  # T_occ for label
+
+        # Clean episode probability (shared across all event-based scenarios)
+        self._clean_episode_prob = clean_episode_prob
+        self._is_clean_episode = False  # set at each reset()
+
+        # Bus / convoy runtime state (populated in reset)
         self._boundary_edges: List[str] = []       # edges with dead-end nodes
         self._next_bus_time: float = 0.0           # sim-time for next bus injection
-        self._next_emg_time: float = 0.0           # sim-time for next emergency injection
+        self._next_convoy_time: float = 0.0        # sim-time for next convoy injection
         self._bus_vtype_created: bool = False
-        self._emg_vtype_created: bool = False
+        self._convoy_vtype_created: bool = False
         self._bus_counter: int = 0
-        self._emg_counter: int = 0
-        # Per-agent per-lane bus/emergency features (updated each step)
+        self._convoy_counter: int = 0
+        # Per-agent per-lane bus/convoy features (updated each step)
         self._has_bus: Dict[str, np.ndarray] = {}
         self._bus_wait: Dict[str, np.ndarray] = {}
-        self._has_emg: Dict[str, np.ndarray] = {}
-        self._emg_wait: Dict[str, np.ndarray] = {}
+        self._has_convoy: Dict[str, np.ndarray] = {}
+        self._convoy_count: Dict[str, np.ndarray] = {}
+        self._convoy_wait: Dict[str, np.ndarray] = {}
+
+        # Spillback / road works runtime state
+        self._lane_to_downstream_edges: Dict[str, Dict[int, List[str]]] = {}  # agent → lane_idx → [out_edge, ...]
+        self._downstream_occ: Dict[str, np.ndarray] = {}  # per-agent per-lane downstream occupancy
+        self._active_roadworks: List[Dict] = []  # [{edge, original_speed, clear_time}, ...]
+        self._internal_edges: List[str] = []  # candidate edges for road works
+        self._next_roadwork_time: float = 0.0
+        self._roadwork_counter: int = 0
 
         # Number of green phases per agent (for obs transformation)
         self._n_green_phases: Optional[int] = None
@@ -252,16 +285,28 @@ class SumoRewardCostWrapper(ParallelEnv):
             sample_agent = self.possible_agents[0]
             self._n_green_phases = self.action_spaces[sample_agent].n
 
-        # Bus/emergency obs extension: compute n_lanes from obs layout
+        # Bus/convoy obs extension: compute n_lanes from obs layout
         # obs = [phase_one_hot(n_phases), min_green(1), density(n_lanes), queue(n_lanes)]
         # n_lanes = (obs_dim - n_phases - 1) / 2
         self._obs_extension_dim = 0
         self._raw_max_obs_dim = self._max_obs_dim  # pre-extension dim for padding
-        if self._cost_fn in ("bus_priority", "emergency_preemption"):
+        if self._cost_fn == "bus_priority":
             n_phases_act = next(iter(self.action_spaces.values())).n
             sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
             n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
-            self._obs_extension_dim = 2 * n_lanes  # has_X + X_wait per lane
+            self._obs_extension_dim = 2 * n_lanes  # has_bus + bus_wait per lane
+            self._max_obs_dim += self._obs_extension_dim
+        elif self._cost_fn == "convoy_priority":
+            n_phases_act = next(iter(self.action_spaces.values())).n
+            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
+            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
+            self._obs_extension_dim = 3 * n_lanes  # has_convoy + convoy_count + convoy_wait
+            self._max_obs_dim += self._obs_extension_dim
+        elif self._cost_fn == "spillback":
+            n_phases_act = next(iter(self.action_spaces.values())).n
+            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
+            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
+            self._obs_extension_dim = 1 * n_lanes  # downstream_occ per lane
             self._max_obs_dim += self._obs_extension_dim
 
         if self._needs_obs_padding or self._obs_extension_dim > 0:
@@ -306,7 +351,7 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _transform_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Zero-pad observations for non-uniform networks.
 
-        Pads to self._raw_max_obs_dim (pre-extension). Bus/emergency
+        Pads to self._raw_max_obs_dim (pre-extension). Bus/convoy
         features are appended separately by _extend_obs().
 
         Categorical phase transformation is handled at the VecEnv level
@@ -500,7 +545,188 @@ class SumoRewardCostWrapper(ParallelEnv):
             side_idx = self._side_lane_indices[agent_id]
             self._steps_since_served[agent_id] = {li: 0 for li in side_idx}
 
-    # ── Bus / Emergency vehicle injection ─────────────────────────────────
+    # ── Lane → downstream edge mapping (for spillback) ───────────────
+
+    def _build_lane_downstream_mapping(self):
+        """Build mapping: agent → lane_idx → list of downstream edge IDs.
+
+        Uses getControlledLinks which returns (in_lane, out_lane, via_lane)
+        per connection. The out_lane's parent edge is the downstream edge
+        that vehicles from in_lane travel to.
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        self._lane_to_downstream_edges.clear()
+
+        for agent_id in self.possible_agents:
+            ts = self._get_traffic_signal(agent_id)
+            if ts is None:
+                continue
+
+            connections = sumo.trafficlight.getControlledLinks(agent_id)
+            lane_downstream: Dict[int, set] = {i: set() for i in range(len(ts.lanes))}
+
+            for conn_group in connections:
+                for (in_lane, out_lane, _via) in conn_group:
+                    if in_lane in ts.lanes:
+                        lane_idx = ts.lanes.index(in_lane)
+                        # out_lane format: "edgeID_laneIndex" → extract edge
+                        out_edge = '_'.join(out_lane.split('_')[:-1])
+                        if out_edge and not out_edge.startswith(':'):
+                            lane_downstream[lane_idx].add(out_edge)
+
+            self._lane_to_downstream_edges[agent_id] = {
+                k: list(v) for k, v in lane_downstream.items()
+            }
+
+    def _discover_internal_edges(self):
+        """Find internal (non-boundary) edges suitable for road works.
+
+        Road works should be placed on edges between two intersections,
+        not on boundary edges where vehicles enter/exit the network.
+        Only considers edges that appear as downstream targets for at
+        least one controlled lane (so blocking them has cost impact).
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        # Collect all downstream edges referenced by any agent
+        downstream_set = set()
+        for agent_mapping in self._lane_to_downstream_edges.values():
+            for edges in agent_mapping.values():
+                downstream_set.update(edges)
+
+        # Internal = downstream edges that are NOT boundary edges
+        all_edges = sumo.edge.getIDList()
+        normal_edges = [e for e in all_edges if not e.startswith(':')]
+
+        from collections import Counter
+        node_edge_count = Counter()
+        for e in normal_edges:
+            node_edge_count[sumo.edge.getFromJunction(e)] += 1
+            node_edge_count[sumo.edge.getToJunction(e)] += 1
+        boundary_nodes = {n for n, c in node_edge_count.items() if c <= 2}
+
+        self._internal_edges = [
+            e for e in downstream_set
+            if (sumo.edge.getFromJunction(e) not in boundary_nodes
+                and sumo.edge.getToJunction(e) not in boundary_nodes)
+        ]
+        # Fallback: if network is too small, use all downstream edges
+        if len(self._internal_edges) < 2:
+            self._internal_edges = list(downstream_set)
+
+    # ── Road works injection / clearing (for spillback) ──────────────
+
+    def _inject_roadwork(self, sim_time: float):
+        """Possibly inject a new road works event (reduce edge speed)."""
+        if sim_time < self._next_roadwork_time:
+            return
+        if not self._internal_edges:
+            return
+
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        rng = np.random.RandomState(int(sim_time * 1000) % (2**31))
+
+        # Pick a random internal edge not already blocked
+        blocked_edges = {rw["edge"] for rw in self._active_roadworks}
+        candidates = [e for e in self._internal_edges if e not in blocked_edges]
+        if not candidates:
+            # All internal edges blocked, skip
+            self._next_roadwork_time = sim_time + 60.0
+            return
+
+        edge = rng.choice(candidates)
+
+        # Save original speed and reduce to near-zero
+        try:
+            original_speed = sumo.edge.getMaxSpeed(edge)
+            sumo.edge.setMaxSpeed(edge, self._roadwork_speed)
+        except Exception:
+            self._next_roadwork_time = sim_time + 60.0
+            return
+
+        # Random duration: mean ± 40% jitter
+        duration = self._roadwork_duration_mean * (0.6 + 0.8 * rng.random())
+        clear_time = sim_time + duration
+
+        self._active_roadworks.append({
+            "edge": edge,
+            "original_speed": original_speed,
+            "clear_time": clear_time,
+        })
+        self._roadwork_counter += 1
+
+        # Schedule next road work: maybe another, maybe not (randomness)
+        # 70% chance of another road work after interval, 30% skip
+        if rng.random() < 0.7:
+            interval = self._roadwork_interval_mean * (0.6 + 0.8 * rng.random())
+            self._next_roadwork_time = sim_time + interval
+        else:
+            # Skip this cycle — no new road work for a while
+            self._next_roadwork_time = sim_time + self._roadwork_interval_mean * 2.0
+
+    def _clear_roadworks(self, sim_time: float):
+        """Clear expired road works, restoring original edge speeds."""
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        still_active = []
+        for rw in self._active_roadworks:
+            if sim_time >= rw["clear_time"]:
+                try:
+                    sumo.edge.setMaxSpeed(rw["edge"], rw["original_speed"])
+                except Exception:
+                    pass
+            else:
+                still_active.append(rw)
+        self._active_roadworks = still_active
+
+    # ── Downstream occupancy computation (for spillback) ─────────────
+
+    def _compute_downstream_occupancy(self):
+        """Compute max downstream edge occupancy per incoming lane per agent.
+
+        For each agent's incoming lane, looks up which downstream edges
+        that lane feeds into, queries their occupancy via TraCI, and
+        stores the max across all downstream edges for that lane.
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            return
+
+        for agent_id in self.possible_agents:
+            ts = self._get_traffic_signal(agent_id)
+            if ts is None:
+                continue
+
+            n_lanes = len(ts.lanes)
+            ds_occ = np.zeros(n_lanes, dtype=np.float32)
+            lane_map = self._lane_to_downstream_edges.get(agent_id, {})
+
+            for i in range(n_lanes):
+                edges = lane_map.get(i, [])
+                if not edges:
+                    continue
+                max_occ = 0.0
+                for edge in edges:
+                    try:
+                        occ = sumo.edge.getLastStepOccupancy(edge)
+                        max_occ = max(max_occ, occ / 100.0 if occ > 1.0 else occ)
+                    except Exception:
+                        continue
+                ds_occ[i] = max_occ
+
+            self._downstream_occ[agent_id] = ds_occ
+
+    # ── Bus / Convoy vehicle injection ─────────────────────────────────
 
     def _discover_boundary_edges(self):
         """Find edges connected to boundary (dead-end) nodes for route generation.
@@ -558,33 +784,37 @@ class SumoRewardCostWrapper(ParallelEnv):
         except Exception:
             pass  # vtype might already exist from previous episode
 
-    def _create_emergency_vtype(self):
-        """Create an 'emergency_vehicle' vehicle type via TraCI."""
+    def _create_convoy_vtype(self):
+        """Create a 'convoy_vehicle' vehicle type via TraCI.
+
+        Convoy vehicles are regular-sized cars with a distinctive color.
+        They drive at normal speed and queue normally at red lights.
+        The constraint comes from the GROUP needing sustained green.
+        """
         sumo = self._get_traci()
-        if sumo is None or self._emg_vtype_created:
+        if sumo is None or self._convoy_vtype_created:
             return
         try:
-            sumo.vehicletype.copy("DEFAULT_VEHTYPE", "emergency_vehicle")
-            sumo.vehicletype.setLength("emergency_vehicle", 7.0)
-            sumo.vehicletype.setMaxSpeed("emergency_vehicle", 30.0)
-            sumo.vehicletype.setColor("emergency_vehicle", (255, 0, 0, 255))  # red
-            sumo.vehicletype.setVehicleClass("emergency_vehicle", "emergency")
-            self._emg_vtype_created = True
+            sumo.vehicletype.copy("DEFAULT_VEHTYPE", "convoy_vehicle")
+            sumo.vehicletype.setLength("convoy_vehicle", 5.0)
+            sumo.vehicletype.setMaxSpeed("convoy_vehicle", 13.9)  # ~50 km/h
+            sumo.vehicletype.setColor("convoy_vehicle", (0, 200, 0, 255))  # green
+            self._convoy_vtype_created = True
         except Exception:
             pass
 
     def _inject_vehicles(self, sim_time: float):
-        """Inject bus / emergency vehicles based on current simulation time.
+        """Inject bus / convoy vehicles based on current simulation time.
 
         Called each agent step (every delta_time seconds). Checks if it's
-        time to inject a new bus or emergency vehicle and does so via TraCI.
+        time to inject a new bus or convoy and does so via TraCI.
         """
         sumo = self._get_traci()
         if sumo is None:
             return
         rng = np.random.RandomState(int(sim_time * 1000) % (2**31))
 
-        # Bus injection
+        # Bus injection (single vehicle)
         if self._cost_fn == "bus_priority" and sim_time >= self._next_bus_time:
             origin = rng.choice(self._origin_edges)
             dest = rng.choice(self._dest_edges)
@@ -605,8 +835,8 @@ class SumoRewardCostWrapper(ParallelEnv):
             # Schedule next bus with some randomness
             self._next_bus_time = sim_time + self._bus_injection_interval * (0.8 + 0.4 * rng.random())
 
-        # Emergency injection
-        if self._cost_fn == "emergency_preemption" and sim_time >= self._next_emg_time:
+        # Convoy injection (platoon of vehicles on the same route)
+        if self._cost_fn == "convoy_priority" and sim_time >= self._next_convoy_time:
             origin = rng.choice(self._origin_edges)
             dest = rng.choice(self._dest_edges)
             attempts = 0
@@ -614,28 +844,36 @@ class SumoRewardCostWrapper(ParallelEnv):
                 dest = rng.choice(self._dest_edges)
                 attempts += 1
             if dest != origin:
-                emg_id = f"emg_{self._emg_counter}"
-                route_id = f"emg_route_{self._emg_counter}"
+                platoon_size = rng.randint(self._convoy_size_min, self._convoy_size_max + 1)
+                route_id = f"convoy_route_{self._convoy_counter}"
                 try:
                     sumo.route.add(route_id, [origin, dest])
-                    sumo.vehicle.add(emg_id, route_id, typeID="emergency_vehicle")
-                    self._emg_counter += 1
                 except Exception:
-                    pass
-            self._next_emg_time = sim_time + self._emg_injection_interval * (0.8 + 0.4 * rng.random())
+                    platoon_size = 0  # route invalid, skip
+                for v in range(platoon_size):
+                    vid = f"convoy_{self._convoy_counter}_v{v}"
+                    try:
+                        # departDelay staggers vehicles by 1-2s each
+                        depart = str(sim_time + v * 1.5)
+                        sumo.vehicle.add(vid, route_id, typeID="convoy_vehicle",
+                                         depart=depart)
+                    except Exception:
+                        pass
+                self._convoy_counter += 1
+            self._next_convoy_time = sim_time + self._convoy_injection_interval * (0.8 + 0.4 * rng.random())
 
     def _detect_special_vehicles(self):
-        """Detect bus/emergency vehicles on each agent's incoming lanes.
+        """Detect bus/convoy vehicles on each agent's incoming lanes.
 
-        Updates self._has_bus, self._bus_wait, self._has_emg, self._emg_wait
-        for each agent. These are used for obs extension, cost, and label.
+        Updates self._has_bus, self._bus_wait (for bus_priority)
+        or self._has_convoy, self._convoy_count, self._convoy_wait (for convoy_priority).
         """
         sumo = self._get_traci()
         if sumo is None:
             return
 
         need_bus = self._cost_fn == "bus_priority"
-        need_emg = self._cost_fn == "emergency_preemption"
+        need_convoy = self._cost_fn == "convoy_priority"
 
         for agent_id in self.possible_agents:
             ts = self._get_traffic_signal(agent_id)
@@ -645,8 +883,9 @@ class SumoRewardCostWrapper(ParallelEnv):
             n_lanes = len(ts.lanes)
             has_bus = np.zeros(n_lanes, dtype=np.float32)
             bus_wait = np.zeros(n_lanes, dtype=np.float32)
-            has_emg = np.zeros(n_lanes, dtype=np.float32)
-            emg_wait = np.zeros(n_lanes, dtype=np.float32)
+            has_convoy = np.zeros(n_lanes, dtype=np.float32)
+            convoy_count = np.zeros(n_lanes, dtype=np.float32)
+            convoy_wait = np.zeros(n_lanes, dtype=np.float32)
 
             for i, lane in enumerate(ts.lanes):
                 try:
@@ -655,33 +894,37 @@ class SumoRewardCostWrapper(ParallelEnv):
                     continue
                 for vid in veh_ids:
                     try:
-                        vclass = sumo.vehicle.getVehicleClass(vid)
+                        vtype = sumo.vehicle.getTypeID(vid)
                         vwait = sumo.vehicle.getWaitingTime(vid)
                     except Exception:
                         continue
-                    if need_bus and vclass == "bus":
+                    if need_bus and vtype == "priority_bus":
                         has_bus[i] = 1.0
                         bus_wait[i] = max(bus_wait[i], vwait)
-                    if need_emg and vclass == "emergency":
-                        has_emg[i] = 1.0
-                        emg_wait[i] = max(emg_wait[i], vwait)
+                    if need_convoy and vtype == "convoy_vehicle":
+                        has_convoy[i] = 1.0
+                        convoy_count[i] += 1.0
+                        convoy_wait[i] = max(convoy_wait[i], vwait)
 
-            # Normalize wait times
+            # Normalize wait times and counts
             if need_bus:
                 bus_wait = np.clip(bus_wait / self._bus_cost_threshold, 0.0, 1.0)
                 self._has_bus[agent_id] = has_bus
                 self._bus_wait[agent_id] = bus_wait
-            if need_emg:
-                emg_wait = np.clip(emg_wait / self._emg_cost_threshold, 0.0, 1.0)
-                self._has_emg[agent_id] = has_emg
-                self._emg_wait[agent_id] = emg_wait
+            if need_convoy:
+                convoy_wait = np.clip(convoy_wait / self._convoy_cost_threshold, 0.0, 1.0)
+                # Normalize count by max platoon size for [0,1] range
+                convoy_count = np.clip(convoy_count / self._convoy_size_max, 0.0, 1.0)
+                self._has_convoy[agent_id] = has_convoy
+                self._convoy_count[agent_id] = convoy_count
+                self._convoy_wait[agent_id] = convoy_wait
 
     def _extend_obs_spaces(self):
         """No-op: obs spaces are pre-extended in __init__."""
         pass
 
     def _extend_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Append bus/emergency features to observation vectors."""
+        """Append bus/convoy features to observation vectors."""
         if self._obs_extension_dim == 0:
             return obs
 
@@ -693,10 +936,15 @@ class SumoRewardCostWrapper(ParallelEnv):
                 hb = self._has_bus.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
                 bw = self._bus_wait.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
                 ob = np.concatenate([ob, hb, bw])
-            elif self._cost_fn == "emergency_preemption":
-                he = self._has_emg.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
-                ew = self._emg_wait.get(agent, np.zeros(self._obs_extension_dim // 2, dtype=np.float32))
-                ob = np.concatenate([ob, he, ew])
+            elif self._cost_fn == "convoy_priority":
+                n_lanes = self._obs_extension_dim // 3
+                hc = self._has_convoy.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                cc = self._convoy_count.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                cw = self._convoy_wait.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                ob = np.concatenate([ob, hc, cc, cw])
+            elif self._cost_fn == "spillback":
+                ds = self._downstream_occ.get(agent, np.zeros(self._obs_extension_dim, dtype=np.float32))
+                ob = np.concatenate([ob, ds])
 
             extended[agent] = ob
         return extended
@@ -704,20 +952,31 @@ class SumoRewardCostWrapper(ParallelEnv):
     # ── Bus priority cost/label ───────────────────────────────────────────
 
     def _compute_bus_priority_cost(self, agent_id: str) -> float:
-        """Max bus wait ratio across incoming lanes.
+        """Max bus wait ratio across *unserved* incoming lanes.
 
-        cost = max over lanes of: bus_wait[lane] / T_bus  (if bus present)
-             = 0                                           (if no bus)
+        cost = max over unserved lanes of: bus_wait[lane] / T_bus
+             = 0  if no bus, or all buses are on served (green) lanes
 
-        Continuous in [0, 1]. Ramps as bus waits longer.
+        Continuous in [0, 1]. Ramps as bus waits longer on a red lane.
         """
         bus_wait = self._bus_wait.get(agent_id)
         has_bus = self._has_bus.get(agent_id)
         if bus_wait is None or has_bus is None:
             return 0.0
-        # bus_wait is already normalized by T_bus
-        masked = bus_wait * has_bus
-        return float(np.max(masked)) if np.any(has_bus > 0) else 0.0
+        if not np.any(has_bus > 0):
+            return 0.0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+
+        max_cost = 0.0
+        for i in range(len(has_bus)):
+            if has_bus[i] > 0 and i not in served_lanes:
+                max_cost = max(max_cost, float(bus_wait[i]))
+        return max_cost
 
     def _bus_priority_label(self, agent_id: str) -> int:
         """Label = 1 when bus is waiting on an unserved lane past T_warn.
@@ -750,24 +1009,48 @@ class SumoRewardCostWrapper(ParallelEnv):
                 return 1
         return 0
 
-    # ── Emergency preemption cost/label ───────────────────────────────────
+    # ── Convoy priority cost/label ───────────────────────────────────────
 
-    def _compute_emergency_preemption_cost(self, agent_id: str) -> float:
-        """Max emergency wait ratio across incoming lanes."""
-        emg_wait = self._emg_wait.get(agent_id)
-        has_emg = self._has_emg.get(agent_id)
-        if emg_wait is None or has_emg is None:
-            return 0.0
-        masked = emg_wait * has_emg
-        return float(np.max(masked)) if np.any(has_emg > 0) else 0.0
+    def _compute_convoy_priority_cost(self, agent_id: str) -> float:
+        """Max convoy wait ratio across *unserved* incoming lanes.
 
-    def _emergency_preemption_label(self, agent_id: str) -> int:
-        """Label = 1 when emergency vehicle is on an unserved lane.
-
-        No wait threshold — emergency preemption is immediate.
+        Cost = 0 if the convoy's lane already has green.
+        Cost > 0 only when the agent is blocking convoy vehicles.
+        Continuous in [0, 1].
         """
-        has_emg = self._has_emg.get(agent_id)
-        if has_emg is None:
+        convoy_wait = self._convoy_wait.get(agent_id)
+        has_convoy = self._has_convoy.get(agent_id)
+        if convoy_wait is None or has_convoy is None:
+            return 0.0
+        if not np.any(has_convoy > 0):
+            return 0.0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+
+        max_cost = 0.0
+        for i in range(len(has_convoy)):
+            if has_convoy[i] > 0 and i not in served_lanes:
+                max_cost = max(max_cost, float(convoy_wait[i]))
+        return max_cost
+
+    def _convoy_priority_label(self, agent_id: str) -> int:
+        """Label = 1 when convoy vehicles are waiting on an unserved lane past T_warn.
+
+        Fires when:
+          - Convoy is present on some incoming lane (has_convoy[lane] = 1)
+          - That lane is NOT served by the current green phase
+          - The convoy's max wait time exceeds T_warn_convoy
+
+        This is the decision frontier: the agent SHOULD switch or sustain
+        green for the convoy approach, but reward says serve the majority.
+        """
+        has_convoy = self._has_convoy.get(agent_id)
+        convoy_wait = self._convoy_wait.get(agent_id)
+        if has_convoy is None or convoy_wait is None:
             return 0
 
         ts = self._get_traffic_signal(agent_id)
@@ -777,8 +1060,62 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
-        for i in range(len(has_emg)):
-            if has_emg[i] > 0 and i not in served_lanes:
+        warn_ratio = self._convoy_warn_threshold / self._convoy_cost_threshold
+
+        for i in range(len(has_convoy)):
+            if has_convoy[i] > 0 and i not in served_lanes and convoy_wait[i] > warn_ratio:
+                return 1
+        return 0
+
+    # ── Spillback cost/label ─────────────────────────────────────────────
+
+    def _compute_spillback_cost(self, agent_id: str) -> float:
+        """Max downstream occupancy across currently *served* incoming lanes.
+
+        c_t = max_{l in served(phase_t)} downstream_occ(l)
+
+        Continuous in [0, 1]. Cost is high when the agent is actively
+        sending vehicles into a blocked downstream direction.
+        Cost = 0 if downstream is clear, regardless of road works.
+        """
+        ds_occ = self._downstream_occ.get(agent_id)
+        if ds_occ is None:
+            return 0.0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0.0
+        phase = ts.green_phase
+        served_lanes = self._phase_to_lanes.get(agent_id, {}).get(phase, [])
+        if not served_lanes:
+            return 0.0
+
+        max_cost = 0.0
+        for i in served_lanes:
+            if i < len(ds_occ):
+                max_cost = max(max_cost, float(ds_occ[i]))
+        return max_cost
+
+    def _spillback_label(self, agent_id: str) -> int:
+        """Label = 1 when serving into a blocked downstream.
+
+        y_t = 1[max_{l in served(phase_t)} downstream_occ(l) > T_occ]
+
+        Pure function of observation state: phase one-hot (in obs) and
+        downstream_occ features (in obs extension). No action dependence.
+        """
+        ds_occ = self._downstream_occ.get(agent_id)
+        if ds_occ is None:
+            return 0
+
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+        phase = ts.green_phase
+        served_lanes = self._phase_to_lanes.get(agent_id, {}).get(phase, [])
+
+        for i in served_lanes:
+            if i < len(ds_occ) and ds_occ[i] > self._spillback_occ_threshold:
                 return 1
         return 0
 
@@ -1318,22 +1655,35 @@ class SumoRewardCostWrapper(ParallelEnv):
         if self._override_reward in ("ns_wait", "arterial", "mainline") or self._cost_fn in ("directional", "service_gap", "side_deficit", "side_queue"):
             self._classify_mainline_side()
 
-        # Bus / emergency injection setup
-        if self._cost_fn in ("bus_priority", "emergency_preemption"):
+        # Clean episode coin flip: with probability clean_episode_prob,
+        # no scenario events occur this episode (obs extensions stay zero,
+        # cost/label stay zero). Same train/test distribution for all methods.
+        self._is_clean_episode = (
+            self._clean_episode_prob > 0
+            and np.random.random() < self._clean_episode_prob
+        )
+
+        # Bus / convoy injection setup
+        if self._cost_fn in ("bus_priority", "convoy_priority"):
             # Build phase→lane mapping (needed for label: "is lane served?")
             if not self._phase_to_lanes:
                 self._classify_mainline_side()  # also builds phase_to_lanes
             self._discover_boundary_edges()
             self._bus_vtype_created = False
-            self._emg_vtype_created = False
+            self._convoy_vtype_created = False
             self._bus_counter = 0
-            self._emg_counter = 0
-            self._next_bus_time = self._bus_injection_interval * 0.5  # first bus after ~half interval
-            self._next_emg_time = self._emg_injection_interval * 0.5
+            self._convoy_counter = 0
+            if self._is_clean_episode:
+                # Push injection past episode horizon → no events
+                self._next_bus_time = 1e9
+                self._next_convoy_time = 1e9
+            else:
+                self._next_bus_time = self._bus_injection_interval * 0.5
+                self._next_convoy_time = self._convoy_injection_interval * 0.5
             if self._cost_fn == "bus_priority":
                 self._create_bus_vtype()
-            elif self._cost_fn == "emergency_preemption":
-                self._create_emergency_vtype()
+            elif self._cost_fn == "convoy_priority":
+                self._create_convoy_vtype()
             # Extend obs spaces on first reset
             self._extend_obs_spaces()
             # Init per-agent feature arrays
@@ -1343,8 +1693,29 @@ class SumoRewardCostWrapper(ParallelEnv):
                     n_lanes = len(ts.lanes)
                     self._has_bus[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._bus_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
-                    self._has_emg[agent_id] = np.zeros(n_lanes, dtype=np.float32)
-                    self._emg_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._has_convoy[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._convoy_count[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._convoy_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+
+        # Spillback / road works setup
+        if self._cost_fn == "spillback":
+            if not self._phase_to_lanes:
+                self._classify_mainline_side()  # also builds phase_to_lanes
+            self._build_lane_downstream_mapping()
+            self._discover_internal_edges()
+            self._active_roadworks = []
+            self._roadwork_counter = 0
+            if self._is_clean_episode:
+                self._next_roadwork_time = 1e9  # no road works this episode
+            else:
+                self._next_roadwork_time = self._roadwork_interval_mean * 0.3
+            self._extend_obs_spaces()
+            # Init per-agent downstream occupancy arrays
+            for agent_id in self.possible_agents:
+                ts = self._get_traffic_signal(agent_id)
+                if ts is not None:
+                    n_lanes = len(ts.lanes)
+                    self._downstream_occ[agent_id] = np.zeros(n_lanes, dtype=np.float32)
 
         # Reset episode accumulators
         self._episode_costs = {agent: 0.0 for agent in self.possible_agents}
@@ -1416,13 +1787,22 @@ class SumoRewardCostWrapper(ParallelEnv):
         Separated from step() so the outer try/except can catch TraCI
         failures in any of the downstream calls.
         """
-        # Inject and detect bus/emergency vehicles (once per step, before per-agent loop)
-        if self._cost_fn in ("bus_priority", "emergency_preemption"):
+        # Inject and detect bus/convoy vehicles (once per step, before per-agent loop)
+        if self._cost_fn in ("bus_priority", "convoy_priority"):
             sumo = self._get_traci()
             if sumo is not None:
                 sim_time = sumo.simulation.getTime()
                 self._inject_vehicles(sim_time)
                 self._detect_special_vehicles()
+
+        # Road works injection/clearing + downstream occupancy (once per step)
+        if self._cost_fn == "spillback":
+            sumo = self._get_traci()
+            if sumo is not None:
+                sim_time = sumo.simulation.getTime()
+                self._clear_roadworks(sim_time)
+                self._inject_roadwork(sim_time)
+                self._compute_downstream_occupancy()
 
         # For emergency cost_fn, compute once (global)
         emergency_cost = None
@@ -1482,8 +1862,10 @@ class SumoRewardCostWrapper(ParallelEnv):
                 cost = emergency_cost
             elif self._cost_fn == "bus_priority":
                 cost = self._compute_bus_priority_cost(agent)
-            elif self._cost_fn == "emergency_preemption":
-                cost = self._compute_emergency_preemption_cost(agent)
+            elif self._cost_fn == "convoy_priority":
+                cost = self._compute_convoy_priority_cost(agent)
+            elif self._cost_fn == "spillback":
+                cost = self._compute_spillback_cost(agent)
             else:
                 cost = 0.0
 
@@ -1504,7 +1886,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             has_cost = cost > 0
             self._update_failure_history(agent, has_cost)
 
-            # Label: state-based for side_queue/side_deficit/directional/bus/emg, else event-proximal
+            # Label: state-based for side_queue/side_deficit/directional/bus/convoy, else event-proximal
             if self._cost_fn == "side_queue":
                 label = self._side_queue_label(agent)
             elif self._cost_fn == "side_deficit":
@@ -1513,8 +1895,10 @@ class SumoRewardCostWrapper(ParallelEnv):
                 label = self._directional_label(agent)
             elif self._cost_fn == "bus_priority":
                 label = self._bus_priority_label(agent)
-            elif self._cost_fn == "emergency_preemption":
-                label = self._emergency_preemption_label(agent)
+            elif self._cost_fn == "convoy_priority":
+                label = self._convoy_priority_label(agent)
+            elif self._cost_fn == "spillback":
+                label = self._spillback_label(agent)
             else:
                 label = self._event_proximal_label(agent)
 
@@ -1758,8 +2142,16 @@ def make_sumo_vec_env(
     bus_injection_interval: float = 25.0,
     bus_cost_threshold: float = 30.0,
     bus_warn_threshold: float = 10.0,
-    emergency_injection_interval: float = 105.0,
-    emergency_cost_threshold: float = 10.0,
+    convoy_injection_interval: float = 120.0,
+    convoy_size_min: int = 5,
+    convoy_size_max: int = 8,
+    convoy_cost_threshold: float = 20.0,
+    convoy_warn_threshold: float = 8.0,
+    roadwork_interval_mean: float = 300.0,
+    roadwork_duration_mean: float = 400.0,
+    roadwork_speed: float = 0.3,
+    spillback_occ_threshold: float = 0.5,
+    clean_episode_prob: float = 0.0,
     use_gui: bool = False,
     **override_kwargs,
 ):
@@ -1864,8 +2256,16 @@ def make_sumo_vec_env(
         bus_injection_interval=bus_injection_interval,
         bus_cost_threshold=bus_cost_threshold,
         bus_warn_threshold=bus_warn_threshold,
-        emergency_injection_interval=emergency_injection_interval,
-        emergency_cost_threshold=emergency_cost_threshold,
+        convoy_injection_interval=convoy_injection_interval,
+        convoy_size_min=convoy_size_min,
+        convoy_size_max=convoy_size_max,
+        convoy_cost_threshold=convoy_cost_threshold,
+        convoy_warn_threshold=convoy_warn_threshold,
+        roadwork_interval_mean=roadwork_interval_mean,
+        roadwork_duration_mean=roadwork_duration_mean,
+        roadwork_speed=roadwork_speed,
+        spillback_occ_threshold=spillback_occ_threshold,
+        clean_episode_prob=clean_episode_prob,
     )
 
     # PettingZoo → SB3 VecEnv via SuperSuit
