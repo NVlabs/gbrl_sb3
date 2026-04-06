@@ -1,314 +1,279 @@
-# SUMO Traffic Signal Control — SPLIT-RL Environment
+# SUMO Split-RL Scenarios — Complete Reference
 
-**Date:** 2026-04-04  
-**Environment:** `sumo-arterial4x4-v0` (RESCO benchmark)  
+**Date:** 2026-04-06 (v3)  
 **File:** `env/sumo.py`  
+**Networks:** `sumo-arterial4x4-v0` (18-dim obs, Discrete(5), 6 lanes/agent)  
+              `sumo-grid4x4-v0` (33-dim obs, Discrete(8), 12 lanes/agent)
 
 ---
 
-## 1. Environment Overview
+## 1. Architecture
 
-SUMO-RL exposes a 4×4 arterial traffic grid as a PettingZoo parallel multi-agent environment. Each of the **16 traffic signal intersections** is an independent agent with its own observation, action, reward, and cost. A shared-policy GBRL tree controls all 16 agents simultaneously via SuperSuit's VecEnv conversion.
-
-**Pipeline:**
 ```
-sumo_rl.parallel_env(arterial4x4)
-→ SumoRewardCostWrapper     (reward/cost/label split)
-→ SuperSuit pettingzoo_env_to_vec_env_v1 + concat_vec_envs_v1
-→ VecCostMonitor             (episode stats)
-→ SB3 VecEnv                 (16 slots per sim, 1 sim)
+sumo_rl.parallel_env(RESCO benchmark)
+→ SumoRewardCostWrapper     (reward/cost/label split + vehicle injection + obs extension)
+→ SuperSuit pettingzoo_env_to_vec_env + concat_vec_envs
+→ VecCostMonitor             (episode stats: r, c, s)
+→ SB3 VecEnv                 (16 agent slots per sim)
 ```
 
-**Simulation parameters:**
-- Duration: 3600 simulated seconds
-- `delta_time=5` → 720 agent decision steps per episode
-- 16 agents × 720 steps = **11,520 transitions per episode**
-- `yellow_time=2`, `min_green=5`, `max_green=50`
+- 16 shared-policy agents per simulation
+- 3600s simulation, delta_time=5 → 720 steps/agent/episode → 11,520 transitions/episode
+- 50% clean episodes (no events) via `clean_episode_prob=0.5`
 
 ---
 
-## 2. Observation Space
+## 2. Shared: Reward
 
-Each agent observes a **33-dimensional float vector**:
+**All 4 scenarios use the same reward: original SUMO-RL `diff-waiting-time`.**
 
 ```
-obs = [phase_one_hot(8), min_green(1), density(12), queue(12)]
+r_t = -(total_wait_t - total_wait_{t-1})   [sum over ALL incoming lanes, ALL vehicles]
 ```
 
-| Index | Feature | Dim | Range | Description |
-|-------|---------|-----|-------|-------------|
-| 0–7 | `phase_one_hot` | 8 | {0, 1} | One-hot encoding of the current green phase |
-| 8 | `min_green` | 1 | {0, 1} | 1 if minimum green time has elapsed, 0 otherwise |
-| 9–20 | `density` | 12 | [0, 1] | Per-lane vehicle density (vehicles / lane capacity) |
-| 21–32 | `queue` | 12 | [0, 1] | Per-lane queue ratio (halted vehicles / lane capacity) |
-
-The 12 lanes are the incoming lanes of the intersection. For `arterial4x4`, these are classified by geometry into **mainline** (higher-capacity direction, typically EW or the direction with more lanes) and **side-street** (lower-capacity cross-streets).
-
-**Lane classification method** (`_classify_mainline_side()`):
-- Uses TraCI junction positions to determine which incoming lanes are NS vs EW
-- The direction with more incoming lanes = mainline (higher capacity = higher demand)  
-- For symmetric grids: EW is picked as mainline (arbitrary but consistent)
+Every vehicle counts equally: 1 bus = 1 car = 1 premium car in the reward.
+The reward is NOT hacked. `override_reward=null`.
 
 ---
 
-## 3. Action Space
+## 3. The Four Scenarios
 
+### 3.1 — Bus Priority (Volume-Driven Throughput Conflict)
+
+**Story:** Heavy bus traffic. Buses are large (12m), slow (11.1 m/s), slow to accelerate. Serving a bus approach costs more green-seconds per waiting-time-reduction than serving cars.
+
+**Injection:** 2 buses every ~12s (±20% jitter), random boundary→boundary routes. Params: `bus_injection_interval=12.0`, `bus_count_per_injection=2`.
+
+**Obs extension** (3 × n_lanes = 18 for arterial, 36 for grid):
+
+| Feature | Dim | Range | Description |
+|---------|-----|-------|-------------|
+| `has_bus[lane]` | n_lanes | {0, 1} | Is there a bus on this lane? |
+| `bus_count[lane]` | n_lanes | [0, 1] | Number of buses on this lane (÷5) |
+| `bus_wait[lane]` | n_lanes | [0, 1] | Max bus waiting time (÷T_bus=30s) |
+
+**Cost:**
 ```
-Discrete(8)  — select the next green phase
+c_t = max over unserved lanes of: bus_wait[lane] / T_bus
+```
+Continuous ∈ [0, 1]. Ramps as bus waits longer on a red lane. = 0 when bus is on a served (green) lane.
+
+**Label** (conflict-based):
+```
+label = 1  IF  bus on unserved lane
+          AND  served approach has HIGHER queue pressure than bus lane
 ```
 
-Each action selects one of 8 possible green-phase configurations. If the selected phase differs from the current phase, a mandatory yellow transition occurs (`yellow_time=2` seconds) before the new green phase activates. This yellow time is "lost" throughput.
+The label fires at the **actual conflict zone**: reward says "stay on the busy approach" (more waiting-time reduction per green-second), cost says "switch to serve the bus." If the bus lane is already the busiest, label = 0 — no conflict, both objectives agree.
+
+**Conflict mechanism:** Buses are throughput-inefficient. A lane with 3 buses clears slower than a lane with 10 cars. The reward prefers the efficient approach. The cost demands the buses get served.
+
+| Default param | Value |
+|---------------|-------|
+| `bus_injection_interval` | 12.0s |
+| `bus_count_per_injection` | 2 |
+| `bus_cost_threshold` (T_bus) | 30.0s |
+| `bus_warn_threshold` (T_warn) | 10.0s |
 
 ---
 
-## 4. Reward Signal
+### 3.2 — Convoy Must-Not-Split (Temporal Conflict)
 
-### Original SUMO-RL Reward (not used for SPLIT-RL)
-```
-r_t = diff-waiting-time = -(total_wait_t - total_wait_{t-1})
-```
-Sums accumulated waiting time across **all** incoming lanes. Positive when total waiting decreases (any direction served). This reward does NOT create a conflict because serving any direction reduces the same reward signal.
+**Story:** A platoon of 5-8 vehicles approaches an intersection together. The entire group must pass without interruption. Splitting the platoon incurs cost.
 
-### SPLIT-RL Reward: Mainline Diff-Waiting-Time
-```
-r_t = -(W_main(t) - W_main(t-1)) / 100
-```
-(`override_reward="mainline"`, function: `_compute_mainline_reward()`)
+**Injection:** 1 platoon every ~120s (±20% jitter), 5-8 vehicles spaced 1.5s apart on the same random route. Convoy vehicles are normal-sized cars (5m, 13.9 m/s). Params: `convoy_injection_interval=120.0`, `convoy_size_min=5`, `convoy_size_max=8`.
 
-Only counts accumulated waiting time on **mainline** incoming lanes. Positive when mainline waiting decreases (mainline is being served). Negative when mainline waiting increases (mainline is starved).
+**Obs extension** (3 × n_lanes = 18 for arterial, 36 for grid):
 
-**Why mainline-only?** This creates a directional bias: the reward only cares about one set of lanes. The agent is incentivised to hold green on the mainline indefinitely — which is where the cost conflict comes from.
+| Feature | Dim | Range | Description |
+|---------|-----|-------|-------------|
+| `has_convoy[lane]` | n_lanes | {0, 1} | Any convoy vehicle on this lane? |
+| `convoy_count[lane]` | n_lanes | [0, 1] | Num convoy vehicles on lane (÷max_platoon_size) |
+| `convoy_progress[lane]` | n_lanes | [0, 1] | Fraction of platoon that has already passed this intersection |
+
+**Cost** (split-detection):
+```
+IF convoy on unserved lane AND convoy_progress > 0:
+    cost = convoy_progress          (active split — some passed, rest stuck)
+ELIF convoy on unserved lane AND convoy_count > 0:
+    cost = 0.3 × convoy_count      (pre-split — waiting but not yet splitting)
+ELSE:
+    cost = 0
+```
+Continuous ∈ [0, 1]. Highest when the platoon is actively being split.
+
+**Label** (active split ONLY):
+```
+label = 1  IF  convoy on unserved lane
+          AND  0 < convoy_progress < 1
+```
+
+The label fires ONLY during the **active split window**: some convoy vehicles have passed the stop line (their waiting-time contribution dropped to 0), so the reward says "switch to the busier approach." But the tail is still on the approach — cost says "hold the phase." Pre-split states (convoy merely waiting on an unserved lane) do NOT trigger the label because the objectives don't yet disagree.
+
+**Conflict mechanism:** Temporal. After lead vehicles pass, the reward sees fewer vehicles on this approach and is eager to switch. But the tail hasn't cleared yet. The reward-optimal phase duration is shorter than what platoon integrity requires. A global Lagrange multiplier λ can't handle this because λ needs to be high only during the ~5-10s split-risk window.
+
+| Default param | Value |
+|---------------|-------|
+| `convoy_injection_interval` | 120.0s |
+| `convoy_size_min` | 5 |
+| `convoy_size_max` | 8 |
 
 ---
 
-## 5. Cost Signal — Evolution and Fix
+### 3.3 — Spillback / Road Works (Spatial Conflict)
 
-### 5.1 Previous Cost: `side_deficit` (BROKEN — DO NOT USE)
+**Story:** Random road works reduce downstream capacity. Serving an approach that feeds into a blocked downstream causes spillback — vehicles pile up and gridlock propagates.
 
-```python
-# _compute_side_deficit_cost():
-raw_deficit = sum(q_l * max(0, steps_since_served_l - tau) for l in side_lanes)
-c_t = min(raw_deficit / kappa, 1.0)
+**Injection:** Road works on random internal edges. Every ~300s (±40% jitter), an edge speed is reduced to 0.3 m/s for ~400s (±40%). ~70% chance of additional road works per cycle. Params: `roadwork_interval_mean=300.0`, `roadwork_duration_mean=400.0`, `roadwork_speed=0.3`.
+
+**Obs extension** (1 × n_lanes = 6 for arterial, 12 for grid):
+
+| Feature | Dim | Range | Description |
+|---------|-----|-------|-------------|
+| `downstream_occ[lane]` | n_lanes | [0, 1] | Max occupancy of downstream edges fed by this lane |
+
+**Cost:**
+```
+c_t = max over currently SERVED lanes of: downstream_occ[lane]
+```
+Continuous ∈ [0, 1]. High when the agent is actively sending vehicles into a blocked downstream. = 0 if downstream is clear.
+
+**Label** (direct contradiction):
+```
+label = 1  IF  max(downstream_occ on currently served lanes) > T_occ (0.5)
 ```
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `tau_service` | 6 | Grace period (steps) before deficit accumulates |
-| `deficit_kappa` | 5.0 | Normalisation constant; cost saturates at 1.0 |
+This is the **tightest label** of all four. It fires exactly when the current phase IS the wrong action for the constraint: the agent is clearing a local queue (reward says good) into a blocked downstream (cost says bad). The label marks the contradiction itself.
 
-**Why it was broken:**
+**Conflict mechanism:** Spatial. Reward only sees local queues. The biggest local queue gives the most waiting-time reduction. But that queue's downstream is blocked by road works. Cost-optimal: serve a different approach (less local demand, clear downstream). This genuinely hurts reward.
 
-1. **Label depended on hidden state.** `_side_deficit_label()` used `steps_since_served[lane]` — an internal counter NOT present in the observation vector. Two identical observations could produce different labels depending on how long ago each lane was last served. A depth-3 decision tree achieved only ~random accuracy predicting the label from obs features. **Result:** SPLIT-RL gradient routing was essentially random noise.
+| Default param | Value |
+|---------------|-------|
+| `roadwork_interval_mean` | 300.0s |
+| `roadwork_duration_mean` | 400.0s |
+| `roadwork_speed` | 0.3 m/s |
+| `spillback_occ_threshold` (T_occ) | 0.5 |
 
-2. **Cost depended on hidden state.** The cost value head $V^C(s)$ sees only the 33-dim observation. Since `steps_since_served` is not in the obs, $V^C(s)$ cannot learn the cost function → cost advantages are systematically wrong → noisy cost gradients even when label=1 is correct.
+---
 
-**Previous label:** `_side_deficit_label()`
-```python
-y_t = 1 if sum(q_l * max(0, g_l - tau)) > kappa else 0
+### 3.4 — Premium Priority (Value-Asymmetry Conflict) [NEW]
+
+**Story:** Some vehicles are "premium" — they've paid for priority. They look identical to regular cars (same size, speed, acceleration) but have a contractual priority. The cost function treats them as high-priority; the reward doesn't know the difference.
+
+**Injection:** 1 premium vehicle every ~40s (±20% jitter), random boundary→boundary route. Premium vehicle: 5m, 13.9 m/s, gold color tag. Params: `premium_injection_interval=40.0`.
+
+**Obs extension** (2 × n_lanes = 12 for arterial, 24 for grid):
+
+| Feature | Dim | Range | Description |
+|---------|-----|-------|-------------|
+| `has_premium[lane]` | n_lanes | {0, 1} | Is there a premium vehicle on this lane? |
+| `premium_wait[lane]` | n_lanes | [0, 1] | Premium vehicle's waiting time (÷T_premium=15s) |
+
+**Cost** (steep quadratic ramp):
 ```
-Same hidden-state dependence as the cost → tree can't learn it.
-
-### 5.2 Current Cost: `side_queue` (FIXED — DEFAULT)
-
-```python
-# _compute_side_queue_cost():
-c_t = max(queue_ratio_l for l in side_lanes)     # ∈ [0, 1]
+c_t = max over unserved lanes of: (premium_wait[lane])²
 ```
+Squared → rapid escalation. At 5s wait (normalized 0.33): cost = 0.11. At 10s (0.67): cost = 0.44. At 15s (1.0): cost = 1.0. Creates urgency.
 
-```python
-# _side_queue_label():
-y_t = 1 if max(queue_ratio_l for l in side_lanes) > side_queue_cap else 0
+**Label** (conflict-based):
 ```
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `side_queue_cap` | 0.3 (diagnostic) / 0.7 (default) | Label threshold on max side-street queue ratio |
-
-**Why it works:**
-- Both cost and label are **deterministic functions of the observation vector** — `queue_ratio_l` values are features [21–32] in the obs
-- $V^C(s)$ can learn the cost exactly from obs features
-- A depth-3 decision tree achieves **100% accuracy** predicting the label from obs features
-- The tree can split on side-street queue features to route gradients correctly
-
----
-
-## 6. The Structural Conflict
-
-**The core tradeoff: green time is finite.**
-
-At every decision step, each traffic signal must choose which direction gets green. There are only two things it can do:
-
-| Action | Reward effect | Cost effect |
-|--------|--------------|-------------|
-| Hold mainline green | $r \uparrow$ (mainline waiting drops) | $c \uparrow$ (side queues grow unchecked) |
-| Switch to side-street | $r \downarrow$ (mainline waiting grows) | $c \downarrow$ (side queues drain) |
-
-The agent **physically cannot** serve both mainline and side-streets simultaneously. Every timestep holding mainline green makes the reward better and the cost worse. Every timestep serving side-streets makes the cost better and the reward worse.
-
-**Why standard RL fails:**  
-A single scalar reward $r - \lambda c$ creates a blended gradient that compromises everywhere. The tree learns a single "average" policy — either it underserves side-streets (high cost) or overserves them (low reward). It cannot learn "serve side-streets ONLY when they're overloaded."
-
-**Why SPLIT-RL works:**  
-The label partitions the state space:
-- **label=0** (side queues low): optimise reward freely → hold mainline green
-- **label=1** (side queues high): cost gradient shapes the policy → serve side-streets
-
-The tree can split on side-street queue features (obs[21–32]) to route gradients. In label=0 leaves, the reward gradient dominates. In label=1 leaves, the cost gradient pushes the policy toward serving side-streets. This produces a state-conditional policy that standard RL cannot learn with a single objective.
-
----
-
-## 7. Other Cost Functions Tried (For Reference)
-
-All of these are implemented in `env/sumo.py` and available via `cost_fn=` parameter:
-
-| `cost_fn` | Formula | Issue |
-|-----------|---------|-------|
-| `"emergency"` | 1 if SUMO emergency braking events occur | Too sparse (~1 per 3600s episode with random policy). Not enough signal for learning. |
-| `"fairness"` | 1 if max_wait > τ AND max_wait / mean_wait > ρ | Depends on accumulated waiting (partially hidden). |
-| `"phase_churn"` | 1 if phase changed this step | Anti-correlated with any throughput reward — trivially solved by never switching. |
-| `"conflict"` | fairness OR phase_churn | Phase churn component masks the fairness signal. |
-| `"queue_overflow"` | 1 if total queued > threshold | Fires on total queue, not directional — doesn't create mainline-vs-side conflict. |
-| `"max_wait"` | 1 if max lane wait > threshold | Uses accumulated wait (not in obs). |
-| `"lane_saturation"` | 1 if any lane queue ratio > threshold | Fires on ANY lane including mainline — not directional conflict. |
-| `"combined"` | queue_overflow + max_wait + lane_saturation | Sum of correlated signals, unbounded cost. |
-| `"service_gap"` | 1 if side lane unserved > τ AND has demand | Good concept but uses `steps_since_served` (hidden state). |
-| `"directional"` | max(0, side_wait_increase) | Uses accumulated waiting diffs (partially observable). |
-| `"side_deficit"` | $\min(\sum q_l \cdot \max(0, g_l - \tau) / \kappa, 1)$ | **Hidden state** (`g_l` = steps_since_served). See §5.1. |
-| **`"side_queue"`** | $\max_l(\text{queue\_ratio}_l)$ for side lanes | **✅ Current default. Purely obs-based. See §5.2.** |
-
----
-
-## 8. Label Functions
-
-| Label fn | Tied to cost_fn | Formula | Obs-predictable? |
-|----------|----------------|---------|-------------------|
-| `_event_proximal_label` | emergency, fairness, etc. | 1 if any cost > 0 in last `label_horizon=3` steps | ❌ Temporal lookback on hidden cost history |
-| `_directional_label` | directional | 1 if unserved ≥ τ OR avg side queue > cap | ❌ Partial — unserved counter is hidden |
-| `_side_deficit_label` | side_deficit | 1 if $\sum q_l \cdot \max(0, g_l - \tau) > \kappa$ | ❌ `g_l` is hidden state |
-| **`_side_queue_label`** | **side_queue** | **1 if $\max_l(\text{queue\_ratio}_l) > \text{cap}$** | **✅ 100% predictable from obs** |
-
----
-
-## 9. Diagnostic Results
-
-**Script:** `scripts/diagnose_conflict.py`  
-**Config:** `sumo-arterial4x4-v0`, `override_reward="mainline"`, `cost_fn="side_queue"`, `side_queue_cap=0.3`, random policy, 3 episodes (34,560 transitions).
-
-### 9.1 Aggregate Statistics
-
-| Metric | Value | Threshold | Pass? |
-|--------|-------|-----------|-------|
-| Cost fires (cost > 0) | 19,495 / 34,560 = **56.4%** | > 10% | ✅ |
-| Label fires (label = 1) | 14,390 / 34,560 = **41.6%** | > 10% | ✅ |
-| Cost mean | 0.344 | — | — |
-| Cost std | 0.395 | — | — |
-| Reward > 0 | 3,637 / 34,560 = 10.5% | — | — |
-| Conflict co-occurrence (reward > 0 ∧ cost > 0) | 2,183 / 34,560 = **6.3%** | — | ⚠️ |
-| Pearson corr(reward, cost) | **-0.022** | negative | ⚠️ weak |
-| Label predictability (DecisionTree depth=3, 5-fold CV) | **1.000 ± 0.000** | > 90% | ✅ |
-
-### 9.2 Per-Episode Consistency
-
-| Episode | Steps | Mean Reward | Mean Cost | Label Rate |
-|---------|-------|------------|-----------|------------|
-| 1 | 720 | -32.56 | 237.90 | 39.8% |
-| 2 | 720 | -26.23 | 260.61 | 44.0% |
-| 3 | 720 | -35.57 | 244.65 | 41.1% |
-
-### 9.3 Label Predictability Details
-
-Top 5 observation features that differ between label=0 vs label=1:
-
-| Feature | Mean (label=0) | Mean (label=1) | Difference |
-|---------|---------------|----------------|------------|
-| obs[9] (density) | 0.086 | 0.683 | +0.597 |
-| obs[15] (queue) | 0.031 | 0.574 | +0.543 |
-| obs[6] (density) | 0.072 | 0.603 | +0.531 |
-| obs[12] (queue) | 0.020 | 0.489 | +0.469 |
-| obs[10] (density) | 0.219 | 0.361 | +0.142 |
-
-Classifier top features: obs[15], obs[12], obs[16] (importances: 0.647, 0.353, 0.000).
-
-These are side-street density and queue features — exactly the features the label is computed from.
-
-### 9.4 Per-Lane Queue Demand
-
-| Lane | Mean Queue Ratio | Role |
-|------|-----------------|------|
-| 0 | 0.128 | DEMAND |
-| 1 | 0.038 | — |
-| 2 | 0.257 | DEMAND |
-| 3 | 0.231 | DEMAND |
-
-Note: this diagnostic shows 4 lanes (18-dim obs from a single SUMO agent). The full 16-agent VecEnv aggregates across all intersections with 12 lanes × 16 agents. Lane counts vary per intersection topology within the grid (some agents see fewer lanes with zero-padded obs).
-
----
-
-## 10. Why Weak Correlation Is OK
-
-The Pearson correlation between reward and cost is -0.022 (near zero). This might seem concerning but is expected and fine:
-
-1. **The conflict is in gradient direction, not scalar correlation.** Under a random policy, both mainline and side-streets have random queue levels. There's no systematic relationship yet. The conflict only manifests when the agent starts *choosing* to hold mainline green — then mainline waiting drops (reward ↑) while side queues grow (cost ↑).
-
-2. **What matters is the policy gradient conflict.** At a label=1 state, the reward advantage says "hold mainline green" (positive advantage for mainline-serving actions) while the cost advantage says "serve side-streets" (positive cost advantage for side-serving actions). These gradients point in opposite directions for the same tree leaf — which is exactly what SPLIT-RL is designed to handle.
-
-3. **100% label predictability is the critical metric.** It means the tree can perfectly partition states into "reward-only" vs "cost-should-matter" regions. The gradient routing is deterministic and meaningful — not random.
-
----
-
-## 11. Five Requirements for a Defensible SPLIT-RL Conflict
-
-| # | Requirement | `side_queue` status |
-|---|-------------|-------------------|
-| 1 | **Observable conflict states** — features distinguishing conflict vs non-conflict must be in the observation | ✅ Side-street queue ratios are obs features [21–32] |
-| 2 | **Opposite gradient directions** — reward and cost advantages push the policy in opposite directions | ✅ Reward wants mainline green; cost wants side-street green |
-| 3 | **Sufficient frequency** — conflict states > 10% of timesteps | ✅ Label fires 41.6% of the time |
-| 4 | **Label = obs-predictable** — deterministic function of obs, not hidden state | ✅ 100% DecisionTree accuracy from obs |
-| 5 | **Cost = obs-predictable** — $V^C(s)$ can learn the cost from obs alone | ✅ Cost = max(side queue ratios) = direct obs readout |
-
----
-
-## 12. Configuration
-
-### Default `make_sumo_vec_env()` call:
-```python
-env = make_sumo_vec_env(
-    env_name="sumo-arterial4x4-v0",
-    n_envs=1,
-    override_reward="mainline",    # mainline diff-waiting-time
-    cost_fn="side_queue",          # max side-street queue ratio
-    side_queue_cap=0.7,            # label threshold (default)
-)
+label = 1  IF  premium on unserved lane
+          AND  served approach has HIGHER queue pressure than premium lane
 ```
 
-### Key hyperparameters:
+Same logic as bus: fires when the reward wants to KEEP serving the crowded approach, but cost demands switching to the nearly-empty premium lane. If premium's lane is already the busiest, label = 0.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `override_reward` | `"mainline"` | Reward = diff-waiting-time on mainline lanes only |
-| `cost_fn` | `"side_queue"` | Cost = max queue ratio on side-street lanes |
-| `side_queue_cap` | 0.7 | Label fires when max side queue ratio > this threshold |
-| `tau_service` | 6 | (For `side_deficit` cost only — not used with `side_queue`) |
-| `deficit_kappa` | 5.0 | (For `side_deficit` cost only — not used with `side_queue`) |
+**Conflict mechanism:** Pure value asymmetry. The premium car is 1 vehicle in the reward sum — utterly dominated by 10+ regulars on the main approach. But the cost treats it as disproportionately important with a steep penalty. There's no throughput trick, no speed difference — just the cost assigning outsized value to one car that the reward treats equally.
 
-### Available SUMO configs:
-
-| Config ID | Type | Agents | Obs Dim | Actions |
-|-----------|------|--------|---------|---------|
-| `sumo-grid4x4-v0` | Synthetic 4×4 grid | 16 | 33 | Discrete(8) |
-| `sumo-arterial4x4-v0` | Synthetic arterial | 16 | 33 | Discrete(8) |
-| `sumo-cologne1-v0` | Real (Cologne) | 1 | varies | varies |
-| `sumo-cologne3-v0` | Real (Cologne) | 3 | varies | varies |
-| `sumo-cologne8-v0` | Real (Cologne) | 8 | varies | varies |
-| `sumo-ingolstadt1-v0` | Real (Ingolstadt) | 1 | varies | varies |
-| `sumo-ingolstadt7-v0` | Real (Ingolstadt) | 7 | varies | varies |
-| `sumo-ingolstadt21-v0` | Real (Ingolstadt) | 21 | varies | varies |
+| Default param | Value |
+|---------------|-------|
+| `premium_injection_interval` | 40.0s |
+| `premium_cost_threshold` (T_premium) | 15.0s |
+| `premium_warn_threshold` (T_warn) | 5.0s |
 
 ---
 
-## 13. TODO
+## 4. Label Philosophy
 
-- [ ] Update sweep configs in `sweeps/split_rl/sumo/` with `cost_fn: side_queue`
-- [ ] Run SPLIT-RL training to verify the fix translates to better performance vs baselines
-- [ ] Tune `side_queue_cap` threshold (0.3 was diagnostic, 0.7 is default — may need sweep)
-- [ ] Fix Flatland environment (separate effort — see `docs/split_rl_environments_plan.md`)
+The label is NOT a cost detector. It is:
+
+> **"In this state, should the cost objective own the gradient, or should reward own it?"**
+
+A good label has:
+- **High precision** — it fires only where the reward-optimal and cost-optimal actions disagree
+- **Obs-predictability** — it's a deterministic function of observable features
+- **The right timing** — not too early (no conflict yet), not too late (reward already agrees)
+
+| Scenario | Label condition | What it captures |
+|----------|----------------|-----------------|
+| Bus | Bus on unserved lane AND served approach busier | Reward wants to stay, cost wants to switch |
+| Convoy | 0 < convoy_progress < 1 on unserved lane | Active split window — reward wants to switch, cost wants to hold |
+| Spillback | Downstream blocked on currently served lane | Agent is actively feeding a blocked road |
+| Premium | Premium on unserved lane AND served approach busier | 1 premium car vs 10+ regulars — reward dominated |
+
+### Label quality ranking:
+1. **S3 Spillback** — fires at the exact contradiction (current action is wrong for cost)
+2. **S2 Convoy** — fires during the active split window (tight temporal conflict)
+3. **S4 Premium** — fires at value asymmetry (crowd vs individual)
+4. **S1 Bus** — fires at throughput asymmetry (weakest because cost is still wait-based)
+
+---
+
+## 5. What Metric to Use for Conflict Validation
+
+**DO NOT** rely on label rate, DT accuracy, or trajectory-level correlation. Those measure observability, not conflict.
+
+**The real test:**
+1. Train reward-only PPO to convergence (π_R)
+2. Collect rollouts, tag label=1 states
+3. In label=1 states, measure:
+   - What action does π_R pick? → should incur HIGH cost
+   - What action minimizes cost? → should incur LOWER reward than π_R's action
+4. Report: `reward_gap = r(π_R) - r(π_C)` in label=1 states
+   - If reward_gap ≈ 0 → NO CONFLICT
+   - If reward_gap >> 0 → REAL CONFLICT, Split-RL has room to win
+5. Does PPO-Lag's λ oscillate or converge? If λ settles → conflict is too uniform.
+
+---
+
+## 6. Sweep Configuration
+
+**7 algorithms × 4 scenarios × 2 networks × 5 seeds = 280 runs**
+
+| Algorithm | Sweep file |
+|-----------|-----------|
+| SPLIT-RL (GBRL) | `seeds_split_rl_sumo.yaml` |
+| PPO-GBRL | `seeds_ppo_gbrl_sumo.yaml` |
+| PPO-NN | `seeds_ppo_nn_sumo.yaml` |
+| PPO-Lagrangian | `seeds_ppo_lag_sumo.yaml` |
+| IPO | `seeds_ipo_sumo.yaml` |
+| CPO | `seeds_cpo_sumo.yaml` |
+| CUP | `seeds_cup_sumo.yaml` |
+
+All sweeps in: `sweeps/split_rl/sumo/tests/`
+
+All use: `total_n_steps=1M`, `num_envs=1`, `device=cuda`, `norm_obs=false`, `norm_reward=true`, seeds `[0, 5, 10, 42, 64]`.
+
+---
+
+## 7. History of Failed Approaches
+
+| Approach | Why it failed |
+|----------|--------------|
+| `side_deficit` cost + mainline reward | Cost used hidden state (`steps_since_served`). DT couldn't predict label. |
+| `side_queue` cost + mainline reward | Reward was engineered to conflict (mainline-only). Not a natural scenario. |
+| Bus wait cost (v1, interval=25s) | Too few buses. Bus wait aligned with diff-waiting-time. No real conflict. |
+| Convoy wait cost (v1) | Convoy self-prioritizes via count. 5-8 vehicles = 5-8x wait contribution. Even MORE aligned. |
+| Label = "cost is positive" | That's an event detector, not a routing signal. Sends wrong objective to too many samples. |
+| Label = "special vehicle waiting > T" | Late and fuzzy. By the time wait is high, reward starts caring too. |
+| Conflict diagnostic: label rate + DT accuracy + Pearson | Measures observability, not action-level conflict. Passed checks that had no real conflict. |
+
+---
+
+## 8. TODO
+
+- [ ] Run conflict validation diagnostic (reward_gap in label=1 states) for all 4 scenarios
+- [ ] Tune bus injection rate if S1 conflict is still too weak
+- [ ] Verify convoy_progress tracking works correctly with random multi-hop routes
+- [ ] Run full 280-run sweep and analyze results
+- [ ] Consider making road works more frequent/shorter for S3 if label rate is too low
