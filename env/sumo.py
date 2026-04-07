@@ -1115,28 +1115,20 @@ class SumoRewardCostWrapper(ParallelEnv):
         return max_cost
 
     def _bus_priority_label(self, agent_id: str) -> int:
-        """Label = 1 when the current action conflicts with bus cost.
+        """Label = 1 when a bus is waiting on an unserved lane.
 
-        The label fires when BOTH of these hold:
-          1. A bus is waiting on an unserved lane (the current phase
-             is NOT serving the bus — cost wants to switch)
-          2. The bus has been waiting long enough for cost to be
-             material (bus_wait > warn_threshold)
+        This fires on the same condition as cost > 0: a bus exists on
+        a lane that the current green phase does NOT serve.
 
-        Why this works: the bus being on an UNSERVED lane already
-        implies the agent chose a different phase — the reward found
-        servicing other lanes more valuable (more vehicles = more
-        waiting-time reduction per green-second).  The warn threshold
-        filters out freshly-arrived buses where cost is still negligible.
-
-        NOTE: we do NOT compare queue pressure of served vs bus lane.
-        That comparison is broken because served lanes are GREEN (draining)
-        while the bus lane is RED (filling), making the bus lane almost
-        always appear busier.
+        Why this IS the conflict: the reward chose this phase because
+        it serves more vehicles (cars clear faster than buses). The
+        cost wants the bus served. The bus being on an unserved lane
+        means the agent's reward-optimal action is already hurting cost.
+        No additional threshold needed — the conflict exists the moment
+        the bus is on an unserved lane.
         """
         has_bus = self._has_bus.get(agent_id)
-        bus_wait = self._bus_wait.get(agent_id)
-        if has_bus is None or bus_wait is None:
+        if has_bus is None:
             return 0
         if not np.any(has_bus > 0):
             return 0
@@ -1148,14 +1140,9 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
-        # Normalized warn threshold: bus_warn / bus_cost (e.g. 10/30 ≈ 0.33)
-        warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
-
         for i in range(len(has_bus)):
             if has_bus[i] > 0 and i not in served_lanes:
-                # Bus on unserved lane with material wait → conflict
-                if bus_wait[i] > warn_norm:
-                    return 1
+                return 1
         return 0
 
     # ── Convoy priority cost/label ───────────────────────────────────────
@@ -1325,26 +1312,20 @@ class SumoRewardCostWrapper(ParallelEnv):
         return min(max_cost, 1.0)
 
     def _premium_priority_label(self, agent_id: str) -> int:
-        """Label = 1 when the current action conflicts with premium cost.
+        """Label = 1 when a premium vehicle is waiting on an unserved lane.
 
-        The label fires when BOTH of these hold:
-          1. A premium vehicle is waiting on an unserved lane (the current
-             phase is NOT serving the premium car — cost wants to switch)
-          2. The premium car has been waiting long enough for cost to be
-             material (premium_wait > warn_threshold)
+        This fires on the same condition as cost > 0: a premium car exists
+        on a lane that the current green phase does NOT serve.
 
-        Why this works: a premium car is 1 vehicle — it's almost never on
-        the busiest lane.  The reward sees it as just another car and would
-        rather serve the crowded approach.  The cost, with its squared
-        penalty, demands the premium car be served.
-
-        NOTE: we do NOT compare queue pressure of served vs premium lane.
-        That comparison is broken (served lanes are GREEN/draining, premium
-        lane is RED/filling).
+        Why this IS the conflict: the premium car is 1 vehicle in the
+        reward sum — utterly dominated by 10+ regulars on the main
+        approach. The reward would never prioritise a single car over a
+        crowd. But the cost, with its squared penalty, demands exactly
+        that. The conflict exists the moment the premium car is on an
+        unserved lane.
         """
         has_premium = self._has_premium.get(agent_id)
-        premium_wait = self._premium_wait.get(agent_id)
-        if has_premium is None or premium_wait is None:
+        if has_premium is None:
             return 0
         if not np.any(has_premium > 0):
             return 0
@@ -1356,14 +1337,9 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
-        # Normalized warn threshold: premium_warn / premium_cost (e.g. 5/15 ≈ 0.33)
-        warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
-
         for i in range(len(has_premium)):
             if has_premium[i] > 0 and i not in served_lanes:
-                # Premium on unserved lane with material wait → conflict
-                if premium_wait[i] > warn_norm:
-                    return 1
+                return 1
         return 0
 
     def _update_service_tracking(self, agent_id: str):
