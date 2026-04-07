@@ -157,6 +157,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         premium_injection_interval: float = 40.0,
         premium_cost_threshold: float = 15.0,
         premium_warn_threshold: float = 5.0,
+        premium_pressure_beta: float = 1.5,
         # Spillback / road works parameters
         roadwork_interval_mean: float = 300.0,
         roadwork_duration_mean: float = 400.0,
@@ -210,6 +211,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._premium_injection_interval = premium_injection_interval
         self._premium_cost_threshold = premium_cost_threshold   # T_premium
         self._premium_warn_threshold = premium_warn_threshold   # T_warn_premium
+        self._premium_pressure_beta = premium_pressure_beta      # beta for label pressure ratio
 
         # Spillback / road works parameters
         self._roadwork_interval_mean = roadwork_interval_mean
@@ -1143,16 +1145,13 @@ class SumoRewardCostWrapper(ParallelEnv):
     # ── Convoy priority cost/label ───────────────────────────────────────
 
     def _compute_convoy_priority_cost(self, agent_id: str) -> float:
-        """Convoy split-detection cost: fires when a convoy is being split.
+        """Convoy split-detection cost: fires ONLY during active split.
 
-        cost = 1 if any convoy has vehicles that have PASSED through this
-        intersection (convoy_progress > 0) while other vehicles of the same
-        convoy are still on an UNSERVED incoming lane.
+        cost = progress when 0 < progress < 1 and convoy is on an
+        unserved lane (some vehicles passed, rest still stuck).
 
-        This detects the exact moment when the phase change would split the
-        platoon: some through, some stuck. The reward-optimal action is to
-        switch away (the passed vehicles no longer contribute waiting time),
-        but the cost-optimal action is to HOLD the phase for the tail.
+        Aligned with _convoy_priority_label: both fire in exactly the
+        same conflict window. No pre-split "risk" cost.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1170,35 +1169,23 @@ class SumoRewardCostWrapper(ParallelEnv):
         max_cost = 0.0
         for i in range(len(has_convoy)):
             if has_convoy[i] > 0 and i not in served_lanes:
-                # Convoy vehicles on an unserved lane
                 progress = convoy_progress[i]
-                if progress > 0:
-                    # Some vehicles already passed, rest stuck → split!
-                    # Cost = progress (higher = more split = worse)
+                if 0 < progress < 1.0:
+                    # Active split: some passed, rest stuck on unserved lane.
+                    # Cost = progress (higher = more split = worse).
                     max_cost = max(max_cost, float(progress))
-                else:
-                    # Convoy fully on incoming lane, not yet split but at risk
-                    # if it's a large group on an unserved lane
-                    count = self._convoy_count.get(agent_id)
-                    if count is not None and count[i] > 0:
-                        # Waiting convoy on unserved lane — mild cost
-                        max_cost = max(max_cost, 0.3 * float(count[i]))
         return min(max_cost, 1.0)
 
     def _convoy_priority_label(self, agent_id: str) -> int:
-        """Label = 1 ONLY during active convoy split.
+        """State partition for convoy priority: g(s) → {0, 1}.
 
-        Fires when:
-          - Convoy vehicles are on an unserved incoming lane
-          - AND 0 < convoy_progress < 1 (some passed, some stuck)
+        Routes gradients to the cost head when a convoy is actively
+        splitting (0 < progress < 1 on an unserved lane).
 
-        This is the exact conflict window: the lead vehicles have passed
-        (their waiting time dropped to 0), so reward says "switch away."
-        But the tail is still on the approach — cost says "hold the phase."
-
-        NOT triggered by merely having a convoy on an unserved lane
-        (pre-split). That is not yet a conflict — the convoy hasn't started
-        crossing, so reward and cost both agree: "serve it when it's time."
+        This partitions the state space into the region where the
+        cost objective (keep the convoy together) should dominate
+        vs where the reward objective (minimise total waiting) is
+        sufficient on its own.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1307,20 +1294,24 @@ class SumoRewardCostWrapper(ParallelEnv):
         return min(max_cost, 1.0)
 
     def _premium_priority_label(self, agent_id: str) -> int:
-        """Label = 1 when a premium vehicle is waiting on an unserved lane.
+        """State partition for premium priority: g(s) → {0, 1}.
 
-        This fires on the same condition as cost > 0: a premium car exists
-        on a lane that the current green phase does NOT serve.
+        Labels the region of state space where the cost head should own
+        gradient updates. Fires when ALL of:
+          1. Premium vehicle on an unserved lane (prerequisite).
+          2. min_green satisfied — agent CAN switch phase.
+          3. premium_wait > τ_warn (normalised) — premium has waited
+             long enough to be material.
+          4. current_phase_pressure > β · premium_phase_pressure —
+             the phase the agent is running has more traffic pressure
+             than the phase that would serve the premium lane.
 
-        Why this IS the conflict: the premium car is 1 vehicle in the
-        reward sum — utterly dominated by 10+ regulars on the main
-        approach. The reward would never prioritise a single car over a
-        crowd. But the cost, with its squared penalty, demands exactly
-        that. The conflict exists the moment the premium car is on an
-        unserved lane.
+        Condition 4 compares phase-vs-phase (not phase-vs-lane) for
+        a fair comparison regardless of how many lanes each phase serves.
         """
         has_premium = self._has_premium.get(agent_id)
-        if has_premium is None:
+        premium_wait = self._premium_wait.get(agent_id)
+        if has_premium is None or premium_wait is None:
             return 0
         if not np.any(has_premium > 0):
             return 0
@@ -1329,12 +1320,47 @@ class SumoRewardCostWrapper(ParallelEnv):
         if ts is None:
             return 0
 
+        # Condition 2: min_green satisfied (agent can actually switch)
+        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+            return 0
+
         phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        phase_map = self._phase_to_lanes.get(agent_id, {})
+        served_lanes = set(phase_map.get(phase, []))
+
+        # Normalised warn threshold (premium_wait is already / cost_threshold)
+        warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
+
+        lane_queues = ts.get_lanes_queue()
+        lane_densities = ts.get_lanes_density()
+
+        def _phase_pressure(lane_indices):
+            p = 0.0
+            for li in lane_indices:
+                if li < len(lane_queues):
+                    p += lane_queues[li] + lane_densities[li]
+            return p
+
+        # Current phase pressure
+        served_pressure = _phase_pressure(served_lanes)
 
         for i in range(len(has_premium)):
             if has_premium[i] > 0 and i not in served_lanes:
-                return 1
+                # Condition 3: premium has waited enough
+                if premium_wait[i] <= warn_norm:
+                    continue
+                # Condition 4: find the best phase that serves this lane
+                # (max pressure among all candidate phases, conservative).
+                best_prem_pressure = None
+                for ph, lanes in phase_map.items():
+                    if i in lanes and ph != phase:
+                        pp = _phase_pressure(lanes)
+                        if best_prem_pressure is None or pp > best_prem_pressure:
+                            best_prem_pressure = pp
+                if best_prem_pressure is None:
+                    continue  # no phase serves this lane
+                if served_pressure > self._premium_pressure_beta * max(best_prem_pressure, 1e-6):
+                    return 1
         return 0
 
     def _update_service_tracking(self, agent_id: str):
@@ -2015,8 +2041,13 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         Separated from step() so the outer try/except can catch TraCI
         failures in any of the downstream calls.
+
+        label = g(s_{t+1}): describes the state the agent is NOW in.
+        cost  = c(s_{t+1}): cost of the resulting state.
         """
-        # Inject and detect bus/convoy/premium vehicles (once per step, before per-agent loop)
+        # Inject new scenario events + detect from resulting state s_{t+1}.
+        # Both injection and detection happen post-step so label/cost
+        # reflect the current state the agent just transitioned into.
         if self._cost_fn in ("bus_priority", "convoy_priority", "premium_priority"):
             sumo = self._get_traci()
             if sumo is not None:
@@ -2024,7 +2055,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._inject_vehicles(sim_time)
                 self._detect_special_vehicles()
 
-        # Road works injection/clearing + downstream occupancy (once per step)
         if self._cost_fn == "spillback":
             sumo = self._get_traci()
             if sumo is not None:
@@ -2357,8 +2387,8 @@ def make_sumo_vec_env(
     env_name: str = "sumo-grid4x4-v0",
     n_envs: int = 1,
     seed: Optional[int] = None,
-    override_reward: Optional[str] = "mainline",
-    cost_fn: str = "side_queue",
+    override_reward: Optional[str] = None,
+    cost_fn: str = "convoy_priority",
     starvation_threshold: int = 3,
     fairness_tau: float = 60.0,
     fairness_rho: float = 3.0,
@@ -2384,6 +2414,7 @@ def make_sumo_vec_env(
     premium_injection_interval: float = 40.0,
     premium_cost_threshold: float = 15.0,
     premium_warn_threshold: float = 5.0,
+    premium_pressure_beta: float = 1.5,
     roadwork_interval_mean: float = 300.0,
     roadwork_duration_mean: float = 400.0,
     roadwork_speed: float = 0.3,
@@ -2502,6 +2533,7 @@ def make_sumo_vec_env(
         premium_injection_interval=premium_injection_interval,
         premium_cost_threshold=premium_cost_threshold,
         premium_warn_threshold=premium_warn_threshold,
+        premium_pressure_beta=premium_pressure_beta,
         roadwork_interval_mean=roadwork_interval_mean,
         roadwork_duration_mean=roadwork_duration_mean,
         roadwork_speed=roadwork_speed,

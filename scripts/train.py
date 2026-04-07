@@ -34,7 +34,7 @@ from env.mujoco_wrappers import MujocoTreeObsWrapper
 from env.flatland import make_flatland_vec_env
 from env.highway import make_highway_vec_env
 from env.sumo import make_sumo_vec_env
-from env.citylearn_wrapper import make_citylearn_vec_env
+from env.citylearn import SCENARIO_VEC_FACTORIES as CITYLEARN_SCENARIOS
 from utils.helpers import make_ram_atari_env, set_seed, make_cost_vec_env, make_minigrid_vec_env
 
 warnings.filterwarnings("ignore")
@@ -156,12 +156,17 @@ if __name__ == '__main__':
             eval_env = make_highway_vec_env(env_name=args.env_name, n_envs=1,
                                             seed=args.seed, **highway_kwargs)
     elif args.env_type == 'citylearn':
-        citylearn_kwargs = args.env_kwargs or {}
-        env = make_citylearn_vec_env(env_name=args.env_name, n_envs=args.num_envs,
-                                     seed=args.seed, **citylearn_kwargs)
+        citylearn_kwargs = dict(args.env_kwargs or {})
+        scenario = citylearn_kwargs.pop('scenario', 'cost_vs_comfort')
+        make_cl_vec = CITYLEARN_SCENARIOS.get(scenario)
+        if make_cl_vec is None:
+            raise ValueError(f"Unknown CityLearn scenario '{scenario}'. "
+                             f"Choose from: {list(CITYLEARN_SCENARIOS)}")
+        env = make_cl_vec(env_name=args.env_name, n_envs=args.num_envs,
+                          seed=args.seed, **citylearn_kwargs)
         if args.evaluate:
-            eval_env = make_citylearn_vec_env(env_name=args.env_name, n_envs=1,
-                                              seed=args.seed, **citylearn_kwargs)
+            eval_env = make_cl_vec(env_name=args.env_name, n_envs=1,
+                                   seed=args.seed, **citylearn_kwargs)
     else:
         print("Invalid env_type!")
     if args.wrapper == 'normalize':
