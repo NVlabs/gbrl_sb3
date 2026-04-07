@@ -24,8 +24,9 @@ Pipeline:  RailEnv (with FlattenedNormalizedTreeObsForRailEnv)
 Observations: FlattenedNormalizedTreeObsForRailEnv (Flatland built-in).
   - max_depth=2 → 252 floats, max_depth=3 → 1020 floats.
   - Uses ShortestPathPredictorForRailEnv for enriched obs.
-  - Split-RL scenarios extend observations with 4 extra floats:
+  - Observations are always extended with 4 extra floats:
     [own_slack, min_conflicting_slack_L, min_conflicting_slack_F, min_conflicting_slack_R]
+  - Total obs dim: 256 (depth 2).
 Actions: Discrete(5) — DO_NOTHING, MOVE_LEFT, MOVE_FORWARD, MOVE_RIGHT, STOP_MOVING.
 Rewards: per-agent scalar (configurable: decomposed or original).
 Cost:    per-agent externality cost in info['cost'].
@@ -501,8 +502,8 @@ class FlatlandRewardCostWrapper(ParallelEnv):
     cost_fn : str
         Cost function to use.
     use_original_reward : bool
-        If True, SB3 optimises the full original reward (all terms
-        including collision).  If False (default), SB3 optimises only
+        If True (default), SB3 optimises the full original reward (all terms
+        including collision).  If False, SB3 optimises only
         the non-collision terms.
     conflict_dist_thresh : float
         Normalised distance threshold for conflict detection.
@@ -519,7 +520,7 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         self,
         env: ParallelEnv,
         cost_fn: str = "slack_priority",
-        use_original_reward: bool = False,
+        use_original_reward: bool = True,
         conflict_dist_thresh: float = 0.5,
         agent_dist_thresh: float = 0.5,
         n_agents: int = 1,
@@ -559,20 +560,16 @@ class FlatlandRewardCostWrapper(ParallelEnv):
             for agent, space in env.observation_spaces.items()
         }
 
-        # Extend observation space with slack features for Split-RL scenarios
-        self._extend_obs = cost_fn in ("slack_priority", "malfunction_detour")
-        if self._extend_obs:
-            # Append 4 floats: [own_slack, min_conflicting_slack_L, min_conflicting_slack_F, min_conflicting_slack_R]
-            self._n_extra_features = 4
-            self.observation_spaces = {}
-            for agent, space in base_obs_spaces.items():
-                new_shape = (space.shape[0] + self._n_extra_features,)
-                self.observation_spaces[agent] = gym.spaces.Box(
-                    low=-1.0, high=1.0, shape=new_shape, dtype=np.float32,
-                )
-        else:
-            self._n_extra_features = 0
-            self.observation_spaces = base_obs_spaces
+        # Always extend observation space with slack features (4 extra floats)
+        # so all algorithms (PPO, Split-RL, etc.) see the same obs dim.
+        self._extend_obs = True
+        self._n_extra_features = 4
+        self.observation_spaces = {}
+        for agent, space in base_obs_spaces.items():
+            new_shape = (space.shape[0] + self._n_extra_features,)
+            self.observation_spaces[agent] = gym.spaces.Box(
+                low=-1.0, high=1.0, shape=new_shape, dtype=np.float32,
+            )
 
         self.action_spaces = env.action_spaces
 
@@ -614,42 +611,26 @@ class FlatlandRewardCostWrapper(ParallelEnv):
             return obs
         extended = {}
         for agent, o in obs.items():
-            if self._cost_fn == "slack_priority":
-                feats = compute_slack_features(
-                    self._rail_env, agent, o, self._n_nodes,
-                    self._elapsed_steps,
-                    self._conflict_dist_thresh, self._agent_dist_thresh,
-                    self._slack_margin,
-                )
-                self._prev_slack_features[agent] = feats
-                extra = np.array([
-                    feats["own_slack"],
-                    feats["min_conflicting_slack"]["L"],
-                    feats["min_conflicting_slack"]["F"],
-                    feats["min_conflicting_slack"]["R"],
-                ], dtype=np.float32)
-            elif self._cost_fn == "malfunction_detour":
+            # Always compute slack features for obs extension
+            feats = compute_slack_features(
+                self._rail_env, agent, o, self._n_nodes,
+                self._elapsed_steps,
+                self._conflict_dist_thresh, self._agent_dist_thresh,
+                self._slack_margin,
+            )
+            self._prev_slack_features[agent] = feats
+            extra = np.array([
+                feats["own_slack"],
+                feats["min_conflicting_slack"]["L"],
+                feats["min_conflicting_slack"]["F"],
+                feats["min_conflicting_slack"]["R"],
+            ], dtype=np.float32)
+
+            # Scenario-specific pre-computations stored for step()
+            if self._cost_fn == "malfunction_detour":
                 malf_feats = compute_malfunction_detour_features(o, self._n_nodes)
                 self._prev_malf_features[agent] = malf_feats
-                # Also compute slack for obs extension (useful context)
-                if self._rail_env is not None:
-                    feats = compute_slack_features(
-                        self._rail_env, agent, o, self._n_nodes,
-                        self._elapsed_steps,
-                        self._conflict_dist_thresh, self._agent_dist_thresh,
-                        self._slack_margin,
-                    )
-                    self._prev_slack_features[agent] = feats
-                    extra = np.array([
-                        feats["own_slack"],
-                        feats["min_conflicting_slack"]["L"],
-                        feats["min_conflicting_slack"]["F"],
-                        feats["min_conflicting_slack"]["R"],
-                    ], dtype=np.float32)
-                else:
-                    extra = np.zeros(4, dtype=np.float32)
-            else:
-                extra = np.zeros(4, dtype=np.float32)
+
             extended[agent] = np.concatenate([o, extra])
         return extended
 
@@ -900,11 +881,11 @@ FLATLAND_CONFIGS = {
     },
     "flatland-large-v0": {
         "n_agents": 10, "x_dim": 50, "y_dim": 50, "n_cities": 4,
-        "max_depth": 3, "predictor_max_depth": 50,
+        "max_depth": 2, "predictor_max_depth": 50,
     },
     "flatland-xlarge-v0": {
         "n_agents": 20, "x_dim": 80, "y_dim": 80, "n_cities": 6,
-        "max_depth": 3, "predictor_max_depth": 50,
+        "max_depth": 2, "predictor_max_depth": 50,
     },
     # Tight configs (max_rails_between_cities=1 → more resource contention)
     "flatland-small-tight-v0": {
@@ -1001,7 +982,7 @@ def make_flatland_vec_env(
     decompose_rewards: bool = True,
     collision_factor: float = 1.0,
     cost_fn: str = "slack_priority",
-    use_original_reward: bool = False,
+    use_original_reward: bool = True,
     conflict_dist_thresh: float = 0.5,
     agent_dist_thresh: float = 0.5,
     slack_margin: float = 3.0,
@@ -1030,7 +1011,7 @@ def make_flatland_vec_env(
         Cost function: "slack_priority" (default), "malfunction_detour",
         "congestion", "danger", or "collision".
     use_original_reward : bool
-        If True, SB3 optimises the full original reward (all terms).
+        If True (default), SB3 optimises the full original reward (all terms).
         If False, SB3 optimises only non-collision terms.
     conflict_dist_thresh : float
         Normalised distance threshold for the danger label.
