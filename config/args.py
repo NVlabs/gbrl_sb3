@@ -167,7 +167,7 @@ def parse_args():
     # mandatory arguments
     parser.add_argument('--env_type', type=str, choices=['atari', 'minigrid', 'gym', 'mujoco',
                                                          'football', 'equation', 'rickety_bridge',
-                                                         'flatland', 'sumo', 'highway'])
+                                                         'flatland', 'sumo', 'highway', 'citylearn'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'split_rl',
                                                           'awr_gbrl', 'split_awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
                                                           'ppo_lag', 'cpo', 'cup', 'ipo'])
