@@ -34,8 +34,10 @@ Operating modes
        export AUTORESUME=1 SWEEP_ID=<id> WANDB_PROJECT=gbrl-sb3 WANDB_ENTITY=<entity>
        python scripts/train_runner.py
 
-   One trial per invocation (``count=1``).  On interrupt, saves checkpoint.
-   With ADLR: auto-resubmits.  Without ADLR: re-run manually.
+   Loops through sweep trials back-to-back.  If a preempted trial exists
+   (checkpoint found), it is finished first, then new trials are pulled
+   from the sweep until SLURM time runs out or the sweep is exhausted.
+   On preemption, saves checkpoint and (with ADLR) resubmits the job.
 
 4. **Cross-machine resume** (``--resume_dir``)::
 
@@ -775,9 +777,12 @@ def train_runner():
 
     # Clean up checkpoint artifacts
     if use_checkpointing:
-        if HAS_ADLR_AUTORESUME:
-            AutoResume.stop_resuming()
-        _clear_local_resume(sweep_id=sweep_id_env)
+        # When running inside a sweep loop, the outer loop manages the
+        # auto-resume lifecycle.  Only stop resuming for standalone runs.
+        if not os.getenv("_SWEEP_LOOP_ACTIVE"):
+            if HAS_ADLR_AUTORESUME:
+                AutoResume.stop_resuming()
+            _clear_local_resume(sweep_id=sweep_id_env)
 
         if checkpoint_path.exists():
             checkpoint_path.unlink()
@@ -855,6 +860,14 @@ if __name__ == "__main__":
 
         else:
             # ── Auto-resume mode ─────────────────────────────────────────
+            # Strategy: resume any preempted trial first, then loop pulling
+            # new trials from the sweep until SLURM time runs out.  Between
+            # trials we keep auto_resume.json alive so that preemption
+            # between trials still triggers a job resubmission.
+
+            # Flag so train_runner() knows not to stop ADLR resuming
+            os.environ["_SWEEP_LOOP_ACTIVE"] = "1"
+
             if HAS_ADLR_AUTORESUME:
                 AutoResume.init()
                 _resume_details = AutoResume.get_resume_details() or {}
@@ -863,6 +876,7 @@ if __name__ == "__main__":
 
             has_unfinished_trial = bool(_resume_details.get("LOG_DIR"))
 
+            # ── Step 1: finish any preempted trial ───────────────────────
             if has_unfinished_trial:
                 log_dir_env = _resume_details['LOG_DIR']
                 print(f"Resuming preempted trial (LOG_DIR={log_dir_env})")
@@ -872,73 +886,90 @@ if __name__ == "__main__":
                     saved = json.loads(args_file.read_text())
                     _inject_args_from_dict(saved)
                     print("Injected args from checkpoint_args.json")
+
+                    os.environ.pop("SWEEP_ID", None)
+                    train_runner()
+                    print("Resumed trial completed.")
                 else:
                     print(f"No checkpoint_args.json at {log_dir_env}, "
-                          "falling through to wandb agent for a fresh trial.")
-                    has_unfinished_trial = False
+                          "skipping resume — will pull a fresh trial.")
 
-                os.environ.pop("SWEEP_ID", None)
-                if has_unfinished_trial:
-                    train_runner()
+                # Clean up resume state regardless
+                for key in [k for k in os.environ
+                            if k.startswith("AUTO_RESUME") or k in ("LOG_DIR", "WANDB_RUN_ID")]:
+                    os.environ.pop(key, None)
+                _clear_local_resume(sweep_id=SWEEP_ID)
 
-                    # Trial completed — try next trial if time permits
-                    for key in [k for k in os.environ
-                                if k.startswith("AUTO_RESUME") or k in ("LOG_DIR", "WANDB_RUN_ID")]:
-                        os.environ.pop(key, None)
-                    _clear_local_resume(sweep_id=SWEEP_ID)
+            # ── Step 2: loop pulling new trials until time runs out ──────
+            _install_signal_handlers()
+            trial_num = 0
 
-                    if HAS_ADLR_AUTORESUME:
-                        AutoResume.init()
-                        if AutoResume.termination_requested():
-                            print("No SLURM time remaining for another trial.")
-                            sys.exit(0)
+            while True:
+                # Check SLURM timer before starting a new trial
+                if HAS_ADLR_AUTORESUME:
+                    AutoResume.init()
+                    if AutoResume.termination_requested():
+                        print("No SLURM time remaining for another trial — exiting.")
+                        break
 
-                    print("Launching wandb agent for next sweep trial...")
-                    _install_signal_handlers()
-                    if HAS_ADLR_AUTORESUME:
-                        AutoResume.request_resume(user_dict={})
-
-                    def _sweep_train_after_resume():
-                        try:
-                            _inject_args_from_wandb_config()
-                            train_runner()
-                        except SystemExit as e:
-                            print(f"\n[train_runner] SystemExit({e.code}) in sweep trial",
-                                  file=sys.stderr, flush=True)
-                            traceback.print_exc(file=sys.stderr)
-                            raise
-                        except Exception as e:
-                            print(f"\n[train_runner] Exception in sweep trial: {e}",
-                                  file=sys.stderr, flush=True)
-                            traceback.print_exc(file=sys.stderr)
-                            raise
-                    wandb.agent(sweep_id, function=_sweep_train_after_resume, count=1)
-                else:
-                    for key in [k for k in os.environ
-                                if k.startswith("AUTO_RESUME") or k in ("LOG_DIR", "WANDB_RUN_ID")]:
-                        os.environ.pop(key, None)
-                    _clear_local_resume(sweep_id=SWEEP_ID)
-
-                    print("Launching wandb agent for a fresh sweep trial...")
-                    _install_signal_handlers()
-                    if HAS_ADLR_AUTORESUME:
-                        AutoResume.init()
-                        AutoResume.request_resume(user_dict={})
-
-                    def _sweep_train_fresh():
-                        _inject_args_from_wandb_config()
-                        train_runner()
-                    wandb.agent(sweep_id, function=_sweep_train_fresh, count=1)
-
-            else:
-                # ── Fresh trial (no unfinished work) ─────────────────────
-                print(f"Launching wandb agent for sweep (auto-resume mode): {sweep_id}")
-                _install_signal_handlers()
-
+                # Request resubmission (with empty details = fresh trial on
+                # next invocation) so that preemption between trials or
+                # mid-trial still triggers a new job.
                 if HAS_ADLR_AUTORESUME:
                     AutoResume.request_resume(user_dict={})
+                _save_local_resume({}, sweep_id=SWEEP_ID)
 
-                def _sweep_train():
-                    _inject_args_from_wandb_config()
-                    train_runner()
+                trial_num += 1
+                print(f"\n{'='*60}")
+                print(f"Launching sweep trial #{trial_num} "
+                      f"(auto-resume mode): {sweep_id}")
+                print(f"{'='*60}\n")
+
+                # wandb.agent with count=1 pulls one config from the sweep
+                # controller, calls our function, then returns.
+                _trial_error = [None]
+                _trial_ran = [False]
+
+                def _sweep_train(_err=_trial_error, _ran=_trial_ran):
+                    _ran[0] = True
+                    try:
+                        _inject_args_from_wandb_config()
+                        train_runner()
+                    except SystemExit as e:
+                        print(f"\n[train_runner] SystemExit({e.code}) in sweep trial",
+                              file=sys.stderr, flush=True)
+                        traceback.print_exc(file=sys.stderr)
+                        _err[0] = e
+                        raise
+                    except Exception as e:
+                        print(f"\n[train_runner] Exception in sweep trial: {e}",
+                              file=sys.stderr, flush=True)
+                        traceback.print_exc(file=sys.stderr)
+                        _err[0] = e
+                        raise
+
                 wandb.agent(sweep_id, function=_sweep_train, count=1)
+
+                # Clean up after the trial
+                for key in [k for k in os.environ
+                            if k.startswith("AUTO_RESUME") or k in ("LOG_DIR", "WANDB_RUN_ID")]:
+                    os.environ.pop(key, None)
+                _clear_local_resume(sweep_id=SWEEP_ID)
+
+                if not _trial_ran[0]:
+                    print("Sweep has no more pending runs — exiting loop.")
+                    break
+
+                if _trial_error[0] is not None:
+                    print(f"Trial #{trial_num} failed, stopping sweep loop.")
+                    break
+
+                print(f"Trial #{trial_num} completed successfully.")
+
+            # All done (or time ran out) — clean up auto-resume so SLURM
+            # doesn't resubmit after a clean exit.
+            os.environ.pop("_SWEEP_LOOP_ACTIVE", None)
+            _clear_local_resume(sweep_id=SWEEP_ID)
+            if HAS_ADLR_AUTORESUME:
+                AutoResume.stop_resuming()
+            print(f"Sweep loop ended after {trial_num} trial(s).")

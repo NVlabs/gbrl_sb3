@@ -24,10 +24,23 @@ Pipeline:  RailEnv (with FlattenedNormalizedTreeObsForRailEnv)
 Observations: FlattenedNormalizedTreeObsForRailEnv (Flatland built-in).
   - max_depth=2 → 252 floats, max_depth=3 → 1020 floats.
   - Uses ShortestPathPredictorForRailEnv for enriched obs.
+  - Split-RL scenarios extend observations with 4 extra floats:
+    [own_slack, min_conflicting_slack_L, min_conflicting_slack_F, min_conflicting_slack_R]
 Actions: Discrete(5) — DO_NOTHING, MOVE_LEFT, MOVE_FORWARD, MOVE_RIGHT, STOP_MOVING.
 Rewards: per-agent scalar (configurable: decomposed or original).
-Cost:    per-agent collision penalty in info['cost'].
+Cost:    per-agent externality cost in info['cost'].
 Label:   per-agent binary safety_label in info['safety_label'].
+
+Split-RL Scenarios
+------------------
+  - "slack_priority": Cost fires when agent takes a contested switch branch
+    that delays a lower-slack conflicting train. Label fires at switches where
+    the reward-best action (forward/progress) differs from the cost-best
+    action (yield/reroute to let urgent train pass).
+  - "malfunction_detour": Cost fires when agent moves into a branch with
+    downstream malfunctioning trains while an unblocked alternative branch
+    exists. Creates spatial conflict: forward may be shortest path but feeds
+    into a blocked area, hurting other trains stuck behind.
 """
 from __future__ import annotations
 
@@ -42,6 +55,7 @@ from pettingzoo import ParallelEnv
 from flatland.env_generation.env_generator import env_generator
 from flatland.envs.predictions import ShortestPathPredictorForRailEnv
 from flatland.envs.rewards import BaseDefaultRewards, DefaultPenalties, DefaultRewards
+from flatland.envs.step_utils.state_machine import TrainState
 from flatland.ml.observations.flatten_tree_observation_for_rail_env import (
     FlattenedNormalizedTreeObsForRailEnv,
 )
@@ -208,6 +222,241 @@ def compute_congestion_cost(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Externality-based cost/label for Split-RL scenarios
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _branch_has_conflict(obs_node_data, obs_node_agent_data,
+                         conflict_dist_thresh: float = 0.5,
+                         agent_dist_thresh: float = 0.5) -> bool:
+    """Check if a single tree node has conflict signals."""
+    dist_other = obs_node_data[_DATA_COL_OTHER_AGENT]
+    dist_conflict = obs_node_data[_DATA_COL_POTENTIAL_CONFLICT]
+    n_opposite = obs_node_agent_data[_AGENT_COL_OPPOSITE_DIR]
+
+    if dist_other > 0 and dist_other <= agent_dist_thresh:
+        return True
+    if dist_conflict > 0 and dist_conflict <= conflict_dist_thresh:
+        return True
+    if n_opposite > 0:
+        return True
+    return False
+
+
+def _branch_has_malfunction(obs_node_agent_data) -> bool:
+    """Check if a single tree node has malfunctioning agent signals."""
+    return obs_node_agent_data[_AGENT_COL_MALFUNCTIONING] > 0
+
+
+def _get_branch_indices(n_nodes: int):
+    """Return (branch_size, {L: idx, F: idx, R: idx}) for depth-1 branch roots."""
+    branch_size = (n_nodes - 1) // 3
+    return branch_size, {
+        "L": 1,
+        "F": 1 + branch_size,
+        "R": 1 + 2 * branch_size,
+    }
+
+
+def _is_at_switch(obs: np.ndarray, n_nodes: int) -> bool:
+    """Check whether the agent is at a switch (L or R branch exists).
+
+    A branch exists if its root node data is not all-zero / missing-branch.
+    In Flatland's normalized obs, missing branches have data[:] = 0 and
+    agent_data[:] = 0 (or -1 for distance features). We check dist_to_next_branch
+    (data col 5) > 0 as proxy for branch existence.
+    """
+    _, branch_indices = _get_branch_indices(n_nodes)
+    data = obs[: n_nodes * 6].reshape(n_nodes, 6)
+    for key in ("L", "R"):
+        idx = branch_indices[key]
+        if idx < n_nodes:
+            # Branch exists if dist_min_to_target (col 5) > 0 or any distance > 0
+            if np.any(data[idx] != 0):
+                return True
+    return False
+
+
+def compute_slack_features(
+    rail_env,
+    agent_handle: int,
+    obs: np.ndarray,
+    n_nodes: int,
+    elapsed_steps: int,
+    conflict_dist_thresh: float = 0.5,
+    agent_dist_thresh: float = 0.5,
+    slack_margin: float = 3.0,
+    proximity_dist: int = 8,
+) -> dict:
+    """
+    Compute externality-based slack features for one agent.
+
+    Returns dict with:
+      own_slack: float — agent's current delay (positive = ahead of schedule)
+      min_conflicting_slack: dict[str, float] — min slack of conflicting agents
+          per branch (L/F/R), normalized to [-1, 1]
+      cost: float — externality cost (0 or 1)
+      label: int — binary disagreement label (0 or 1)
+      at_switch: bool — whether agent is at a switch point
+      branch_conflict: dict[str, bool] — whether each branch has conflict
+
+    The cost fires when the agent takes a contested branch that delays a
+    lower-slack conflicting train. The label fires at switches where the
+    reward-best action (go forward) differs from the cost-best action (reroute).
+    """
+    agents = rail_env.agents
+    distance_map = rail_env.distance_map
+    agent = agents[agent_handle]
+
+    result = {
+        "own_slack": 0.0,
+        "min_conflicting_slack": {"L": 1.0, "F": 1.0, "R": 1.0},
+        "cost": 0.0,
+        "label": 0,
+        "at_switch": False,
+        "branch_conflict": {"L": False, "F": False, "R": False},
+    }
+
+    # Agent must be on the map and active
+    if agent.position is None:
+        return result
+    state = agent.state_machine.state
+    if state not in (TrainState.MOVING, TrainState.STOPPED):
+        return result
+
+    # Compute own slack
+    own_slack = agent.get_current_delay(elapsed_steps, distance_map)
+    # Normalize: divide by max_episode_steps proxy, clip to [-1, 1]
+    max_steps = rail_env.max_episode_steps if hasattr(rail_env, 'max_episode_steps') else 200
+    own_slack_norm = np.clip(own_slack / max(max_steps / 4, 1.0), -1.0, 1.0)
+    result["own_slack"] = own_slack_norm
+
+    # Check branch structure
+    _, branch_indices = _get_branch_indices(n_nodes)
+    data = obs[: n_nodes * 6].reshape(n_nodes, 6)
+    agent_data = obs[n_nodes * 7: n_nodes * 12].reshape(n_nodes, 5)
+
+    # Determine which branches exist and which have conflicts
+    branch_exists = {}
+    for key in ("L", "F", "R"):
+        idx = branch_indices[key]
+        if idx < n_nodes and np.any(data[idx] != 0):
+            branch_exists[key] = True
+            result["branch_conflict"][key] = _branch_has_conflict(
+                data[idx], agent_data[idx], conflict_dist_thresh, agent_dist_thresh
+            )
+        else:
+            branch_exists[key] = False
+
+    at_switch = branch_exists.get("L", False) or branch_exists.get("R", False)
+    result["at_switch"] = at_switch
+
+    # Find nearby conflicting agents and their slacks per branch
+    for j, other in enumerate(agents):
+        if j == agent_handle:
+            continue
+        if other.position is None:
+            continue
+        other_state = other.state_machine.state
+        if other_state not in (TrainState.MOVING, TrainState.STOPPED, TrainState.READY_TO_DEPART):
+            continue
+
+        # Manhattan proximity check
+        dist = abs(agent.position[0] - other.position[0]) + abs(agent.position[1] - other.position[1])
+        if dist > proximity_dist:
+            continue
+
+        other_slack = other.get_current_delay(elapsed_steps, distance_map)
+        other_slack_norm = np.clip(other_slack / max(max_steps / 4, 1.0), -1.0, 1.0)
+
+        # Assign to the closest conflicting branch
+        # Use the branch that has conflict signals
+        for key in ("L", "F", "R"):
+            if result["branch_conflict"].get(key, False):
+                if other_slack_norm < result["min_conflicting_slack"][key]:
+                    result["min_conflicting_slack"][key] = other_slack_norm
+
+    # Cost: fires when agent is at a switch, chosen branch has conflict,
+    # and a conflicting agent on that branch has lower slack.
+    # (Actual branch selection depends on action — computed in wrapper step())
+
+    # Label: fires at switches where forward has conflict AND conflicting
+    # agent has meaningfully lower slack AND an alternative branch exists
+    if at_switch and result["branch_conflict"].get("F", False):
+        fwd_min_slack = result["min_conflicting_slack"]["F"]
+        if fwd_min_slack < own_slack_norm - (slack_margin / max(max_steps / 4, 1.0)):
+            result["label"] = 1
+
+    return result
+
+
+def compute_malfunction_detour_features(
+    obs: np.ndarray,
+    n_nodes: int,
+) -> dict:
+    """
+    Compute malfunction-based detour cost/label from tree observation.
+
+    Returns dict with:
+      cost: float — 1 if agent moves into branch with malfunctioning train
+                    while an unblocked alternative exists
+      label: int — binary disagreement label
+      fwd_blocked: bool — forward branch has malfunctioning agent
+      alt_clear: bool — at least one alternative branch has no malfunction
+
+    The externality: joining a feeder route behind a malfunction hurts
+    everyone else in that queue. The agent's own reward still prefers the
+    short path forward.
+    """
+    result = {
+        "cost": 0.0,
+        "label": 0,
+        "fwd_blocked": False,
+        "alt_clear": False,
+    }
+
+    _, branch_indices = _get_branch_indices(n_nodes)
+    data = obs[: n_nodes * 6].reshape(n_nodes, 6)
+    agent_data = obs[n_nodes * 7: n_nodes * 12].reshape(n_nodes, 5)
+
+    # Check which branches exist and have malfunctions
+    branch_exists = {}
+    branch_malf = {}
+    for key in ("L", "F", "R"):
+        idx = branch_indices[key]
+        if idx < n_nodes and np.any(data[idx] != 0):
+            branch_exists[key] = True
+            branch_malf[key] = _branch_has_malfunction(agent_data[idx])
+        else:
+            branch_exists[key] = False
+            branch_malf[key] = False
+
+    at_switch = branch_exists.get("L", False) or branch_exists.get("R", False)
+    if not at_switch:
+        return result
+
+    # Forward blocked by malfunction?
+    fwd_blocked = branch_malf.get("F", False)
+    result["fwd_blocked"] = fwd_blocked
+
+    if not fwd_blocked:
+        return result
+
+    # Is there an alternative branch without malfunction?
+    alt_clear = False
+    for key in ("L", "R"):
+        if branch_exists.get(key, False) and not branch_malf.get(key, False):
+            alt_clear = True
+            break
+    result["alt_clear"] = alt_clear
+
+    if alt_clear:
+        result["cost"] = 1.0
+        result["label"] = 1
+
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # PettingZoo wrapper: reward/cost split + label
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -217,10 +466,10 @@ class FlatlandRewardCostWrapper(ParallelEnv):
     BaseDefaultRewards dict-valued rewards and converts them to:
 
       reward = sum of non-collision terms  (scalar float)
-      info['cost']            = configurable cost signal (default: danger label)
+      info['cost']            = configurable cost signal
       info['cost_collision']  = collision penalty >= 0 (always tracked)
       info['original_reward'] = full scalar sum of ALL terms
-      info['safety_label']    = binary danger label from tree obs
+      info['safety_label']    = binary disagreement label from scenario
       info['reward_terms']    = raw dict of all penalty terms
 
     Also casts observations to float32 (Flatland's obs builder declares
@@ -230,48 +479,56 @@ class FlatlandRewardCostWrapper(ParallelEnv):
     terms, emitted in info at episode end.
 
     Cost functions (selected via ``cost_fn``):
-      - "congestion" (default): 1 if the agent moved into a contested direction
-        (opposite-direction agents or potential conflict on chosen branch).
-        Creates structural conflict: moving through busy areas = progress +
-        blocking/congestion. The tree cost head can route on the CHOSEN branch's
-        features while the reward head routes on other features.
-      - "danger": 1 if the agent's observation indicates nearby
-        conflict or other agents. Positively correlated with productive
-        navigation — NOT a structural conflict.
-      - "collision": legacy cost = collision penalty magnitude. NOT recommended
-        for SPLIT-RL: negatively correlated with non-collision reward (r ~ -0.38).
+      - "slack_priority": Externality-based. Cost fires when agent takes a
+        contested branch at a switch that delays a lower-slack conflicting
+        train. Obs extended with [own_slack, min_conflicting_slack_L/F/R].
+        Label fires at switches where forward has conflict and conflicting
+        agent has meaningfully lower slack — true objective disagreement.
+      - "malfunction_detour": Externality-based. Cost fires when agent
+        moves into a branch with downstream malfunctioning trains while an
+        unblocked alternative branch exists at a switch.
+      - "congestion" (legacy): 1 if the agent moved into a contested direction.
+        NOT recommended: cost aligns with reward (both punish congestion).
+      - "danger" (legacy): 1 if observation shows nearby conflict/agents.
+        NOT recommended: event detector, not conflict detector.
+      - "collision" (legacy): collision penalty magnitude.
+        NOT recommended: negatively correlated with non-collision reward.
 
     Parameters
     ----------
     env : ParallelEnv
         PettingZoo parallel env from PettingzooFlatland.
     cost_fn : str
-        Cost function: "danger" (observation-based, default) or "collision" (legacy).
+        Cost function to use.
     use_original_reward : bool
         If True, SB3 optimises the full original reward (all terms
         including collision).  If False (default), SB3 optimises only
-        the non-collision terms.  Either way, info always contains
-        both cost and original_reward for monitoring.
+        the non-collision terms.
     conflict_dist_thresh : float
-        Normalised distance threshold for the conflict-detected and
-        other-agent-encountered features in the label function.
+        Normalised distance threshold for conflict detection.
     agent_dist_thresh : float
         Normalised distance threshold for other-agent proximity.
+    slack_margin : float
+        Minimum slack gap (in raw steps) to trigger slack_priority label.
     """
+
+    # Valid cost function names
+    _VALID_COST_FNS = ("slack_priority", "malfunction_detour", "congestion", "danger", "collision")
 
     def __init__(
         self,
         env: ParallelEnv,
-        cost_fn: str = "congestion",
+        cost_fn: str = "slack_priority",
         use_original_reward: bool = False,
         conflict_dist_thresh: float = 0.5,
         agent_dist_thresh: float = 0.5,
         n_agents: int = 1,
         max_episode_steps: int = 200,
+        slack_margin: float = 3.0,
     ):
-        if cost_fn not in ("danger", "collision", "congestion"):
+        if cost_fn not in self._VALID_COST_FNS:
             raise ValueError(
-                f"Unknown cost_fn '{cost_fn}'. Use 'congestion', 'danger', or 'collision'."
+                f"Unknown cost_fn '{cost_fn}'. Use one of {self._VALID_COST_FNS}."
             )
         self._env = env
         self.possible_agents = env.possible_agents
@@ -285,9 +542,14 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         self._agent_dist_thresh = agent_dist_thresh
         self._n_agents = n_agents
         self._max_episode_steps = max_episode_steps
+        self._slack_margin = slack_margin
 
-        # Override observation spaces to float32
-        self.observation_spaces = {
+        # Access the raw RailEnv for agent timetable / distance_map queries.
+        # PettingZooParallelEnvWrapper stores it as _wrap.
+        self._rail_env = getattr(env, "_wrap", None)
+
+        # Base observation spaces from Flatland (float32 cast)
+        base_obs_spaces = {
             agent: gym.spaces.Box(
                 low=space.low.astype(np.float32),
                 high=space.high.astype(np.float32),
@@ -296,14 +558,36 @@ class FlatlandRewardCostWrapper(ParallelEnv):
             )
             for agent, space in env.observation_spaces.items()
         }
+
+        # Extend observation space with slack features for Split-RL scenarios
+        self._extend_obs = cost_fn in ("slack_priority", "malfunction_detour")
+        if self._extend_obs:
+            # Append 4 floats: [own_slack, min_conflicting_slack_L, min_conflicting_slack_F, min_conflicting_slack_R]
+            self._n_extra_features = 4
+            self.observation_spaces = {}
+            for agent, space in base_obs_spaces.items():
+                new_shape = (space.shape[0] + self._n_extra_features,)
+                self.observation_spaces[agent] = gym.spaces.Box(
+                    low=-1.0, high=1.0, shape=new_shape, dtype=np.float32,
+                )
+        else:
+            self._n_extra_features = 0
+            self.observation_spaces = base_obs_spaces
+
         self.action_spaces = env.action_spaces
 
-        # Infer n_nodes from observation shape (obs_dim = 12 * n_nodes)
-        sample_space = next(iter(self.observation_spaces.values()))
+        # Infer n_nodes from base observation shape (obs_dim = 12 * n_nodes)
+        sample_space = next(iter(env.observation_spaces.values()))
         self._n_nodes = sample_space.shape[0] // 12
 
         # Stored observations for pre-step label computation
         self._prev_obs: Dict[str, np.ndarray] = {}
+        # Stored slack features for cost computation in step()
+        self._prev_slack_features: Dict[str, dict] = {}
+        self._prev_malf_features: Dict[str, dict] = {}
+
+        # Step counter for timetable queries
+        self._elapsed_steps = 0
 
         # Episode accumulators
         self._episode_costs: Dict = {}
@@ -324,6 +608,51 @@ class FlatlandRewardCostWrapper(ParallelEnv):
             for agent, o in obs.items()
         }
 
+    def _extend_obs_with_slack(self, obs: Dict) -> Dict:
+        """Append slack features [own_slack, min_slack_L, min_slack_F, min_slack_R] to obs."""
+        if not self._extend_obs or self._rail_env is None:
+            return obs
+        extended = {}
+        for agent, o in obs.items():
+            if self._cost_fn == "slack_priority":
+                feats = compute_slack_features(
+                    self._rail_env, agent, o, self._n_nodes,
+                    self._elapsed_steps,
+                    self._conflict_dist_thresh, self._agent_dist_thresh,
+                    self._slack_margin,
+                )
+                self._prev_slack_features[agent] = feats
+                extra = np.array([
+                    feats["own_slack"],
+                    feats["min_conflicting_slack"]["L"],
+                    feats["min_conflicting_slack"]["F"],
+                    feats["min_conflicting_slack"]["R"],
+                ], dtype=np.float32)
+            elif self._cost_fn == "malfunction_detour":
+                malf_feats = compute_malfunction_detour_features(o, self._n_nodes)
+                self._prev_malf_features[agent] = malf_feats
+                # Also compute slack for obs extension (useful context)
+                if self._rail_env is not None:
+                    feats = compute_slack_features(
+                        self._rail_env, agent, o, self._n_nodes,
+                        self._elapsed_steps,
+                        self._conflict_dist_thresh, self._agent_dist_thresh,
+                        self._slack_margin,
+                    )
+                    self._prev_slack_features[agent] = feats
+                    extra = np.array([
+                        feats["own_slack"],
+                        feats["min_conflicting_slack"]["L"],
+                        feats["min_conflicting_slack"]["F"],
+                        feats["min_conflicting_slack"]["R"],
+                    ], dtype=np.float32)
+                else:
+                    extra = np.zeros(4, dtype=np.float32)
+            else:
+                extra = np.zeros(4, dtype=np.float32)
+            extended[agent] = np.concatenate([o, extra])
+        return extended
+
     def _empty_reward_terms(self) -> Dict[str, float]:
         return {p.value: 0.0 for p in DefaultPenalties}
 
@@ -331,6 +660,13 @@ class FlatlandRewardCostWrapper(ParallelEnv):
         obs, infos = self._env.reset(seed=seed, options=options)
         self.agents = self._env.agents
         obs = self._cast_obs(obs)
+        self._elapsed_steps = 0
+
+        # Compute slack/malf features and extend observations
+        self._prev_slack_features = {}
+        self._prev_malf_features = {}
+        if self._extend_obs:
+            obs = self._extend_obs_with_slack(obs)
 
         # Store observations for pre-step label computation
         self._prev_obs = {agent: obs[agent].copy() for agent in obs}
@@ -347,34 +683,96 @@ class FlatlandRewardCostWrapper(ParallelEnv):
             infos[agent] = dict(infos[agent])
             infos[agent]["cost"] = 0.0
             infos[agent]["original_reward"] = 0.0
-            infos[agent]["safety_label"] = compute_danger_label(
-                obs[agent], self._n_nodes,
-                self._conflict_dist_thresh, self._agent_dist_thresh,
-            )
+            # Label from scenario-specific logic
+            if self._cost_fn == "slack_priority":
+                infos[agent]["safety_label"] = self._prev_slack_features.get(agent, {}).get("label", 0)
+            elif self._cost_fn == "malfunction_detour":
+                infos[agent]["safety_label"] = self._prev_malf_features.get(agent, {}).get("label", 0)
+            else:
+                infos[agent]["safety_label"] = compute_danger_label(
+                    self._prev_obs[agent][:self._n_nodes * 12] if self._extend_obs else self._prev_obs[agent],
+                    self._n_nodes,
+                    self._conflict_dist_thresh, self._agent_dist_thresh,
+                )
         return obs, infos
 
     def step(self, actions):
-        # Compute labels from PRE-STEP observations (current state)
+        # Compute labels/costs from PRE-STEP observations and features
         pre_step_labels = {}
+        pre_step_costs = {}
+        pre_step_danger = {}
         pre_step_congestion = {}
+
+        action_to_branch_key = {1: "L", 2: "F", 3: "R"}
+
         for agent in actions:
-            if agent in self._prev_obs:
-                pre_step_labels[agent] = compute_danger_label(
-                    self._prev_obs[agent], self._n_nodes,
-                    self._conflict_dist_thresh, self._agent_dist_thresh,
-                )
-                pre_step_congestion[agent] = compute_congestion_cost(
-                    self._prev_obs[agent], self._n_nodes,
-                    actions[agent],
-                    self._conflict_dist_thresh, self._agent_dist_thresh,
-                )
-            else:
+            base_obs = self._prev_obs.get(agent)
+            if base_obs is None:
                 pre_step_labels[agent] = 0
-                pre_step_congestion[agent] = 0
+                pre_step_costs[agent] = 0.0
+                pre_step_danger[agent] = 0.0
+                pre_step_congestion[agent] = 0.0
+                continue
+
+            # Base obs for legacy functions (strip slack extension if present)
+            obs_for_legacy = base_obs[:self._n_nodes * 12] if self._extend_obs else base_obs
+
+            pre_step_danger[agent] = float(compute_danger_label(
+                obs_for_legacy, self._n_nodes,
+                self._conflict_dist_thresh, self._agent_dist_thresh,
+            ))
+            pre_step_congestion[agent] = float(compute_congestion_cost(
+                obs_for_legacy, self._n_nodes, actions[agent],
+                self._conflict_dist_thresh, self._agent_dist_thresh,
+            ))
+
+            if self._cost_fn == "slack_priority":
+                slack_feats = self._prev_slack_features.get(agent, {})
+                label = slack_feats.get("label", 0)
+                # Cost fires when agent moves into contested branch where
+                # conflicting agent has lower slack
+                cost = 0.0
+                chosen_branch = action_to_branch_key.get(actions[agent])
+                if chosen_branch and slack_feats.get("at_switch", False):
+                    if slack_feats.get("branch_conflict", {}).get(chosen_branch, False):
+                        own_slack = slack_feats.get("own_slack", 0.0)
+                        branch_min_slack = slack_feats.get("min_conflicting_slack", {}).get(chosen_branch, 1.0)
+                        max_steps = self._max_episode_steps
+                        margin_norm = self._slack_margin / max(max_steps / 4, 1.0)
+                        if branch_min_slack < own_slack - margin_norm:
+                            cost = 1.0
+                pre_step_labels[agent] = label
+                pre_step_costs[agent] = cost
+
+            elif self._cost_fn == "malfunction_detour":
+                malf_feats = self._prev_malf_features.get(agent, {})
+                label = malf_feats.get("label", 0)
+                # Cost fires when agent moves forward into malfunction-blocked
+                # branch while alt is clear
+                cost = 0.0
+                if actions[agent] == 2 and malf_feats.get("fwd_blocked", False) and malf_feats.get("alt_clear", False):
+                    cost = 1.0
+                pre_step_labels[agent] = label
+                pre_step_costs[agent] = cost
+
+            elif self._cost_fn == "congestion":
+                pre_step_labels[agent] = int(pre_step_danger[agent])
+                pre_step_costs[agent] = pre_step_congestion[agent]
+            elif self._cost_fn == "danger":
+                pre_step_labels[agent] = int(pre_step_danger[agent])
+                pre_step_costs[agent] = pre_step_danger[agent]
+            else:  # collision — cost assigned after step from rewards
+                pre_step_labels[agent] = int(pre_step_danger[agent])
+                pre_step_costs[agent] = 0.0  # filled below from reward dict
 
         obs, rewards, terminations, truncations, infos = self._env.step(actions)
         self.agents = self._env.agents
         obs = self._cast_obs(obs)
+        self._elapsed_steps += 1
+
+        # Compute new slack/malf features and extend observations
+        if self._extend_obs:
+            obs = self._extend_obs_with_slack(obs)
 
         # Flatland terminates agents individually as they reach their
         # destinations, but the episode continues until ALL agents are done.
@@ -425,18 +823,15 @@ class FlatlandRewardCostWrapper(ParallelEnv):
                 else:
                     scalar_rewards[agent] = non_collision_reward
 
-                # Cost signal depends on cost_fn
-                danger_label = float(pre_step_labels.get(agent, 0))
-                congestion_label = float(pre_step_congestion.get(agent, 0))
-                if self._cost_fn == "congestion":
-                    info["cost"] = congestion_label
-                elif self._cost_fn == "danger":
-                    info["cost"] = danger_label
-                else:  # "collision"
+                # Cost signal
+                if self._cost_fn == "collision":
                     info["cost"] = collision_cost
+                else:
+                    info["cost"] = pre_step_costs.get(agent, 0.0)
+
                 info["cost_collision"] = collision_cost
-                info["cost_danger"] = danger_label
-                info["cost_congestion"] = congestion_label
+                info["cost_danger"] = pre_step_danger.get(agent, 0.0)
+                info["cost_congestion"] = pre_step_congestion.get(agent, 0.0)
                 info["original_reward"] = original_reward
                 info["reward_terms"] = dict(raw)
 
@@ -452,10 +847,10 @@ class FlatlandRewardCostWrapper(ParallelEnv):
                     )
             else:
                 scalar_rewards[agent] = float(raw)
-                info["cost"] = 0.0
+                info["cost"] = pre_step_costs.get(agent, 0.0)
                 info["cost_collision"] = 0.0
-                info["cost_danger"] = 0.0
-                info["cost_congestion"] = 0.0
+                info["cost_danger"] = pre_step_danger.get(agent, 0.0)
+                info["cost_congestion"] = pre_step_congestion.get(agent, 0.0)
                 info["original_reward"] = float(raw)
 
             info["safety_label"] = pre_step_labels.get(agent, 0)
@@ -467,9 +862,6 @@ class FlatlandRewardCostWrapper(ParallelEnv):
                 info["episode_reward_terms"] = dict(
                     self._episode_reward_terms.get(agent, self._empty_reward_terms())
                 )
-                # Flatland normalized score:
-                #   sum(all agents' original rewards) / (max_ep_steps * n_agents)
-                # Perfect (no penalties) = 0, worst ≈ -1
                 total_original_rew = sum(self._episode_original_rewards.values())
                 info["normalized_score"] = (
                     total_original_rew / (self._max_episode_steps * self._n_agents)
@@ -497,6 +889,7 @@ class FlatlandRewardCostWrapper(ParallelEnv):
 # ──────────────────────────────────────────────────────────────────────────────
 
 FLATLAND_CONFIGS = {
+    # Original configs (default max_rails_between_cities=2)
     "flatland-small-v0": {
         "n_agents": 3, "x_dim": 25, "y_dim": 25, "n_cities": 2,
         "max_depth": 2, "predictor_max_depth": 30,
@@ -512,6 +905,30 @@ FLATLAND_CONFIGS = {
     "flatland-xlarge-v0": {
         "n_agents": 20, "x_dim": 80, "y_dim": 80, "n_cities": 6,
         "max_depth": 3, "predictor_max_depth": 50,
+    },
+    # Tight configs (max_rails_between_cities=1 → more resource contention)
+    "flatland-small-tight-v0": {
+        "n_agents": 5, "x_dim": 25, "y_dim": 25, "n_cities": 2,
+        "max_depth": 2, "predictor_max_depth": 30,
+        "max_rails_between_cities": 1,
+    },
+    "flatland-medium-tight-v0": {
+        "n_agents": 8, "x_dim": 35, "y_dim": 35, "n_cities": 3,
+        "max_depth": 2, "predictor_max_depth": 50,
+        "max_rails_between_cities": 1,
+    },
+    # Malfunction configs (tight + malfunctions enabled)
+    "flatland-small-malf-v0": {
+        "n_agents": 5, "x_dim": 25, "y_dim": 25, "n_cities": 2,
+        "max_depth": 2, "predictor_max_depth": 30,
+        "max_rails_between_cities": 1,
+        "malfunction_interval": 40,
+    },
+    "flatland-medium-malf-v0": {
+        "n_agents": 8, "x_dim": 35, "y_dim": 35, "n_cities": 3,
+        "max_depth": 2, "predictor_max_depth": 50,
+        "max_rails_between_cities": 1,
+        "malfunction_interval": 40,
     },
 }
 
@@ -540,6 +957,12 @@ def make_flatland_raw_env(
     FlattenedNormalizedTreeObsForRailEnv observations.
 
     Returns the raw RailEnv (unmodified Flatland environment).
+
+    Parameters
+    ----------
+    malfunction_interval : int
+        Mean steps between malfunctions. Default 10^9 (disabled).
+        Set to e.g. 40 for ~2.5% malfunction chance per step.
     """
     obs_builder = FlattenedNormalizedTreeObsForRailEnv(
         max_depth=max_depth,
@@ -564,6 +987,10 @@ def make_flatland_raw_env(
         rewards=rewards,
         **env_generator_kwargs,
     )
+
+    # Store max_episode_steps on the env for slack normalization
+    raw_env.max_episode_steps = 4 * (x_dim + y_dim + n_agents)
+
     return raw_env
 
 
@@ -573,10 +1000,11 @@ def make_flatland_vec_env(
     seed: Optional[int] = None,
     decompose_rewards: bool = True,
     collision_factor: float = 1.0,
-    cost_fn: str = "congestion",
+    cost_fn: str = "slack_priority",
     use_original_reward: bool = False,
     conflict_dist_thresh: float = 0.5,
     agent_dist_thresh: float = 0.5,
+    slack_margin: float = 3.0,
     **override_kwargs,
 ):
     """
@@ -598,6 +1026,9 @@ def make_flatland_vec_env(
         Use BaseDefaultRewards (dict→scalar split) for reward/cost.
     collision_factor : float
         Collision penalty weight.
+    cost_fn : str
+        Cost function: "slack_priority" (default), "malfunction_detour",
+        "congestion", "danger", or "collision".
     use_original_reward : bool
         If True, SB3 optimises the full original reward (all terms).
         If False, SB3 optimises only non-collision terms.
@@ -605,6 +1036,8 @@ def make_flatland_vec_env(
         Normalised distance threshold for the danger label.
     agent_dist_thresh : float
         Normalised distance threshold for other-agent proximity label.
+    slack_margin : float
+        Minimum slack gap (in raw steps) to trigger slack_priority label.
     **override_kwargs
         Override any FLATLAND_CONFIGS or env_generator parameter.
 
@@ -639,6 +1072,7 @@ def make_flatland_vec_env(
         agent_dist_thresh=agent_dist_thresh,
         n_agents=n_agents,
         max_episode_steps=max_episode_steps,
+        slack_margin=slack_margin,
     )
 
     # PettingZoo → SB3 VecEnv
