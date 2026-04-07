@@ -242,6 +242,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._convoy_progress: Dict[str, np.ndarray] = {}  # fraction of convoy past stop line
         # Track which convoy IDs belong to which platoon for split detection
         self._active_convoys: Dict[int, List[str]] = {}  # convoy_id → [veh_id, ...]
+        # Per-agent tracking: which convoy vehicle IDs have ever been seen
+        # on this agent's incoming lanes.  Used for correct per-intersection
+        # progress: progress = (ever_seen − still_on_incoming) / ever_seen
+        self._convoy_seen_by_agent: Dict[str, Dict[int, Set[str]]] = {}  # agent → convoy_id → {vid, …}
         # Premium vehicle features
         self._has_premium: Dict[str, np.ndarray] = {}
         self._premium_wait: Dict[str, np.ndarray] = {}
@@ -948,15 +952,6 @@ class SumoRewardCostWrapper(ParallelEnv):
         need_convoy = self._cost_fn == "convoy_priority"
         need_premium = self._cost_fn == "premium_priority"
 
-        # For convoy split detection: find which convoy vehicles are still
-        # in the simulation (not yet departed or already arrived)
-        active_vehs: set = set()
-        if need_convoy:
-            try:
-                active_vehs = set(sumo.vehicle.getIDList())
-            except Exception:
-                pass
-
         for agent_id in self.possible_agents:
             ts = self._get_traffic_signal(agent_id)
             if ts is None:
@@ -974,7 +969,7 @@ class SumoRewardCostWrapper(ParallelEnv):
 
             # Track which convoy vehicles are on THIS agent's incoming lanes
             convoy_on_incoming: Dict[int, int] = {}   # convoy_id → count on incoming
-            convoy_total: Dict[int, int] = {}          # convoy_id → total active
+            convoy_on_incoming_vids: Dict[int, Set[str]] = {}  # convoy_id → set of vids on incoming
             convoy_lane_map: Dict[int, int] = {}       # convoy_id → lane_idx (first seen)
 
             for i, lane in enumerate(ts.lanes):
@@ -999,6 +994,7 @@ class SumoRewardCostWrapper(ParallelEnv):
                         try:
                             cid = int(vid.split('_')[1])
                             convoy_on_incoming[cid] = convoy_on_incoming.get(cid, 0) + 1
+                            convoy_on_incoming_vids.setdefault(cid, set()).add(vid)
                             if cid not in convoy_lane_map:
                                 convoy_lane_map[cid] = i
                         except (IndexError, ValueError):
@@ -1015,27 +1011,26 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._bus_wait[agent_id] = bus_wait
                 self._bus_count[agent_id] = bus_count
 
-            # Compute convoy progress (fraction of platoon that has PASSED this agent's incoming lanes)
+            # Compute convoy progress PER AGENT using persistent tracking.
+            # progress = (ever_seen_on_incoming − still_on_incoming) / ever_seen
+            # Only counts vehicles that THIS agent has actually observed on
+            # its own incoming lanes.  No cross-agent leakage.
             if need_convoy:
-                # For each active convoy, count total active vehicles in simulation
-                for cid, veh_list in self._active_convoys.items():
-                    total_active = sum(1 for v in veh_list if v in active_vehs)
-                    convoy_total[cid] = total_active
+                agent_history = self._convoy_seen_by_agent.setdefault(agent_id, {})
 
-                # convoy_progress[lane] = fraction of convoy vehicles that have passed
-                # (total_spawned - on_incoming) / total_spawned for the convoy on this lane
                 for cid, lane_idx in convoy_lane_map.items():
-                    on_incoming = convoy_on_incoming.get(cid, 0)
-                    total_spawned = len(self._active_convoys.get(cid, []))
-                    total_active = convoy_total.get(cid, 0)
-                    if total_spawned > 0:
-                        # Vehicles that left this agent's incoming but are still active
-                        # = passed through this intersection
-                        passed = total_active - on_incoming
-                        if passed < 0:
-                            passed = 0
-                        progress = passed / total_spawned
-                        convoy_progress[lane_idx] = max(convoy_progress[lane_idx], progress)
+                    current_vids = convoy_on_incoming_vids.get(cid, set())
+                    # Register newly-seen vehicles
+                    seen = agent_history.setdefault(cid, set())
+                    seen.update(current_vids)
+                    # Progress: fraction of ever-seen that are no longer on incoming
+                    if len(seen) > 0:
+                        still_here = len(current_vids & seen)
+                        passed = len(seen) - still_here
+                        progress = passed / len(seen)
+                        convoy_progress[lane_idx] = max(
+                            convoy_progress[lane_idx], progress
+                        )
 
                 convoy_count_norm = np.clip(convoy_count / self._convoy_size_max, 0.0, 1.0)
                 self._has_convoy[agent_id] = has_convoy
@@ -1899,6 +1894,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._convoy_counter = 0
             self._premium_counter = 0
             self._active_convoys = {}  # reset convoy tracking
+            self._convoy_seen_by_agent = {}  # reset per-agent convoy history
             if self._is_clean_episode:
                 # Push injection past episode horizon → no events
                 self._next_bus_time = 1e9

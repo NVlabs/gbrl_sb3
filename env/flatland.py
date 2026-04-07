@@ -261,18 +261,19 @@ def _get_branch_indices(n_nodes: int):
 def _is_at_switch(obs: np.ndarray, n_nodes: int) -> bool:
     """Check whether the agent is at a switch (L or R branch exists).
 
-    A branch exists if its root node data is not all-zero / missing-branch.
-    In Flatland's normalized obs, missing branches have data[:] = 0 and
-    agent_data[:] = 0 (or -1 for distance features). We check dist_to_next_branch
-    (data col 5) > 0 as proxy for branch existence.
+    A branch exists if its root node has any POSITIVE data value.
+    In Flatland's normalized obs:
+      - Valid branches have positive distance values (e.g. dist_own_target > 0).
+      - Dead-end / missing branches have all features = -1.0.
+      - 0.0 means "at this location" (valid).
+    We check for any value > 0 to distinguish valid branches from dead ends.
     """
     _, branch_indices = _get_branch_indices(n_nodes)
     data = obs[: n_nodes * 6].reshape(n_nodes, 6)
     for key in ("L", "R"):
         idx = branch_indices[key]
         if idx < n_nodes:
-            # Branch exists if dist_min_to_target (col 5) > 0 or any distance > 0
-            if np.any(data[idx] != 0):
+            if np.any(data[idx] > 0):
                 return True
     return False
 
@@ -314,6 +315,7 @@ def compute_slack_features(
         "cost": 0.0,
         "label": 0,
         "at_switch": False,
+        "branch_exists": {"L": False, "F": False, "R": False},
         "branch_conflict": {"L": False, "F": False, "R": False},
     }
 
@@ -337,10 +339,12 @@ def compute_slack_features(
     agent_data = obs[n_nodes * 7: n_nodes * 12].reshape(n_nodes, 5)
 
     # Determine which branches exist and which have conflicts
+    # A branch exists if any data value is positive (> 0).
+    # Dead-end branches have all features = -1.0 in Flatland's encoding.
     branch_exists = {}
     for key in ("L", "F", "R"):
         idx = branch_indices[key]
-        if idx < n_nodes and np.any(data[idx] != 0):
+        if idx < n_nodes and np.any(data[idx] > 0):
             branch_exists[key] = True
             result["branch_conflict"][key] = _branch_has_conflict(
                 data[idx], agent_data[idx], conflict_dist_thresh, agent_dist_thresh
@@ -350,8 +354,14 @@ def compute_slack_features(
 
     at_switch = branch_exists.get("L", False) or branch_exists.get("R", False)
     result["at_switch"] = at_switch
+    result["branch_exists"] = dict(branch_exists)
 
-    # Find nearby conflicting agents and their slacks per branch
+    # Find nearby agents and assign their slacks to conflicting branches.
+    # The tree obs tells us HOW MANY opposite-direction agents are on each branch
+    # (agent_data col 1). We match by: for each conflicting branch, take the N
+    # closest nearby agents (by Manhattan distance) where N = that branch's
+    # num_agents_opposite_direction. This prevents dumping all agents into all branches.
+    nearby_agents = []
     for j, other in enumerate(agents):
         if j == agent_handle:
             continue
@@ -360,29 +370,54 @@ def compute_slack_features(
         other_state = other.state_machine.state
         if other_state not in (TrainState.MOVING, TrainState.STOPPED, TrainState.READY_TO_DEPART):
             continue
-
-        # Manhattan proximity check
         dist = abs(agent.position[0] - other.position[0]) + abs(agent.position[1] - other.position[1])
         if dist > proximity_dist:
             continue
-
         other_slack = other.get_current_delay(elapsed_steps, distance_map)
         other_slack_norm = np.clip(other_slack / max(max_steps / 4, 1.0), -1.0, 1.0)
+        nearby_agents.append((dist, other_slack_norm))
 
-        # Assign to the closest conflicting branch
-        # Use the branch that has conflict signals
-        for key in ("L", "F", "R"):
-            if result["branch_conflict"].get(key, False):
-                if other_slack_norm < result["min_conflicting_slack"][key]:
-                    result["min_conflicting_slack"][key] = other_slack_norm
+    # Sort by distance (closest first) for greedy matching
+    nearby_agents.sort(key=lambda x: x[0])
+
+    # Assign to each conflicting branch, respecting the count from tree obs
+    agent_pool = list(nearby_agents)  # agents available for assignment
+    for key in ("L", "F", "R"):
+        if not result["branch_conflict"].get(key, False):
+            continue
+        idx = branch_indices[key]
+        # Number of opposite-direction agents the tree obs reports on this branch
+        n_opposite = max(0, int(agent_data[idx, _AGENT_COL_OPPOSITE_DIR]))
+        if n_opposite == 0:
+            # Branch has conflict but no opposite-dir agents — could be same-dir
+            # or potential_conflict signal. Use closest 1 agent as fallback.
+            n_opposite = 1
+        # Take the N closest unassigned agents
+        assigned = 0
+        for ad_dist, ad_slack in agent_pool:
+            if assigned >= n_opposite:
+                break
+            if ad_slack < result["min_conflicting_slack"][key]:
+                result["min_conflicting_slack"][key] = ad_slack
+            assigned += 1
 
     # Cost: fires when agent is at a switch, chosen branch has conflict,
     # and a conflicting agent on that branch has lower slack.
     # (Actual branch selection depends on action — computed in wrapper step())
 
-    # Label: fires at switches where forward has conflict AND conflicting
-    # agent has meaningfully lower slack AND an alternative branch exists
-    if at_switch and result["branch_conflict"].get("F", False):
+    # Label: fires at switches where ALL of:
+    #   1. Forward branch has conflict (head-on or potential conflict)
+    #   2. A conflicting agent on forward has meaningfully lower slack
+    #   3. At least one alternative branch EXISTS and is CONFLICT-FREE
+    # Condition 3 ensures the agent actually has a viable reroute option.
+    # Without it, the only cost-free action is STOP, which blocks the switch.
+    has_conflict_free_alt = False
+    for key in ("L", "R"):
+        if branch_exists.get(key, False) and not result["branch_conflict"].get(key, False):
+            has_conflict_free_alt = True
+            break
+
+    if at_switch and has_conflict_free_alt and result["branch_conflict"].get("F", False):
         fwd_min_slack = result["min_conflicting_slack"]["F"]
         if fwd_min_slack < own_slack_norm - (slack_margin / max(max_steps / 4, 1.0)):
             result["label"] = 1
@@ -420,11 +455,12 @@ def compute_malfunction_detour_features(
     agent_data = obs[n_nodes * 7: n_nodes * 12].reshape(n_nodes, 5)
 
     # Check which branches exist and have malfunctions
+    # A branch exists if any data value is positive (dead ends have all -1).
     branch_exists = {}
     branch_malf = {}
     for key in ("L", "F", "R"):
         idx = branch_indices[key]
-        if idx < n_nodes and np.any(data[idx] != 0):
+        if idx < n_nodes and np.any(data[idx] > 0):
             branch_exists[key] = True
             branch_malf[key] = _branch_has_malfunction(agent_data[idx])
         else:
@@ -711,11 +747,20 @@ class FlatlandRewardCostWrapper(ParallelEnv):
                 slack_feats = self._prev_slack_features.get(agent, {})
                 label = slack_feats.get("label", 0)
                 # Cost fires when agent moves into contested branch where
-                # conflicting agent has lower slack
+                # conflicting agent has lower slack AND a conflict-free
+                # alternative branch exists (so the agent could have rerouted).
                 cost = 0.0
                 chosen_branch = action_to_branch_key.get(actions[agent])
+                branch_conflict = slack_feats.get("branch_conflict", {})
+                branch_exists = slack_feats.get("branch_exists", {})
                 if chosen_branch and slack_feats.get("at_switch", False):
-                    if slack_feats.get("branch_conflict", {}).get(chosen_branch, False):
+                    # Check that a conflict-free alternative exists
+                    has_alt = any(
+                        branch_exists.get(k, False) and not branch_conflict.get(k, False)
+                        for k in ("L", "F", "R")
+                        if k != chosen_branch
+                    )
+                    if has_alt and branch_conflict.get(chosen_branch, False):
                         own_slack = slack_feats.get("own_slack", 0.0)
                         branch_min_slack = slack_feats.get("min_conflicting_slack", {}).get(chosen_branch, 1.0)
                         max_steps = self._max_episode_steps

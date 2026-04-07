@@ -1,6 +1,6 @@
 # Flatland Split-RL Scenarios — Complete Reference
 
-**Date:** 2026-04-07 (v2)  
+**Date:** 2026-04-07 (v3)  
 **File:** `env/flatland.py`  
 **Configs:** `flatland-small-v0` through `flatland-medium-malf-v0` (8 registered)
 
@@ -188,18 +188,20 @@ Positive = ahead of schedule, negative = behind schedule.
 
 ### 7.2 Registered Configs
 
-| Config Name                | n_agents | Grid   | n_cities | max_rails | malf_interval | max_depth | obs_dim | max_steps |
-|---------------------------|----------|--------|----------|-----------|---------------|-----------|---------|-----------|
-| `flatland-small-v0`       | 3        | 25×25  | 2        | 2         | disabled      | 2         | 256*    | 212       |
-| `flatland-medium-v0`      | 5        | 35×35  | 3        | 2         | disabled      | 2         | 256*    | 300       |
-| `flatland-large-v0`       | 10       | 50×50  | 4        | 2         | disabled      | 3         | 1024*   | 440       |
-| `flatland-xlarge-v0`      | 20       | 80×80  | 6        | 2         | disabled      | 3         | 1024*   | 720       |
-| `flatland-small-tight-v0` | 5        | 25×25  | 2        | **1**     | disabled      | 2         | 256*    | 220       |
-| `flatland-medium-tight-v0`| 8        | 35×35  | 3        | **1**     | disabled      | 2         | 256*    | 312       |
-| `flatland-small-malf-v0`  | 5        | 25×25  | 2        | **1**     | **40**        | 2         | 256*    | 220       |
-| `flatland-medium-malf-v0` | 8        | 35×35  | 3        | **1**     | **40**        | 2         | 256*    | 312       |
+| Config Name                | n_agents | Grid   | n_cities | max_rails | malf_interval | obs_dim | max_steps | Status |
+|---------------------------|----------|--------|----------|-----------|---------------|---------|-----------|--------|
+| `flatland-small-v0`       | 3        | 25×25  | 2        | 2         | disabled      | 256     | 212       | Baseline |
+| `flatland-medium-v0`      | 5        | 35×35  | 3        | 2         | disabled      | 256     | 300       | Baseline |
+| `flatland-large-v0`       | 10       | 50×50  | 4        | 2         | disabled      | 256     | 440       | Baseline |
+| `flatland-xlarge-v0`      | 20       | 80×80  | 6        | 2         | disabled      | 256     | 720       | Baseline |
+| `flatland-small-tight-v0` | 5        | 25×25  | 2        | **1**     | disabled      | 256     | 220       | ⚠️ See §9 |
+| `flatland-medium-tight-v0`| 8        | 35×35  | 3        | **1**     | disabled      | 256     | 312       | ⚠️ See §9 |
+| `flatland-small-malf-v0`  | 5        | 25×25  | 2        | **1**     | **40**        | 256     | 220       | ⚠️ See §9 |
+| `flatland-medium-malf-v0` | 8        | 35×35  | 3        | **1**     | **40**        | 256     | 312       | ⚠️ See §9 |
 
-*\*obs_dim includes the 4 Split-RL extension features when using `cost_fn ∈ {"slack_priority", "malfunction_detour"}`. Without extension, subtract 4.*
+All configs use `max_depth=2`. Obs dim is always **256** (252 tree + 4 slack features).
+
+**⚠️ The tight/malf configs were designed for slack_priority and malfunction_detour cost functions, but the grid topologies they produce do not generate enough switches with conflict-free alternatives. See Section 9.**
 
 ### 7.3 Config Design Rationale
 
@@ -243,79 +245,58 @@ All three legacy approaches went **"obs → cost → hope for conflict"** instea
 
 ---
 
-## 9. Current Split-RL Scenarios
+## 9. Current Split-RL Scenarios — Status
 
-### 9.1 — Slack-Priority Yield (`cost_fn="slack_priority"`)
+### 9.0 — The Fundamental Problem
 
-**Story**: Two trains approach a shared single-track segment from opposite directions at a switch. One has plenty of slack (ahead of schedule), the other is running tight (behind schedule). The slack-rich train should yield (reroute or stop) to let the urgent train pass — even though yielding hurts the yielding train's own reward.
+Both scenarios below assume the agent is at a **switch** where it has a conflicting branch (forward) and a **conflict-free alternative branch** (left or right) to reroute to. The cost fires when the agent chooses the conflicting branch; the label marks states where this choice exists.
 
-**Why it works**: Flatland's per-agent reward is blind to other agents' deadlines. A train is rewarded for its own progress; whether its movement delays another urgent train is invisible to the reward. The cost captures this externality.
+**After fixing a dead-end detection bug (v3), we found this situation almost never occurs.** Flatland's procedural grid generation produces topologies where:
+- Switches are rare (~5% of active steps)
+- Most switches have dead-end L/R branches (data = -1.0 in the tree obs), not real through-routes
+- Switches with forward conflict AND a conflict-free alternative branch: **0.2-0.7%** of active steps across all configs tested
+- Label fires: **0-16 times per ~2500 active steps**, zero on many seeds
 
-**Mechanism**:
+This applies to ALL grid configs we tested (max_rails=1, 2, and 3; 3-5 cities; 8-12 agents). The grid generator simply doesn't create enough mid-corridor passing sidings.
 
-1. **Pre-conditions** (all must hold):
-   - Agent is at a **switch** (left or right branch exists)
-   - Chosen branch has a **conflict signal** (other agent or potential conflict within `conflict_dist_thresh`)
-   - A conflicting agent on that branch has **lower slack** than the acting agent, with at least `slack_margin` gap
+**The "170 cost events in 500 steps" and "+39% completion heuristic" reported earlier were entirely based on the dead-end bug** — the code was counting dead-end branches (all features = -1.0) as valid alternative routes.
 
-2. **Cost**: Binary `{0, 1}`. Fires when the agent takes a contested branch at a switch that delays a lower-slack conflicting train. Action-conditioned: depends on *which* branch the agent chose.
+### 9.1 — Slack-Priority Yield (`cost_fn="slack_priority"`) — DOES NOT FIRE
 
-3. **Label**: Binary `{0, 1}`. Fires at switches where the **forward** branch has conflict AND the min conflicting slack on that branch is meaningfully lower than the agent's own slack (gap > `slack_margin`). This is where the reward-best action (go forward = progress) differs from the cost-best action (reroute/yield to let urgent train through). The label is NOT action-conditioned — it marks the state as one where the objectives disagree.
+**The intended scenario**: Agent at a switch, forward branch has a head-on train with lower slack, a side branch is clear. Agent should reroute to let the urgent train pass.
 
-4. **Obs extension**: 4 floats appended to the base tree observation (see Section 3.3).
+**What reward wants**: Go forward — `SHORTEST_PATH_REWARD` fires for moving along the shortest path. The reward is per-agent and blind to other agents' deadlines.
 
-**Config recommendation**: Use **tight** configs (`small-tight-v0`, `medium-tight-v0`) — single-track corridors force frequent switch conflicts.
+**What cost would measure**: If the agent goes forward into a contested branch at a switch, delaying a lower-slack train, while a clear alternative exists → cost = 1. If the agent reroutes → cost = 0.
 
-### 9.2 — Malfunction Detour (`cost_fn="malfunction_detour"`)
+**Why it doesn't fire**: Flatland grids with `max_rails_between_cities=1` have single-track corridors. There IS only one route between cities. The L/R branches at switches are dead ends (city-internal stub tracks), not through-routes. The agent has no viable reroute. With `max_rails=2`, there are more switches but the forward-conflict + clear-alternative combination is still extremely rare (0.36% of steps).
 
-**Story**: A train approaches a switch. The forward (shortest-path) branch has a malfunctioning train blocking it downstream. An alternative branch (left or right) is clear. The reward wants the agent to go forward (shortest path), but doing so feeds into a blocked queue, hurting all trains stuck behind.
+**Pre-conditions for cost = 1** (all must hold):
+1. Agent is at a switch (L or R branch exists with positive obs data)
+2. Chosen branch has a conflict signal (`dist_other_agent`, `dist_potential_conflict`, or `num_agents_opposite_direction` within threshold)
+3. At least one alternative branch EXISTS (positive data) and has NO conflict
+4. A nearby conflicting agent has lower slack than us by at least `slack_margin` steps
 
-**Why it works**: Joining a queue behind a malfunctioning train is invisible to the acting agent's reward (the reward is about this agent's progress, not others'). But it blocks the single-track segment for everyone behind, creating downstream delays that accumulate.
+**Pre-conditions for label = 1**: Same as above but checks forward branch specifically (not action-conditioned).
 
-**Mechanism**:
+### 9.2 — Malfunction Detour (`cost_fn="malfunction_detour"`) — DOES NOT FIRE
 
-1. **Pre-conditions** (all must hold):
-   - Agent is at a **switch**
-   - The **forward** branch has a malfunctioning agent signal (`num_agents_malfunctioning > 0`)
-   - At least one **alternative** branch (L or R) has **no** malfunction signal
+**Same problem.** The label fires when forward branch has a malfunctioning agent AND an alternative branch is clear. After the dead-end fix: 3-6 events per ~1300 active steps (0.3%).
 
-2. **Cost**: Binary `{0, 1}`. Fires only when the agent takes `MOVE_FORWARD` (action 2) into the blocked branch while an alternative is clear.
+### 9.3 — What Would Need to Change
 
-3. **Label**: Binary `{0, 1}`. Fires whenever the pre-conditions hold (regardless of action). Marks states where "go forward" (reward-best) disagrees with "detour" (cost-best).
+For either scenario to work, Flatland grids need **switches with two valid through-routes** — where one route has conflict and the other doesn't. Options:
 
-4. **Obs extension**: Same 4 slack floats as `slack_priority` (provides useful context even though the cost logic uses malfunction signals).
-
-**Config recommendation**: Use **malfunction** configs (`small-malf-v0`, `medium-malf-v0`) — `malfunction_interval=40` ensures frequent breakdowns.
-
----
-
-## 10. Diagnostic Results
-
-### 10.1 Validation (Random Policy, 500 Steps)
-
-Cost events fired during smoke tests with random actions:
-
-| Config                 | Cost Function        | Cost Events / 500 Steps |
-|------------------------|----------------------|-------------------------|
-| `flatland-medium-tight-v0` | `slack_priority`     | 170                     |
-| `flatland-medium-malf-v0`  | `malfunction_detour` | 198                     |
-
-### 10.2 Heuristic Yield Test (Pre-Implementation)
-
-Switch-aware yielding heuristic (yield at switches with forward conflict + conflicting agent has lower slack) tested on `flatland-medium-v0` (default config, 5 agents, 35×35):
-
-| Metric            | Random Policy | Yield Heuristic | Delta   |
-|-------------------|---------------|-----------------|---------|
-| Completion Rate   | ~33%          | ~72%            | **+39%** |
-| Mean Reward       | -12.3         | -7.8            | **+4.5** |
-
-This validated the core idea: yielding at switches where the conflicting train is more urgent improves global outcomes, but reduces the yielding agent's own per-step reward.
+1. **Custom grid generation**: Build grids with explicit passing sidings (not supported by `env_generator` out of the box)
+2. **More cities**: More cities = more routing options. But `env_generator` creates corridors between pairs of cities, and with 4+ cities the grid gets large.
+3. **Different environment**: Flatland's procedural generation isn't designed for this kind of split-RL scenario. The grid topology doesn't naturally produce "reroute vs. forward" decisions enough.
+4. **Rethink the cost signal**: Instead of requiring a reroute alternative, measure the externality differently — e.g., cost = total delay imposed on other agents by this step, computed from the rail simulation. This removes the "must have alternative branch" requirement but is harder to implement.
 
 ---
 
-## 11. How to Run Training
+## 10. How to Run Training
 
-### 11.1 Command
+### 10.1 Command
 
 ```bash
 python3.10 scripts/train_runner.py \
@@ -336,15 +317,17 @@ Key arguments:
 - `--env_kwargs`: JSON dict passed as `**kwargs` to `make_flatland_vec_env()`. Controls `cost_fn`, `slack_margin`, `use_original_reward`, etc.
 - `--num_envs`: number of parallel Flatland instances (total VecEnv slots = `num_envs × n_agents`)
 
-### 11.2 Cost Function Selection
+### 10.2 Scenario → Config → Cost Function
 
-| Scenario            | `cost_fn`            | Recommended Configs                    |
-|---------------------|----------------------|----------------------------------------|
-| Slack-priority yield | `"slack_priority"`   | `flatland-*-tight-v0`                  |
-| Malfunction detour  | `"malfunction_detour"` | `flatland-*-malf-v0`                 |
-| Baseline (no cost)  | `"congestion"` / `"danger"` / `"collision"` | any (legacy, not recommended) |
+| What you want to test | `--env_name` | `--env_kwargs` |
+|-----------------------|-------------|----------------|
+| Slack-priority yield (small) | `flatland-small-tight-v0` | `'{"cost_fn": "slack_priority"}'` |
+| Slack-priority yield (medium) | `flatland-medium-tight-v0` | `'{"cost_fn": "slack_priority"}'` |
+| Malfunction detour (small) | `flatland-small-malf-v0` | `'{"cost_fn": "malfunction_detour"}'` |
+| Malfunction detour (medium) | `flatland-medium-malf-v0` | `'{"cost_fn": "malfunction_detour"}'` |
+| PPO baseline (no Split-RL) | `flatland-small-tight-v0` | (omit or any cost_fn — cost is ignored by PPO) |
 
-### 11.3 Parameters Forwarded via `env_kwargs`
+### 10.3 Parameters Forwarded via `env_kwargs`
 
 | Parameter             | Type  | Default           | Description                                     |
 |-----------------------|-------|-------------------|-------------------------------------------------|
@@ -360,7 +343,7 @@ Any `FLATLAND_CONFIGS` parameter (e.g. `max_rails_between_cities`, `malfunction_
 
 ---
 
-## 12. Metrics Logged
+## 11. Metrics Logged
 
 Per-episode metrics emitted in `info["episode"]` by `VecCostMonitor`:
 
@@ -377,7 +360,7 @@ Per-episode metrics emitted in `info["episode"]` by `VecCostMonitor`:
 
 ---
 
-## 13. Key Design Decisions
+## 12. Key Design Decisions
 
 1. **Switch-only costs**: Costs and labels fire only at switches, not on straight track. On straight track, STOP still blocks the rail — there is no alternative action that reduces externality. Yield only helps at switches where the agent can reroute.
 
@@ -387,6 +370,6 @@ Per-episode metrics emitted in `info["episode"]` by `VecCostMonitor`:
 
 4. **Obs extension with slack features (always active)**: Even though the base tree observation already contains rich conflict signals, it does NOT contain timetable information (slack, deadlines). The 4 extra floats give the cost head the information it needs to distinguish "conflict with urgent train" from "conflict with non-urgent train." These features are always appended (not just for Split-RL) so that all algorithms see the same 256-dim observation.
 
-6. **Unmodified reward**: The full original Flatland reward (including collision) is used for SB3 training. Cost is a completely separate signal — not carved out of the reward.
+5. **Unmodified reward**: The full original Flatland reward (including collision) is used for SB3 training. Cost is a completely separate signal — not carved out of the reward.
 
-5. **Individual vs global termination**: Flatland terminates agents individually. Our wrapper batches termination so SB3 sees one episode end when ALL agents are done. This is critical for correct reward/cost statistics.
+6. **Individual vs global termination**: Flatland terminates agents individually. Our wrapper batches termination so SB3 sees one episode end when ALL agents are done. This is critical for correct reward/cost statistics.
