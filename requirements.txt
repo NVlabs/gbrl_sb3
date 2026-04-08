@@ -18,7 +18,7 @@ gymnasium[atari]==1.0.0
 gymnasium[accept-rom-license]==1.0.0
 gymnasium[box2d]==1.0.0
 gymnasium[mujoco]==1.0.0
-citylearn==2.5.0
+citylearn
 tensorboard==2.15.1
 --index-url https://test.pypi.org/simple/
 --extra-index-url https://pypi.org/simple/
