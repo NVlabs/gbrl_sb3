@@ -37,5 +37,7 @@ RUN pip install --no-build-isolation gfootball
 RUN pip install -r requirements.txt
 # CityLearn dataset (gitignored, must be copied explicitly)
 COPY datasets/citylearn/ datasets/citylearn/
+# Pre-cache CityLearn PV/battery sizing data to avoid GitHub downloads at runtime
+COPY datasets/citylearn/misc/ /root/.cache/citylearn/v2.3.1/misc/
 
 
