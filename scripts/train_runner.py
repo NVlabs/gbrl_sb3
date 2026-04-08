@@ -296,6 +296,7 @@ def _build_env(args):
     from env.mujoco_wrappers import MujocoTreeObsWrapper
     from env.highway import make_highway_vec_env
     from env.sumo import make_sumo_vec_env
+    from env.citylearn import SCENARIO_VEC_FACTORIES as CITYLEARN_SCENARIOS
     from utils.helpers import make_ram_atari_env, make_cost_vec_env, make_minigrid_vec_env
     from config.args import SAFETY_ENVS
 
@@ -377,6 +378,20 @@ def _build_env(args):
         if args.evaluate:
             eval_env = make_sumo_vec_env(env_name=args.env_name, n_envs=1,
                                         seed=args.seed, **sumo_kwargs)
+
+    elif args.env_type == 'citylearn':
+        citylearn_kwargs = dict(args.env_kwargs or {})
+        scenario = citylearn_kwargs.pop('scenario', 'arbitrage_vs_buffer')
+        make_cl_vec = CITYLEARN_SCENARIOS.get(scenario)
+        if make_cl_vec is None:
+            raise ValueError(f"Unknown CityLearn scenario '{scenario}'. "
+                             f"Choose from: {list(CITYLEARN_SCENARIOS)}")
+        env = make_cl_vec(env_name=args.env_name, n_envs=args.num_envs,
+                          seed=args.seed, **citylearn_kwargs)
+        if args.evaluate:
+            eval_env = make_cl_vec(env_name=args.env_name, n_envs=1,
+                                   seed=args.seed, **citylearn_kwargs)
+
     else:
         raise ValueError(f"Invalid env_type: {args.env_type}")
 
