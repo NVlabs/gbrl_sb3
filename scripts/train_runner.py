@@ -674,6 +674,10 @@ def train_runner():
             run_name = (getattr(args, 'run_name', None) or 'default') + \
                 f'_{args.algo_type}_{args.env_type}_{args.env_name}_seed_{args.seed}'
 
+            # Place wandb run dir alongside tensorboard so TB sync works
+            wandb_run_dir = str(log_dir_path)
+            os.makedirs(wandb_run_dir, exist_ok=True)
+
             init_kwargs = dict(
                 project=getattr(args, 'project', 'gbrl-sb3'),
                 entity=getattr(args, 'entity', None),
@@ -685,6 +689,7 @@ def train_runner():
                 save_code=False,
                 monitor_gym=True,
                 sync_tensorboard=True,
+                dir=wandb_run_dir,
             )
             if resume_from_str is not None:
                 init_kwargs["resume_from"] = resume_from_str
