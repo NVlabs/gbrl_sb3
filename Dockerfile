@@ -35,9 +35,10 @@ WORKDIR /gbrl_sb3
 RUN git fetch; git checkout dev; git pull
 RUN pip install --no-build-isolation gfootball
 RUN pip install -r requirements.txt
-# CityLearn dataset (gitignored, must be copied explicitly)
+# CityLearn dataset + PV/battery sizing data (must exist in Docker build context)
 COPY datasets/citylearn/ datasets/citylearn/
-# Pre-cache CityLearn PV/battery sizing data to avoid GitHub downloads at runtime
-COPY datasets/citylearn/misc/ /root/.cache/citylearn/v2.3.1/misc/
+# Place misc data in CityLearn cache so it never downloads from GitHub at runtime
+RUN mkdir -p /root/.cache/citylearn/v2.3.1/misc && \
+    cp datasets/citylearn/misc/* /root/.cache/citylearn/v2.3.1/misc/
 
 
