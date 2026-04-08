@@ -39,7 +39,6 @@ RUN pip install --no-build-isolation gfootball
 RUN pip install sumo-rl
 RUN pip install "pettingzoo==1.24.3"
 RUN pip install wandb
-RUN pip install flatland-rl
-RUN pip install highway-env
+RUN pip install citylearn
 
 
