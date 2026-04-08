@@ -33,12 +33,12 @@ WORKDIR /
 RUN git clone https://github.com/NVlabs/gbrl_sb3.git
 WORKDIR /gbrl_sb3
 RUN git fetch; git checkout dev
-RUN git pull && pip install -r requirements.txt
 RUN pip install psutil
 RUN pip install --no-build-isolation gfootball
 RUN pip install sumo-rl
 RUN pip install "pettingzoo==1.24.3"
 RUN pip install wandb
 RUN pip install citylearn
+RUN git pull && pip install -r requirements.txt
 
 

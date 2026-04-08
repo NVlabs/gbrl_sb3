@@ -12,7 +12,7 @@ Wrappers around SUMO-RL for use with SB3 via shared-policy parameter sharing.
 SUMO-RL exposes a PettingZoo ParallelEnv where each traffic signal is an agent
 with its own observation/action space. For shared-policy training (single SB3
 policy controlling all agents), we convert to a VecEnv where each agent is a
-separate "environment slot" — identical to the Flatland wrapper approach.
+separate "environment slot" for shared-policy parameter sharing.
 
 Pipeline:  sumo_rl.parallel_env(...)
         → SumoRewardCostWrapper  (reward/cost split via native SUMO events)

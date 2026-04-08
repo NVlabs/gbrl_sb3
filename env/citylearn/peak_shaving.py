@@ -8,16 +8,19 @@
 ##############################################################################
 """Scenario C — Electricity Cost vs Peak-Demand Control (CMDP).
 
-reward  =  negative price-weighted electricity consumption  (minimize spending)
-cost    =  daily-peak penalty: fires when an hourly net consumption sets a
-           new daily maximum, penalising the agent for creating demand
-           spikes that translate into demand charges.
-label   =  1 when  (1) current net consumption is near or above the running
-           daily peak,  (2) non-shiftable load is high (the spike is
-           exogenous, not caused by storage charging),  (3) usable
-           electrical storage exists (discharge could shave the peak),
-           and  (4) price is not extreme (reward does not already
-           dominate the decision).
+reward  =  negative price-weighted net electricity cash-flow  (maximize savings)
+cost    =  daily-peak penalty: fires when district-total net consumption
+           sets a new rolling daily maximum, penalising demand spikes
+           that translate into demand charges.
+label   =  1 when  (1) district-total NEC is near or above the running
+           daily peak,  (2) district-total non-shiftable load is high
+           (the spike is exogenous, not caused by storage charging),
+           (3) usable electrical storage exists (discharge could shave
+           the peak),  and  (4) price is not extreme (reward does not
+           already dominate the decision).
+
+All aggregation uses **district total** (sum across buildings), because
+demand charges are levied on aggregate grid import, not per-building mean.
 
 Active actions: [dhw_storage, electrical_storage, cooling_device] per
 building.  Discharging electrical storage directly reduces net grid import,
@@ -57,31 +60,31 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
 
     Cost — daily peak penalty
     ~~~~~~~~~~~~~~~~~~~~~~~~~
-    After each step, compute the maximum net electricity consumption over
-    the last ``peak_lookback`` hours (rolling daily peak).  If the current
-    step's consumption sets a *new* rolling peak, cost is:
+    After each step, compute the maximum district-total net electricity
+    consumption over the last ``peak_lookback`` hours (rolling daily
+    peak).  If the current step's total sets a *new* rolling peak:
 
-        cost  =  clamp( (nec - prev_peak) / prev_peak,  0,  1 )
+        cost  =  clamp( (total_nec - prev_peak) / prev_peak,  0,  1 )
 
-    Otherwise cost is 0.  A fresh rolling peak that exceeds the previous
-    one by 100 %+ of the old peak saturates at 1.
+    Otherwise cost is 0.
 
     Label — peak-shaving decision frontier
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     All four conditions must hold simultaneously:
 
-    1. Current mean net consumption across buildings is ≥
+    1. Current district-total NEC is ≥
        ``peak_proximity × rolling_daily_peak`` — the system is near or
        at the point of setting a new peak.
-    2. Mean non-shiftable load across buildings is above the
-       ``nsl_quantile``-th percentile — the spike is exogenous, not
-       caused by the agent's own storage charging.
+    2. District-total non-shiftable load is above the
+       ``nsl_quantile``-th percentile of historical district-total NSL —
+       the spike is exogenous, not caused by the agent's own storage
+       charging.
     3. At least one building has usable electrical storage
        (SOC > ``soc_usable_thresh``), giving the agent a discharge lever.
-    4. Current max electricity price is **below** the ``price_quantile_upper``
-       threshold — at extreme prices the reward signal already encourages
-       reducing consumption, so the label should only fire where cost and
-       reward *disagree*.
+    4. Current max electricity price is **below** the
+       ``price_quantile_upper`` threshold — at extreme prices the reward
+       signal already encourages reducing consumption, so the label
+       should only fire where cost and reward *disagree*.
 
     No storage → label = 0.
     """
@@ -113,20 +116,27 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
         if not (hasattr(cl_env, "buildings") and cl_env.buildings):
             return
 
-        # Non-shiftable load threshold from historical data
-        all_nsl = []
-        for b in cl_env.buildings:
+        # Non-shiftable load threshold from historical district-total NSL.
+        # Sum across buildings per hour, then take quantile.
+        buildings = cl_env.buildings
+        n_hours = None
+        for b in buildings:
             nsl = b.non_shiftable_load
             if hasattr(nsl, "__len__") and len(nsl) > 0:
-                all_nsl.extend(nsl)
-        if all_nsl:
+                n_hours = len(nsl) if n_hours is None else min(n_hours, len(nsl))
+        if n_hours is not None and n_hours > 0:
+            hourly_totals = np.zeros(n_hours)
+            for b in buildings:
+                nsl = b.non_shiftable_load
+                if hasattr(nsl, "__len__") and len(nsl) >= n_hours:
+                    hourly_totals += np.array(nsl[:n_hours], dtype=float)
             self._nsl_threshold = float(
-                np.quantile(all_nsl, self._nsl_quantile)
+                np.quantile(hourly_totals, self._nsl_quantile)
             )
 
         # Price upper bound
         all_prices = []
-        for b in cl_env.buildings:
+        for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
                 ep = b.pricing.electricity_pricing
                 if hasattr(ep, "__len__") and len(ep) > 0:
@@ -137,53 +147,56 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
             )
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Helpers — all use district total (sum across buildings)
     # ------------------------------------------------------------------
-    def _mean_current_nec(self) -> Optional[float]:
-        """Mean net electricity consumption at current timestep."""
-        values = []
+    def _total_current_nec(self) -> Optional[float]:
+        """District-total net electricity consumption at current timestep."""
+        total = 0.0
+        n = 0
         for b in self._get_buildings():
             nec = self._at_timestep(b.net_electricity_consumption)
             if nec is not None:
-                values.append(nec)
-        return float(np.mean(values)) if values else None
+                total += nec
+                n += 1
+        return float(total) if n > 0 else None
 
     def _rolling_daily_peak(self) -> Optional[float]:
-        """Max mean-NEC over the last ``peak_lookback`` hours (excl. current)."""
-        ts = self._get_time_step() - 1  # current index (already stepped)
+        """Max district-total NEC over the last ``peak_lookback`` hours
+        (excluding the current hour).  Only considers positive totals."""
+        ts = self._get_time_step() - 1  # current index
         lookback_start = max(0, ts - self._peak_lookback)
         if lookback_start >= ts:
             return None
 
-        # Compute mean NEC across buildings for each hour in lookback
         buildings = self._get_buildings()
         if not buildings:
             return None
 
         peak = None
         for t in range(lookback_start, ts):
-            hour_sum = 0.0
+            hour_total = 0.0
             n = 0
             for b in buildings:
                 nec_arr = b.net_electricity_consumption
                 if hasattr(nec_arr, "__len__") and 0 <= t < len(nec_arr):
-                    hour_sum += float(nec_arr[t])
+                    hour_total += float(nec_arr[t])
                     n += 1
-            if n > 0:
-                hour_mean = hour_sum / n
-                if peak is None or hour_mean > peak:
-                    peak = hour_mean
+            if n > 0 and hour_total > 0:
+                if peak is None or hour_total > peak:
+                    peak = hour_total
         return peak
 
-    def _mean_current_nsl(self) -> Optional[float]:
-        """Mean non-shiftable load at current timestep."""
-        values = []
+    def _total_current_nsl(self) -> Optional[float]:
+        """District-total non-shiftable load at current timestep."""
+        total = 0.0
+        n = 0
         for b in self._get_buildings():
             nsl = b.non_shiftable_load
             ts = self._get_time_step() - 1
             if hasattr(nsl, "__len__") and 0 <= ts < len(nsl):
-                values.append(float(nsl[ts]))
-        return float(np.mean(values)) if values else None
+                total += float(nsl[ts])
+                n += 1
+        return float(total) if n > 0 else None
 
     # ------------------------------------------------------------------
     # Cost
@@ -191,11 +204,11 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
     def _compute_cost(self, obs) -> float:
         """Peak-overshoot cost ∈ [0, 1].
 
-        Fires when the current step's mean NEC exceeds the rolling daily
-        peak.  The excess is normalised by the previous peak.
+        Fires when the current district-total NEC exceeds the rolling
+        daily peak.  The excess is normalised by the previous peak.
         """
         self._ensure_base_init()
-        current_nec = self._mean_current_nec()
+        current_nec = self._total_current_nec()
         if current_nec is None:
             return 0.0
 
@@ -218,8 +231,8 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        # 1) Current consumption near daily peak
-        current_nec = self._mean_current_nec()
+        # 1) District-total consumption near daily peak
+        current_nec = self._total_current_nec()
         if current_nec is None:
             return 0
         prev_peak = self._rolling_daily_peak()
@@ -228,11 +241,11 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
         if current_nec < self._peak_proximity * prev_peak:
             return 0
 
-        # 2) Non-shiftable load is high (spike is exogenous)
+        # 2) District-total non-shiftable load is high (spike is exogenous)
         if self._nsl_threshold is None:
             return 0
-        mean_nsl = self._mean_current_nsl()
-        if mean_nsl is None or mean_nsl <= self._nsl_threshold:
+        total_nsl = self._total_current_nsl()
+        if total_nsl is None or total_nsl <= self._nsl_threshold:
             return 0
 
         # 3) Usable storage exists

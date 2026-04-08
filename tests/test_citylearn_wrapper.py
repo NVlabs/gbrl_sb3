@@ -125,25 +125,31 @@ class TestArbitrageCost:
 class TestArbitrageLabel:
 
     def test_label_requires_frontier_soc(self, arb_env):
-        """Label=1 requires mean SOC within [safety, safety + band]."""
+        """Label=1 requires mean SOC within [safety, safety + band].
+
+        Label is computed pre-step, so we snapshot SOC before stepping
+        and check the returned label against that snapshot.
+        """
         env = arb_env
         obs, info = env.reset()
         frontier_lower = env._soc_safety_level
         frontier_upper = env._soc_safety_level + env._soc_frontier_band
 
         for _ in range(200):
+            # Snapshot pre-step state (what the label was computed from)
+            pre_soc = env._mean_electrical_soc()
+
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                mean_soc = env._mean_electrical_soc()
-                assert mean_soc is not None
-                assert mean_soc >= frontier_lower - 1e-6, (
-                    f"Label=1 but mean_soc={mean_soc:.4f} < "
+                assert pre_soc is not None
+                assert pre_soc >= frontier_lower - 1e-6, (
+                    f"Label=1 but pre-step mean_soc={pre_soc:.4f} < "
                     f"frontier_lower={frontier_lower:.4f}"
                 )
-                assert mean_soc <= frontier_upper + 1e-6, (
-                    f"Label=1 but mean_soc={mean_soc:.4f} > "
+                assert pre_soc <= frontier_upper + 1e-6, (
+                    f"Label=1 but pre-step mean_soc={pre_soc:.4f} > "
                     f"frontier_upper={frontier_upper:.4f}"
                 )
 
@@ -158,7 +164,7 @@ class TestArbitrageLabel:
 class TestPeakShavingCost:
 
     def test_cost_zero_below_rolling_peak(self, peak_env):
-        """Cost must be 0 when current NEC ≤ rolling daily peak."""
+        """Cost must be 0 when current total NEC ≤ rolling daily peak."""
         env = peak_env
         obs, info = env.reset()
 
@@ -166,7 +172,7 @@ class TestPeakShavingCost:
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
-            current_nec = env._mean_current_nec()
+            current_nec = env._total_current_nec()
             prev_peak = env._rolling_daily_peak()
 
             if current_nec is not None and prev_peak is not None and prev_peak > 0:
@@ -180,7 +186,7 @@ class TestPeakShavingCost:
                 obs, info = env.reset()
 
     def test_cost_positive_above_rolling_peak(self, peak_env):
-        """Cost must be positive when current NEC exceeds rolling peak."""
+        """Cost must be positive when current total NEC exceeds rolling peak."""
         env = peak_env
         obs, info = env.reset()
 
@@ -188,7 +194,7 @@ class TestPeakShavingCost:
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
-            current_nec = env._mean_current_nec()
+            current_nec = env._total_current_nec()
             prev_peak = env._rolling_daily_peak()
 
             if (current_nec is not None and prev_peak is not None
@@ -205,28 +211,32 @@ class TestPeakShavingCost:
 class TestPeakShavingLabel:
 
     def test_label_requires_near_peak_and_high_nsl(self, peak_env):
-        """Label=1 requires NEC near daily peak AND high non-shiftable load."""
+        """Label=1 requires total NEC near daily peak AND high total NSL.
+
+        Label is computed pre-step; snapshot values before stepping.
+        """
         env = peak_env
         obs, info = env.reset()
 
         for _ in range(200):
+            # Snapshot pre-step state
+            pre_nec = env._total_current_nec()
+            pre_peak = env._rolling_daily_peak()
+            pre_nsl = env._total_current_nsl()
+
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                current_nec = env._mean_current_nec()
-                prev_peak = env._rolling_daily_peak()
-                mean_nsl = env._mean_current_nsl()
-
-                assert current_nec is not None
-                assert prev_peak is not None and prev_peak > 0
-                assert current_nec >= env._peak_proximity * prev_peak - 1e-6, (
-                    f"Label=1 but nec={current_nec:.4f} < "
-                    f"{env._peak_proximity}×peak={prev_peak:.4f}"
+                assert pre_nec is not None
+                assert pre_peak is not None and pre_peak > 0
+                assert pre_nec >= env._peak_proximity * pre_peak - 1e-6, (
+                    f"Label=1 but pre-step nec={pre_nec:.4f} < "
+                    f"{env._peak_proximity}×peak={pre_peak:.4f}"
                 )
-                assert mean_nsl is not None
-                assert mean_nsl > env._nsl_threshold - 1e-6, (
-                    f"Label=1 but mean_nsl={mean_nsl:.4f} <= "
+                assert pre_nsl is not None
+                assert pre_nsl > env._nsl_threshold - 1e-6, (
+                    f"Label=1 but pre-step total_nsl={pre_nsl:.4f} <= "
                     f"nsl_threshold={env._nsl_threshold:.4f}"
                 )
 
@@ -268,29 +278,41 @@ class TestCarbonAwareCost:
 
 class TestCarbonAwareLabel:
 
-    def test_label_requires_high_carbon_low_price(self, carbon_env):
-        """Label=1 requires high carbon AND low price (the disagreement)."""
+    def test_label_requires_high_carbon_low_price_and_import(self, carbon_env):
+        """Label=1 requires high carbon, low price, AND district importing.
+
+        Label is computed pre-step; snapshot values before stepping.
+        """
         env = carbon_env
         obs, info = env.reset()
 
         for _ in range(200):
+            # Snapshot pre-step state
+            buildings = env._get_buildings()
+            pre_carbon = env._max_current_carbon(buildings)
+            pre_price = env._max_current_price(buildings)
+            pre_total_nec = sum(
+                env._at_timestep(b.net_electricity_consumption) or 0.0
+                for b in buildings
+            )
+
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                buildings = env._get_buildings()
-                max_carbon = env._max_current_carbon(buildings)
-                max_price = env._max_current_price(buildings)
-
-                assert max_carbon is not None
-                assert max_carbon > env._carbon_threshold - 1e-6, (
-                    f"Label=1 but carbon={max_carbon:.4f} <= "
+                assert pre_carbon is not None
+                assert pre_carbon > env._carbon_threshold - 1e-6, (
+                    f"Label=1 but pre-step carbon={pre_carbon:.4f} <= "
                     f"threshold={env._carbon_threshold:.4f}"
                 )
-                assert max_price is not None
-                assert max_price <= env._price_threshold + 1e-6, (
-                    f"Label=1 but price={max_price:.4f} > "
+                assert pre_price is not None
+                assert pre_price <= env._price_threshold + 1e-6, (
+                    f"Label=1 but pre-step price={pre_price:.4f} > "
                     f"threshold={env._price_threshold:.4f}"
+                )
+                assert pre_total_nec > 0, (
+                    f"Label=1 but pre-step district NEC={pre_total_nec:.4f} "
+                    f"<= 0 (no import pressure)"
                 )
 
             if term or trunc:
@@ -319,3 +341,92 @@ class TestInfoKeys:
         assert "original_reward" in info
         assert isinstance(info["cost"], float)
         assert info["safety_label"] in (0, 1)
+
+
+# -----------------------------------------------------------------------
+# Action-gap test — Arbitrage vs Buffer
+# -----------------------------------------------------------------------
+
+class TestArbitrageActionGap:
+    """In label=1 states, discharging battery should improve reward but
+    worsen cost relative to holding/charging.
+
+    Uses two identical envs stepped with the same actions up to a label=1
+    state, then diverges: env_a discharges, env_b holds.
+    """
+
+    def test_discharge_vs_hold_at_frontier(self):
+        """At label=1: discharge → higher reward, higher cost (or both 0)."""
+        from env.citylearn.arbitrage_vs_buffer import make_arbitrage_vs_buffer_env
+        import numpy as np
+
+        # Two identical envs (deterministic — same schema, same weather)
+        env_a = make_arbitrage_vs_buffer_env()
+        env_b = make_arbitrage_vs_buffer_env()
+        obs_a, _ = env_a.reset()
+        obs_b, _ = env_b.reset()
+
+        # Action layout per building: [dhw_storage, electrical_storage, cooling_device]
+        # 3 buildings → 9 actions.  Index 1, 4, 7 = electrical_storage.
+        n_act = env_a.action_space.shape[0]
+
+        # Step both envs identically until we hit label=1
+        found = 0
+        reward_gaps = []  # reward_discharge - reward_hold
+        cost_gaps = []    # cost_discharge - cost_hold
+
+        for step_i in range(718):
+            # Use the same random action in both envs
+            action = env_a.action_space.sample()
+            obs_a, r_a, term_a, trunc_a, info_a = env_a.step(action)
+            obs_b, r_b, term_b, trunc_b, info_b = env_b.step(action)
+
+            if info_a["safety_label"] == 1:
+                # Diverge at the NEXT step: discharge in A, hold in B
+                discharge_action = np.zeros(n_act, dtype=np.float32)
+                hold_action = np.zeros(n_act, dtype=np.float32)
+                for idx in [1, 4, 7]:  # electrical_storage per building
+                    discharge_action[idx] = -1.0  # full discharge
+                    hold_action[idx] = 0.0         # hold
+
+                obs_a, r_dis, term_a, trunc_a, info_dis = env_a.step(
+                    discharge_action
+                )
+                obs_b, r_hold, term_b, trunc_b, info_hold = env_b.step(
+                    hold_action
+                )
+
+                reward_gaps.append(r_dis - r_hold)
+                cost_gaps.append(info_dis["cost"] - info_hold["cost"])
+                found += 1
+
+                # Re-sync: both envs already have different state now,
+                # but we keep going to collect more samples.  For strict
+                # causal isolation we'd need to re-create envs, but
+                # even drifted samples test the direction of the gap.
+
+            if term_a or trunc_a:
+                break
+
+        assert found >= 2, (
+            f"Expected at least 2 label=1 states to test, found {found}"
+        )
+
+        # Statistical check: discharge should tend to improve reward
+        # (higher = less spending because high price × negative NEC)
+        mean_reward_gap = np.mean(reward_gaps)
+        assert mean_reward_gap > 0, (
+            f"Expected positive mean reward gap (discharge > hold), "
+            f"got {mean_reward_gap:.6f} from {found} samples: {reward_gaps}"
+        )
+
+        # Cost should tend to worsen (higher) with discharge because
+        # SOC drops closer to (or below) safety level.
+        mean_cost_gap = np.mean(cost_gaps)
+        assert mean_cost_gap >= 0, (
+            f"Expected non-negative mean cost gap (discharge ≥ hold), "
+            f"got {mean_cost_gap:.6f} from {found} samples: {cost_gaps}"
+        )
+
+        env_a.close()
+        env_b.close()

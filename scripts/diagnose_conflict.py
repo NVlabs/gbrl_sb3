@@ -1,6 +1,6 @@
 #!/usr/bin/env python3.10
 """
-Diagnostic script: empirically measure whether SUMO and Flatland tasks
+Diagnostic script: empirically measure whether SUMO tasks
 generate genuine reward-vs-cost conflicts for SPLIT-RL.
 
 Measures:
@@ -8,12 +8,11 @@ Measures:
   2. Label firing rate and label-observation predictability
   3. Correlation(reward, cost) — negative = conflict, positive = no conflict
   4. For SUMO: side-street demand verification
-  5. For Flatland: per-branch congestion analysis
 
 Usage:
   python3.10 scripts/diagnose_conflict.py --env sumo --scenario bus_priority --network arterial
   python3.10 scripts/diagnose_conflict.py --env sumo --scenario bus_priority --network grid
-  python3.10 scripts/diagnose_conflict.py --env flatland
+  python3.10 scripts/diagnose_conflict.py --env sumo
 """
 import argparse
 import sys
@@ -337,201 +336,9 @@ def diagnose_sumo(
     }
 
 
-def diagnose_flatland(n_episodes: int = 10, verbose: bool = True):
-    """Run Flatland small and measure conflict statistics."""
-    from env.flatland import (
-        make_flatland_vec_env,
-        compute_danger_label,
-        compute_congestion_cost,
-    )
-
-    print("\n" + "=" * 70)
-    print("FLATLAND SMALL CONFLICT DIAGNOSTIC")
-    print("  reward = non-collision terms (progress)")
-    print("  cost   = congestion (action-dependent)")
-    print("  label  = danger_label (any-branch congestion)")
-    print("=" * 70)
-
-    env = make_flatland_vec_env(
-        env_name="flatland-small-v0",
-        n_envs=1,
-        seed=42,
-        cost_fn="congestion",
-        use_original_reward=False,
-    )
-
-    n_slots = env.num_envs  # agents × envs
-    print(f"  VecEnv slots (agents × envs): {n_slots}")
-
-    # Flatland obs: 252 floats (depth=2, 21 nodes, 12 features each)
-    n_nodes = 21  # (3^3 - 1) / 2 for depth=2
-    branch_size = (n_nodes - 1) // 3  # nodes per branch subtree
-
-    # Accumulators
-    all_rewards = []
-    all_costs = []
-    all_labels = []
-    all_obs = []
-    conflict_steps = 0
-    total_steps = 0
-    ep_count = 0
-
-    # Per-branch congestion tracking
-    branches_congested_counts = defaultdict(int)  # "L", "F", "R", "LF", "FR", "LR", "LFR", "none"
-    label_cost_mismatch = 0  # label=1 but cost=0
-
-    ep_rewards = np.zeros(n_slots)
-    ep_costs = np.zeros(n_slots)
-    ep_steps = 0
-
-    obs = env.reset()
-
-    while ep_count < n_episodes:
-        actions = np.array([env.action_space.sample() for _ in range(n_slots)])
-        next_obs, rewards, dones, infos = env.step(actions)
-
-        for i in range(n_slots):
-            cost = infos[i].get("cost", 0.0)
-            label = infos[i].get("safety_label", 0)
-            r = rewards[i]
-
-            all_rewards.append(r)
-            all_costs.append(cost)
-            all_labels.append(label)
-            all_obs.append(obs[i].copy())
-
-            if r > 0 and cost > 0:
-                conflict_steps += 1
-
-            # Label-cost mismatch analysis
-            if label == 1 and cost == 0:
-                label_cost_mismatch += 1
-
-            total_steps += 1
-            ep_rewards[i] += r
-            ep_costs[i] += cost
-
-            # Per-branch congestion analysis
-            ob = obs[i]
-            data = ob[:n_nodes * 6].reshape(n_nodes, 6)
-
-            # Branch roots: left=1, forward=1+branch_size, right=1+2*branch_size
-            branches = {
-                "L": 1,
-                "F": 1 + branch_size,
-                "R": 1 + 2 * branch_size,
-            }
-            congested_branches = []
-            for bname, bidx in branches.items():
-                if bidx < n_nodes:
-                    dist_other = data[bidx, 2]
-                    dist_conflict = data[bidx, 3]
-                    if (dist_other > 0 and dist_other <= 0.5) or \
-                       (dist_conflict > 0 and dist_conflict <= 0.5):
-                        congested_branches.append(bname)
-            key = "".join(congested_branches) if congested_branches else "none"
-            branches_congested_counts[key] += 1
-
-        ep_steps += 1
-        obs = next_obs
-
-        if any(dones):
-            ep_count += 1
-            if verbose:
-                mean_r = np.mean(ep_rewards)
-                mean_c = np.mean(ep_costs)
-                print(f"  Episode {ep_count}: steps={ep_steps}, "
-                      f"mean_reward={mean_r:.2f}, mean_cost={mean_c:.2f}")
-            ep_rewards[:] = 0
-            ep_costs[:] = 0
-            ep_steps = 0
-
-    env.close()
-
-    all_rewards = np.array(all_rewards)
-    all_costs = np.array(all_costs)
-    all_labels = np.array(all_labels)
-    all_obs = np.array(all_obs)
-
-    print(f"\n--- FLATLAND CONFLICT STATISTICS ({total_steps} total transitions) ---")
-
-    # 1. Firing rates
-    cost_nonzero = np.sum(all_costs > 0)
-    label_fire = np.sum(all_labels > 0)
-    reward_positive = np.sum(all_rewards > 0)
-
-    print(f"  Cost > 0:      {cost_nonzero}/{total_steps} = {cost_nonzero/total_steps:.3f}")
-    print(f"  Label = 1:     {label_fire}/{total_steps} = {label_fire/total_steps:.3f}")
-    print(f"  Reward > 0:    {reward_positive}/{total_steps} = {reward_positive/total_steps:.3f}")
-
-    # 2. Co-occurrence
-    co_r_pos_c_pos = np.sum((all_rewards > 0) & (all_costs > 0))
-    co_r_neg_c_pos = np.sum((all_rewards <= 0) & (all_costs > 0))
-    co_r_pos_c_zero = np.sum((all_rewards > 0) & (all_costs == 0))
-    co_r_neg_c_zero = np.sum((all_rewards <= 0) & (all_costs == 0))
-    print(f"\n  Reward-Cost co-occurrence matrix:")
-    print(f"                    cost=0         cost>0")
-    print(f"    reward > 0:  {co_r_pos_c_zero:>8d}     {co_r_pos_c_pos:>8d}")
-    print(f"    reward <= 0: {co_r_neg_c_zero:>8d}     {co_r_neg_c_pos:>8d}")
-
-    print(f"\n  CONFLICT co-occurrence (reward > 0 AND cost > 0):")
-    print(f"    {conflict_steps}/{total_steps} = {conflict_steps/total_steps:.3f}")
-
-    # 3. Label-cost mismatch
-    if label_fire > 0:
-        mismatch_rate = label_cost_mismatch / label_fire
-        print(f"\n  Label=1 but cost=0 (FALSE POSITIVE labels):")
-        print(f"    {label_cost_mismatch}/{label_fire} = {mismatch_rate:.3f}")
-        if mismatch_rate > 0.5:
-            print("    WARNING: >50% of label=1 states have zero cost!")
-            print("    The label is broader than the cost → noisy gradient routing.")
-
-    # 4. Correlation
-    if np.std(all_costs) > 1e-8 and np.std(all_rewards) > 1e-8:
-        corr = np.corrcoef(all_rewards, all_costs)[0, 1]
-        print(f"\n  Pearson correlation(reward, cost): {corr:.4f}")
-        if corr > 0.1:
-            print("    WARNING: POSITIVE correlation — no conflict.")
-        elif corr < -0.1:
-            print("    GOOD: Negative correlation — conflict exists.")
-        else:
-            print("    WEAK: Near-zero correlation.")
-
-    # 5. Per-branch congestion analysis
-    print(f"\n  Per-branch congestion frequency (which branches are congested):")
-    for key in sorted(branches_congested_counts.keys(), key=lambda k: -branches_congested_counts[k]):
-        count = branches_congested_counts[key]
-        pct = count / total_steps * 100
-        flag = ""
-        if key == "LFR":
-            flag = " ← TRUE CONFLICT (all branches blocked)"
-        elif len(key) >= 2 and key != "none":
-            flag = " ← partial conflict"
-        elif key == "none":
-            flag = " ← no congestion"
-        print(f"    {key or 'none':>8s}: {count:>8d} ({pct:5.1f}%){flag}")
-
-    all_congested_pct = branches_congested_counts.get("LFR", 0) / total_steps * 100
-    any_congested_pct = (total_steps - branches_congested_counts.get("none", 0)) / total_steps * 100
-    print(f"\n  States with ANY branch congested: {any_congested_pct:.1f}%")
-    print(f"  States with ALL branches congested: {all_congested_pct:.1f}%")
-    if all_congested_pct < 5:
-        print("    WARNING: All-branches-congested is <5% — agent can almost always")
-        print("    detour, so the conflict is rarely forced.")
-
-    return {
-        "cost_rate": cost_nonzero / total_steps,
-        "label_rate": label_fire / total_steps,
-        "conflict_rate": conflict_steps / total_steps,
-        "mismatch_rate": label_cost_mismatch / max(label_fire, 1),
-        "all_congested_pct": all_congested_pct,
-        "total_steps": total_steps,
-    }
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Diagnose SPLIT-RL conflict in SUMO/Flatland")
-    parser.add_argument("--env", choices=["sumo", "flatland", "both"], default="sumo")
+    parser = argparse.ArgumentParser(description="Diagnose SPLIT-RL conflict in SUMO")
+    parser.add_argument("--env", choices=["sumo"], default="sumo")
     parser.add_argument("--episodes", type=int, default=3, help="Episodes per env")
     parser.add_argument("--scenario", default="bus_priority",
                         choices=["bus_priority", "convoy_priority", "spillback", "side_queue"],
@@ -554,13 +361,6 @@ def main():
             print(f"\nSUMO diagnostic FAILED: {e}")
             import traceback; traceback.print_exc()
 
-    if args.env in ("flatland", "both"):
-        try:
-            results["flatland"] = diagnose_flatland(n_episodes=args.episodes)
-        except Exception as e:
-            print(f"\nFlatland diagnostic FAILED: {e}")
-            import traceback; traceback.print_exc()
-
     # Summary
     print("\n" + "=" * 70)
     print("SUMMARY: IS THERE A DEFENSIBLE CONFLICT?")
@@ -580,17 +380,6 @@ def main():
             print("    VERDICT: NO CONFLICT — cost signal is dead (never/rarely fires)")
         elif not has_conflict:
             print("    VERDICT: NO CONFLICT — cost and reward don't co-occur")
-        elif env_name == "flatland":
-            mm = stats.get("mismatch_rate", 0)
-            ac = stats.get("all_congested_pct", 0)
-            if mm > 0.5:
-                print(f"    VERDICT: WEAK — {mm:.0%} of label=1 states have zero cost "
-                      f"(label is broader than cost)")
-            if ac < 5:
-                print(f"    VERDICT: WEAK — only {ac:.1f}% of states have all-branch "
-                      f"congestion (agent can detour)")
-            if mm <= 0.5 and ac >= 5:
-                print("    VERDICT: CONFLICT EXISTS and is structurally sound")
         else:
             print("    VERDICT: Conflict frequency looks adequate. Check label predictability.")
 

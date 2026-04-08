@@ -69,13 +69,21 @@ class CityLearnBaseWrapper(gym.Wrapper):
 
     Reward
     ------
-    Replaces the native CityLearn reward (negative net consumption) with
-    **negative price-weighted electricity cost**:
+    Replaces the native CityLearn reward with **negative price-weighted
+    net electricity cash-flow**:
 
         reward_t  =  -(1/N) Σ_i  consumption_i(t) × price_i(t)
 
-    Higher reward ⟹ lower spending.  The native reward is preserved in
-    ``info["original_reward"]`` for comparison.
+    Import (consumption > 0) incurs cost; export (consumption < 0) earns
+    revenue.  Higher reward ⟹ better net cash-flow.  The native reward
+    is preserved in ``info["original_reward"]`` for comparison.
+
+    Label timing
+    ------------
+    ``safety_label`` is computed **before** ``env.step(action)`` from
+    the state the agent observed when it chose the action.  This makes
+    the label a *pre-decision* frontier indicator, matching the ``obs``
+    stored in the rollout buffer.
 
     Subclass contract
     -----------------
@@ -116,7 +124,7 @@ class CityLearnBaseWrapper(gym.Wrapper):
         return self.unwrapped.buildings
 
     def _get_time_step(self) -> int:
-        """Current time_step (already incremented after step)."""
+        """CityLearn's internal time_step counter."""
         return self.unwrapped.time_step
 
     @staticmethod
@@ -197,12 +205,21 @@ class CityLearnBaseWrapper(gym.Wrapper):
         return obs, info
 
     def step(self, action):
+        # ---- pre-step: label from the state the agent OBSERVED --------
+        # _at_timestep / _latest read the current observable state before
+        # the environment advances, so the label is a *pre-decision*
+        # frontier indicator (matches the obs stored in the rollout buffer).
+        self._ensure_base_init()
+        pre_label = self._compute_label(None)
+
+        # ---- step ----------------------------------------------------
         obs, native_reward, terminated, truncated, info = self.env.step(action)
         info = dict(info) if info else {}
 
+        # ---- post-step: reward & cost from the transition outcome ----
         reward = self._compute_electricity_cost_reward()
         info["original_reward"] = float(native_reward)
         info["cost"] = self._compute_cost(obs)
-        info["safety_label"] = self._compute_label(obs)
+        info["safety_label"] = pre_label
 
         return obs, float(reward), terminated, truncated, info

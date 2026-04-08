@@ -16,7 +16,6 @@ gymnasium[box2d]==1.0.0
 gymnasium[mujoco]==1.0.0
 citylearn
 tensorboard==2.15.1
-ray[rllib]
 --index-url https://test.pypi.org/simple/
 --extra-index-url https://pypi.org/simple/
 --pre

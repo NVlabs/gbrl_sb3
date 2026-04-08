@@ -294,7 +294,6 @@ def _build_env(args):
     from env.wrappers import (CategoricalDummyVecEnv,
                               MiniGridCategoricalObservationWrapper)
     from env.mujoco_wrappers import MujocoTreeObsWrapper
-    from env.flatland import make_flatland_vec_env
     from env.highway import make_highway_vec_env
     from env.sumo import make_sumo_vec_env
     from utils.helpers import make_ram_atari_env, make_cost_vec_env, make_minigrid_vec_env
@@ -370,14 +369,6 @@ def _build_env(args):
         if args.evaluate:
             eval_env = make_vec_env(args.env_name, n_envs=1, env_kwargs=args.env_kwargs,
                                    vec_env_cls=DummyVecEnv)
-
-    elif args.env_type == 'flatland':
-        flatland_kwargs = args.env_kwargs or {}
-        env = make_flatland_vec_env(env_name=args.env_name, n_envs=args.num_envs,
-                                    seed=args.seed, **flatland_kwargs)
-        if args.evaluate:
-            eval_env = make_flatland_vec_env(env_name=args.env_name, n_envs=1,
-                                            seed=args.seed, **flatland_kwargs)
 
     elif args.env_type == 'sumo':
         sumo_kwargs = args.env_kwargs or {}

@@ -8,18 +8,15 @@
 ##############################################################################
 """Scenario D — Electricity Cost vs Carbon Emissions (CMDP).
 
-reward  =  negative price-weighted electricity consumption  (minimize spending)
-cost    =  carbon-weighted electricity consumption: fires when the agent
-           imports electricity during high carbon-intensity periods,
-           penalising cheap-but-dirty grid usage.
+reward  =  negative price-weighted net electricity cash-flow  (maximize savings)
+cost    =  dirty-grid import penalty: fires when the agent imports
+           electricity during high carbon-intensity periods, penalising
+           cheap-but-dirty grid usage.
 label   =  1 when  (1) carbon intensity is above a high threshold,
            (2) electricity price is below a moderate threshold (the
-           disagreement: grid import is cheap but dirty),  (3) usable
+           disagreement: grid import is cheap but dirty),  (3) the
+           district is currently importing (NEC > 0),  and  (4) usable
            electrical storage exists (discharge avoids grid import).
-
-In this schema, price–carbon Pearson correlation is only 0.23, and 25 %
-of timesteps have low price + high carbon — giving the label a healthy
-base rate and a genuine cost–reward conflict.
 """
 
 from __future__ import annotations
@@ -48,35 +45,30 @@ DEFAULT_SOC_USABLE_THRESH = 0.15 # SOC above this → storage can discharge
 # -----------------------------------------------------------------------
 
 class CarbonAwareWrapper(CityLearnBaseWrapper):
-    """CMDP: minimise electricity cost subject to carbon-emission constraint.
+    """CMDP: minimise electricity cost subject to carbon constraint.
 
-    Cost — carbon intensity of grid imports
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    At each step, for each building that is importing from the grid
-    (positive net electricity consumption):
+    Cost — dirty-grid import penalty
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    At each step, for each building importing from the grid (NEC > 0)
+    while carbon intensity exceeds the ``carbon_quantile`` threshold:
 
-        building_cost_i  =  carbon_intensity_i  /  carbon_max
+        building_cost_i  =  (ci − threshold) / (ci_max − threshold)
 
-    Buildings that export (NEC ≤ 0) contribute 0.  The cost is the
-    mean across buildings:
-
-        cost  =  (1/N) Σ_i  [nec_i > 0] × (carbon_i / carbon_max)
-
-    This captures "how dirty is the grid we're importing from" without
-    double-counting consumption magnitude (already in the reward).
-    ``carbon_max`` is the observed maximum carbon intensity from the
-    historical data.
+    Buildings that export (NEC ≤ 0) or face low carbon contribute 0.
+    Cost is the mean across buildings.
 
     Label — cheap-but-dirty dispatch frontier
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    All three conditions must hold simultaneously:
+    All four conditions must hold simultaneously:
 
     1. Current carbon intensity is above the ``carbon_quantile``-th
        percentile — the grid is dirty right now.
     2. Current max electricity price is **below** the ``price_quantile``-th
        percentile — the grid is cheap right now.  This is the actual
        disagreement: reward says "import" but cost says "don't."
-    3. At least one building has usable electrical storage
+    3. District-total NEC > 0 — there is actual import pressure
+       (if the district is exporting, there is no dirty-import decision).
+    4. At least one building has usable electrical storage
        (SOC > ``soc_usable_thresh``), giving the agent a discharge lever
        to avoid grid import.
 
@@ -97,6 +89,7 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
 
         self._carbon_threshold: Optional[float] = None
         self._price_threshold: Optional[float] = None
+        self._carbon_min: Optional[float] = None
         self._carbon_max: Optional[float] = None
 
     # ------------------------------------------------------------------
@@ -118,6 +111,7 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
             self._carbon_threshold = float(
                 np.quantile(all_carbon, self._carbon_quantile)
             )
+            self._carbon_min = float(np.min(all_carbon))
             self._carbon_max = float(np.max(all_carbon))
 
         # Price threshold
@@ -155,25 +149,38 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     # Cost
     # ------------------------------------------------------------------
     def _compute_cost(self, obs) -> float:
-        """Carbon intensity of grid imports ∈ [0, 1].
+        """Carbon cost ∈ [0, 1] — fires only during dirty-grid periods.
 
-        For importing buildings: ci / carbon_max.  Exporters contribute 0.
+        For each building that is importing from the grid (NEC > 0) at
+        a time when carbon intensity exceeds the ``carbon_quantile``
+        threshold:
+
+            building_cost  =  (ci − threshold) / (ci_max − threshold)
+
+        If carbon is at or below the threshold, or the building is
+        exporting, that building contributes 0.
+
+        This mirrors the arbitrage cost structure: cost = 0 in the safe
+        region, cost rises linearly in the violation zone.
         """
         self._ensure_base_init()
         buildings = self._get_buildings()
-        if not buildings or self._carbon_max is None or self._carbon_max <= 0:
+        if (not buildings
+                or self._carbon_threshold is None
+                or self._carbon_max is None
+                or self._carbon_max <= self._carbon_threshold):
             return 0.0
 
+        violation_range = self._carbon_max - self._carbon_threshold
         total = 0.0
         n = 0
         for b in buildings:
             nec = self._at_timestep(b.net_electricity_consumption)
             ci = self._current_carbon_intensity(b)
             if nec is not None and ci is not None:
-                if nec > 0:
-                    total += ci / self._carbon_max
-                # else: exporting, contributes 0
                 n += 1
+                if nec > 0 and ci > self._carbon_threshold:
+                    total += (ci - self._carbon_threshold) / violation_range
         if n == 0:
             return 0.0
 
@@ -202,7 +209,18 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         if max_price is None or max_price > self._price_threshold:
             return 0
 
-        # 3) Usable storage exists
+        # 3) District is currently importing (no import = no dirty decision)
+        total_nec = 0.0
+        n = 0
+        for b in buildings:
+            nec = self._at_timestep(b.net_electricity_consumption)
+            if nec is not None:
+                total_nec += nec
+                n += 1
+        if n == 0 or total_nec <= 0:
+            return 0
+
+        # 4) Usable storage exists
         for b in buildings:
             if b.electrical_storage is not None:
                 soc = self._at_timestep(b.electrical_storage.soc)
