@@ -32,7 +32,8 @@ SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0',
                'merge-v0', 'intersection-v0', 'two-way-v0',
                'sumo-grid4x4-v0', 'sumo-arterial4x4-v0',
                'sumo-cologne1-v0', 'sumo-cologne3-v0', 'sumo-cologne8-v0',
-               'sumo-ingolstadt1-v0', 'sumo-ingolstadt7-v0', 'sumo-ingolstadt21-v0']
+               'sumo-ingolstadt1-v0', 'sumo-ingolstadt7-v0', 'sumo-ingolstadt21-v0',
+               'citylearn_challenge_2023_phase_2_local_evaluation']
 GUIDANCE_ENVS = ['MiniGrid-GuidedLockedRoom-v0']
 GUIDANCE_ALGOS = ['split_rl']
 SAFETY_ALGOS = ['split_rl']

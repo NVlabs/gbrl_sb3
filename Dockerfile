@@ -35,5 +35,7 @@ WORKDIR /gbrl_sb3
 RUN git fetch; git checkout dev; git pull
 RUN pip install --no-build-isolation gfootball
 RUN pip install -r requirements.txt
+# CityLearn dataset (gitignored, must be copied explicitly)
+COPY datasets/citylearn/ datasets/citylearn/
 
 

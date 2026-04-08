@@ -18,6 +18,7 @@ Provides
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional
 
 import gymnasium as gym
@@ -28,7 +29,20 @@ from utils.helpers import make_cost_vec_env
 # ---------------------------------------------------------------------------
 # Default schema
 # ---------------------------------------------------------------------------
+# Resolve to local dataset directory bundled in the repo so CityLearn never
+# needs to download anything from GitHub at runtime.
+_DATASETS_DIR = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                             "datasets", "citylearn")
+
 DEFAULT_SCHEMA = "citylearn_challenge_2023_phase_2_local_evaluation"
+
+
+def _resolve_schema(schema: str) -> str:
+    """Return a local schema.json path if the dataset is bundled, else pass through."""
+    local = os.path.join(_DATASETS_DIR, schema, "schema.json")
+    if os.path.isfile(local):
+        return os.path.realpath(local)
+    return schema
 
 
 # -----------------------------------------------------------------------
@@ -48,7 +62,7 @@ def make_citylearn_inner_env(
     from citylearn.wrappers import NormalizedObservationWrapper, StableBaselines3Wrapper
 
     cl_kwargs: Dict[str, Any] = {
-        "schema": schema,
+        "schema": _resolve_schema(schema),
         "central_agent": True,
     }
     if episode_time_steps is not None:
