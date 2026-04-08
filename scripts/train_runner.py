@@ -92,12 +92,13 @@ sys.path.insert(0, str(ROOT_PATH))
 
 
 # ── Local resume state (non-ADLR fallback) ──────────────────────────────────
+_RESUME_DIR = Path(os.environ.get("TRAIN_LOG_DIR", str(ROOT_PATH)))
 
 def _resume_state_path(sweep_id=None):
     if sweep_id:
         safe = sweep_id.replace("/", "_")
-        return ROOT_PATH / f".resume_state_{safe}.json"
-    return ROOT_PATH / ".resume_state.json"
+        return _RESUME_DIR / f".resume_state_{safe}.json"
+    return _RESUME_DIR / ".resume_state.json"
 
 
 def _save_local_resume(details, sweep_id=None):
