@@ -40,5 +40,7 @@ COPY datasets/citylearn/ datasets/citylearn/
 # Place misc data in CityLearn cache so it never downloads from GitHub at runtime
 RUN mkdir -p /root/.cache/citylearn/v2.3.1/misc && \
     cp datasets/citylearn/misc/* /root/.cache/citylearn/v2.3.1/misc/
+# Make repo + CityLearn cache writable by any user (for --user runs)
+RUN chmod -R a+rwX /gbrl_sb3 /root/.cache/citylearn
 
 
