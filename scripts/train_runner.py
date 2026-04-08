@@ -257,6 +257,8 @@ def _inject_args_from_wandb_config():
         if isinstance(val, list):
             sys.argv.append(f'--{key}')
             sys.argv.extend(str(v) for v in val)
+        elif isinstance(val, dict):
+            sys.argv.extend([f'--{key}', json.dumps(val)])
         else:
             sys.argv.extend([f'--{key}', str(val)])
     print(f"Injected {len(config)} sweep params into sys.argv")
@@ -273,6 +275,8 @@ def _inject_args_from_dict(saved):
         if isinstance(val, list):
             sys.argv.append(f"--{key}")
             sys.argv.extend(str(v) for v in val)
+        elif isinstance(val, dict):
+            sys.argv.extend([f"--{key}", json.dumps(val)])
         else:
             sys.argv.extend([f"--{key}", str(val)])
 

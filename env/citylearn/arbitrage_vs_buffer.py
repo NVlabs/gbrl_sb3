@@ -149,13 +149,11 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        # 1) High electricity price
+        # 1) High electricity price (max across buildings for robustness)
         if self._price_threshold is None:
             return 0
-        price = None
-        if hasattr(buildings[0], "pricing") and buildings[0].pricing is not None:
-            price = self._at_timestep(buildings[0].pricing.electricity_pricing)
-        if price is None or price <= self._price_threshold:
+        max_price = self._max_current_price(buildings)
+        if max_price is None or max_price <= self._price_threshold:
             return 0
 
         # 2) Usable storage exists (no storage → no dispatch choice → 0)
@@ -169,13 +167,16 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if not has_usable:
             return 0
 
-        # 3) Mean SOC is near the safety frontier
+        # 3) Mean SOC is within the safety frontier band:
+        #    [soc_safety_level, soc_safety_level + soc_frontier_band]
+        #    Below safety = already cost-active (not a frontier).
+        #    Above safety + band = buffer comfortably full (no risk).
         mean_soc = self._mean_electrical_soc()
         if mean_soc is None:
             return 0
+        frontier_lower = self._soc_safety_level
         frontier_upper = self._soc_safety_level + self._soc_frontier_band
-        if mean_soc > frontier_upper:
-            # buffer is comfortably full — no real risk of cost activation
+        if mean_soc < frontier_lower or mean_soc > frontier_upper:
             return 0
 
         return 1

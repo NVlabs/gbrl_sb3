@@ -157,7 +157,7 @@ if __name__ == '__main__':
                                             seed=args.seed, **highway_kwargs)
     elif args.env_type == 'citylearn':
         citylearn_kwargs = dict(args.env_kwargs or {})
-        scenario = citylearn_kwargs.pop('scenario', 'cost_vs_comfort')
+        scenario = citylearn_kwargs.pop('scenario', 'arbitrage_vs_buffer')
         make_cl_vec = CITYLEARN_SCENARIOS.get(scenario)
         if make_cl_vec is None:
             raise ValueError(f"Unknown CityLearn scenario '{scenario}'. "

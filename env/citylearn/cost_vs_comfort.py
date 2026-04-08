@@ -194,13 +194,11 @@ class CostVsComfortWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        # 1) High electricity price
+        # 1) High electricity price (max across buildings for robustness)
         if self._price_threshold is None:
             return 0
-        price = None
-        if hasattr(buildings[0], "pricing") and buildings[0].pricing is not None:
-            price = self._at_timestep(buildings[0].pricing.electricity_pricing)
-        if price is None or price <= self._price_threshold:
+        max_price = self._max_current_price(buildings)
+        if max_price is None or max_price <= self._price_threshold:
             return 0
 
         # 2+3) Find a building that is:

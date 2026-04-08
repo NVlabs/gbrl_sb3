@@ -33,7 +33,7 @@ Label:   cost-advantage based (computed post-rollout in SPLIT-RL), with
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -148,9 +148,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         bus_count_per_injection: int = 1,
         bus_cost_threshold: float = 30.0,
         bus_warn_threshold: float = 10.0,
-        convoy_injection_interval: float = 120.0,
-        convoy_size_min: int = 5,
-        convoy_size_max: int = 8,
+        convoy_injection_interval: float = 80.0,
+        convoy_size_min: int = 10,
+        convoy_size_max: int = 12,
+        convoy_headway: float = 2.0,
         convoy_cost_threshold: float = 20.0,
         convoy_warn_threshold: float = 8.0,
         # Premium vehicle injection parameters
@@ -204,6 +205,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._convoy_injection_interval = convoy_injection_interval
         self._convoy_size_min = convoy_size_min
         self._convoy_size_max = convoy_size_max
+        self._convoy_headway = convoy_headway
         self._convoy_cost_threshold = convoy_cost_threshold  # T_convoy
         self._convoy_warn_threshold = convoy_warn_threshold  # T_warn_convoy
 
@@ -803,6 +805,162 @@ class SumoRewardCostWrapper(ParallelEnv):
         if len(self._dest_edges) < 2:
             self._dest_edges = normal_edges
 
+    def _select_stress_target(self, rng) -> Optional[List[str]]:
+        """Pick a high-conflict incoming lane and return a route through it.
+
+        Selects an incoming lane that:
+          - belongs to a non-current (unserved) phase,
+          - sits at a junction where the currently served phase has high
+            competing pressure relative to the unserved phase.
+
+        Returns a list of edge IDs forming a valid SUMO route that
+        traverses the chosen stress edge, or None if no suitable target.
+        """
+        sumo = self._get_traci()
+        if sumo is None or not self._phase_to_lanes:
+            return None
+
+        # Score every unserved lane across all agents
+        candidates: List[Tuple[float, str, int, str]] = []  # (score, agent_id, lane_idx, edge)
+        for agent_id in self.possible_agents:
+            ts = self._get_traffic_signal(agent_id)
+            if ts is None:
+                continue
+            phase = ts.green_phase
+            phase_map = self._phase_to_lanes.get(agent_id, {})
+            served_lanes = set(phase_map.get(phase, []))
+            if not served_lanes:
+                continue
+
+            lane_queues = ts.get_lanes_queue()
+            lane_densities = ts.get_lanes_density()
+
+            def _pressure(lane_indices):
+                p = 0.0
+                for li in lane_indices:
+                    if li < len(lane_queues):
+                        p += lane_queues[li] + lane_densities[li]
+                return p
+
+            served_pressure = _pressure(served_lanes)
+
+            for ph, lanes in phase_map.items():
+                if ph == phase:
+                    continue
+                unserved_pressure = _pressure(lanes)
+                # Higher score = served phase has much more traffic than
+                # the unserved phase → switching away is costly for reward,
+                # but needed for cost.  That is the conflict.
+                score = served_pressure - unserved_pressure
+                if score <= 0:
+                    continue  # unserved phase already has more traffic — no conflict
+                for li in lanes:
+                    if li not in served_lanes:
+                        lane_name = ts.lanes[li]
+                        edge = '_'.join(lane_name.split('_')[:-1])
+                        candidates.append((score, agent_id, li, edge))
+
+        if not candidates:
+            return None
+
+        # Weighted random selection: higher-scored lanes more likely
+        scores = np.array([c[0] for c in candidates], dtype=np.float64)
+        scores = scores / (scores.sum() + 1e-9)
+        idx = rng.choice(len(candidates), p=scores)
+        _, _, _, target_edge = candidates[idx]
+
+        # Build a route that traverses target_edge.
+        # Strategy: find the node upstream of target_edge, then find a
+        # boundary origin edge whose shortest path to a boundary dest
+        # passes through target_edge.
+        try:
+            target_from = sumo.edge.getFromJunction(target_edge)
+            target_to = sumo.edge.getToJunction(target_edge)
+        except Exception:
+            return None
+
+        # Try to find a boundary entry edge leading to target_from
+        # (one hop upstream: any boundary edge ending at target_from)
+        upstream_boundary = [
+            e for e in self._origin_edges
+            if sumo.edge.getToJunction(e) == target_from
+        ]
+        # If no direct boundary feeder, look one more hop up
+        if not upstream_boundary:
+            all_edges = sumo.edge.getIDList()
+            feeder_edges = [
+                e for e in all_edges
+                if not e.startswith(':') and sumo.edge.getToJunction(e) == target_from
+            ]
+            for fe in feeder_edges:
+                fe_from = sumo.edge.getFromJunction(fe)
+                for oe in self._origin_edges:
+                    if sumo.edge.getToJunction(oe) == fe_from:
+                        upstream_boundary.append(oe)
+
+        # Find boundary exit edges reachable from target_to
+        downstream_boundary = [
+            e for e in self._dest_edges
+            if sumo.edge.getFromJunction(e) == target_to
+        ]
+        if not downstream_boundary:
+            all_edges = sumo.edge.getIDList()
+            out_edges = [
+                e for e in all_edges
+                if not e.startswith(':') and sumo.edge.getFromJunction(e) == target_to
+            ]
+            for oe in out_edges:
+                oe_to = sumo.edge.getToJunction(oe)
+                for de in self._dest_edges:
+                    if sumo.edge.getFromJunction(de) == oe_to:
+                        downstream_boundary.append(de)
+
+        # Try (origin, dest) combos until findRoute gives a path through target_edge
+        rng.shuffle(upstream_boundary)
+        rng.shuffle(downstream_boundary)
+        # Also mix in some random boundary edges as fallback
+        fallback_origins = list(self._origin_edges)
+        rng.shuffle(fallback_origins)
+        fallback_dests = list(self._dest_edges)
+        rng.shuffle(fallback_dests)
+
+        origins_to_try = upstream_boundary[:4] + fallback_origins[:4]
+        dests_to_try = downstream_boundary[:4] + fallback_dests[:4]
+
+        for origin in origins_to_try:
+            for dest in dests_to_try:
+                if origin == dest:
+                    continue
+                try:
+                    stage = sumo.simulation.findRoute(origin, dest)
+                    if hasattr(stage, 'edges') and target_edge in stage.edges:
+                        return list(stage.edges)
+                except Exception:
+                    continue
+
+        # Last resort: two-leg route (origin→target, target→dest) via findRoute
+        for origin in origins_to_try[:3]:
+            try:
+                leg1 = sumo.simulation.findRoute(origin, target_edge)
+                if not hasattr(leg1, 'edges') or not leg1.edges:
+                    continue
+            except Exception:
+                continue
+            for dest in dests_to_try[:3]:
+                try:
+                    leg2 = sumo.simulation.findRoute(target_edge, dest)
+                    if hasattr(leg2, 'edges') and leg2.edges:
+                        # Merge: leg1 edges + leg2 edges (skip duplicate target_edge)
+                        route = list(leg1.edges)
+                        for e in leg2.edges:
+                            if e != route[-1]:
+                                route.append(e)
+                        return route
+                except Exception:
+                    continue
+
+        return None
+
     def _create_bus_vtype(self):
         """Create a 'priority_bus' vehicle type via TraCI."""
         sumo = self._get_traci()
@@ -889,28 +1047,41 @@ class SumoRewardCostWrapper(ParallelEnv):
             # Schedule next bus injection with some randomness
             self._next_bus_time = sim_time + self._bus_injection_interval * (0.8 + 0.4 * rng.random())
 
-        # Convoy injection (platoon of vehicles on the same route)
+        # Convoy injection — targeted at a stress lane for sharp conflict
         if self._cost_fn == "convoy_priority" and sim_time >= self._next_convoy_time:
-            origin = rng.choice(self._origin_edges)
-            dest = rng.choice(self._dest_edges)
-            attempts = 0
-            while dest == origin and attempts < 10:
-                dest = rng.choice(self._dest_edges)
-                attempts += 1
-            if dest != origin:
+            route_edges = self._select_stress_target(rng)
+            # Fallback to random OD via findRoute if stress targeting fails
+            if route_edges is None:
+                origins = list(self._origin_edges)
+                dests = list(self._dest_edges)
+                rng.shuffle(origins)
+                rng.shuffle(dests)
+                for _o in origins[:6]:
+                    for _d in dests[:6]:
+                        if _o == _d:
+                            continue
+                        try:
+                            stage = sumo.simulation.findRoute(_o, _d)
+                            if hasattr(stage, 'edges') and len(stage.edges) >= 2:
+                                route_edges = list(stage.edges)
+                                break
+                        except Exception:
+                            continue
+                    if route_edges is not None:
+                        break
+            if route_edges is not None and len(route_edges) >= 2:
                 platoon_size = rng.randint(self._convoy_size_min, self._convoy_size_max + 1)
                 route_id = f"convoy_route_{self._convoy_counter}"
                 convoy_id = self._convoy_counter
                 try:
-                    sumo.route.add(route_id, [origin, dest])
+                    sumo.route.add(route_id, route_edges)
                 except Exception:
                     platoon_size = 0  # route invalid, skip
                 veh_ids = []
                 for v in range(platoon_size):
                     vid = f"convoy_{convoy_id}_v{v}"
                     try:
-                        # departDelay staggers vehicles by 1-2s each
-                        depart = str(sim_time + v * 1.5)
+                        depart = str(sim_time + v * self._convoy_headway)
                         sumo.vehicle.add(vid, route_id, typeID="convoy_vehicle",
                                          depart=depart)
                         veh_ids.append(vid)
@@ -921,19 +1092,33 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._convoy_counter += 1
             self._next_convoy_time = sim_time + self._convoy_injection_interval * (0.8 + 0.4 * rng.random())
 
-        # Premium vehicle injection (single normal-speed car with priority tag)
+        # Premium injection — targeted at a stress lane for sharp conflict
         if self._cost_fn == "premium_priority" and sim_time >= self._next_premium_time:
-            origin = rng.choice(self._origin_edges)
-            dest = rng.choice(self._dest_edges)
-            attempts = 0
-            while dest == origin and attempts < 10:
-                dest = rng.choice(self._dest_edges)
-                attempts += 1
-            if dest != origin:
+            route_edges = self._select_stress_target(rng)
+            # Fallback to random OD via findRoute if stress targeting fails
+            if route_edges is None:
+                origins = list(self._origin_edges)
+                dests = list(self._dest_edges)
+                rng.shuffle(origins)
+                rng.shuffle(dests)
+                for _o in origins[:6]:
+                    for _d in dests[:6]:
+                        if _o == _d:
+                            continue
+                        try:
+                            stage = sumo.simulation.findRoute(_o, _d)
+                            if hasattr(stage, 'edges') and len(stage.edges) >= 2:
+                                route_edges = list(stage.edges)
+                                break
+                        except Exception:
+                            continue
+                    if route_edges is not None:
+                        break
+            if route_edges is not None and len(route_edges) >= 2:
                 prem_id = f"premium_{self._premium_counter}"
                 route_id = f"premium_route_{self._premium_counter}"
                 try:
-                    sumo.route.add(route_id, [origin, dest])
+                    sumo.route.add(route_id, route_edges)
                     sumo.vehicle.add(prem_id, route_id, typeID="premium_vehicle")
                     self._premium_counter += 1
                 except Exception:
@@ -2406,9 +2591,10 @@ def make_sumo_vec_env(
     bus_count_per_injection: int = 1,
     bus_cost_threshold: float = 30.0,
     bus_warn_threshold: float = 10.0,
-    convoy_injection_interval: float = 120.0,
-    convoy_size_min: int = 5,
-    convoy_size_max: int = 8,
+    convoy_injection_interval: float = 80.0,
+    convoy_size_min: int = 10,
+    convoy_size_max: int = 12,
+    convoy_headway: float = 2.0,
     convoy_cost_threshold: float = 20.0,
     convoy_warn_threshold: float = 8.0,
     premium_injection_interval: float = 40.0,
@@ -2528,6 +2714,7 @@ def make_sumo_vec_env(
         convoy_injection_interval=convoy_injection_interval,
         convoy_size_min=convoy_size_min,
         convoy_size_max=convoy_size_max,
+        convoy_headway=convoy_headway,
         convoy_cost_threshold=convoy_cost_threshold,
         convoy_warn_threshold=convoy_warn_threshold,
         premium_injection_interval=premium_injection_interval,

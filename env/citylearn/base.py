@@ -135,6 +135,16 @@ class CityLearnBaseWrapper(gym.Wrapper):
             return float(series[ts])
         return None
 
+    def _max_current_price(self, buildings) -> Optional[float]:
+        """Max electricity price at the current timestep across buildings."""
+        max_p = None
+        for b in buildings:
+            if hasattr(b, "pricing") and b.pricing is not None:
+                p = self._at_timestep(b.pricing.electricity_pricing)
+                if p is not None and (max_p is None or p > max_p):
+                    max_p = p
+        return max_p
+
     # ------------------------------------------------------------------
     # Explicit electricity-cost reward
     # ------------------------------------------------------------------
