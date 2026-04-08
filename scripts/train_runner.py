@@ -971,8 +971,9 @@ if __name__ == "__main__":
                     break
 
                 if _trial_error[0] is not None:
-                    print(f"Trial #{trial_num} failed, stopping sweep loop.")
-                    break
+                    print(f"Trial #{trial_num} failed: {_trial_error[0]}")
+                    print("Continuing to next sweep trial...")
+                    continue
 
                 print(f"Trial #{trial_num} completed successfully.")
 
