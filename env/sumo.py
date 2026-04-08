@@ -163,7 +163,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         roadwork_interval_mean: float = 300.0,
         roadwork_duration_mean: float = 400.0,
         roadwork_speed: float = 0.3,
-        spillback_occ_threshold: float = 0.5,
+        spillback_occ_threshold: float = 0.15,
         # Scenario event probability (0.0 = events every episode, 0.25 = 25% clean)
         clean_episode_prob: float = 0.0,
     ):
@@ -2604,7 +2604,7 @@ def make_sumo_vec_env(
     roadwork_interval_mean: float = 300.0,
     roadwork_duration_mean: float = 400.0,
     roadwork_speed: float = 0.3,
-    spillback_occ_threshold: float = 0.5,
+    spillback_occ_threshold: float = 0.15,
     clean_episode_prob: float = 0.0,
     use_gui: bool = False,
     **override_kwargs,
