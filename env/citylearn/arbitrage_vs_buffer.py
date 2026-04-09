@@ -111,12 +111,13 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _mean_electrical_soc(self) -> Optional[float]:
+    def _mean_electrical_soc(self, pre_step: bool = False) -> Optional[float]:
         """Mean electrical-storage SOC across buildings that have batteries."""
+        accessor = self._at_pre_step if pre_step else self._at_timestep
         soc_values = []
         for b in self._get_buildings():
             if b.electrical_storage is not None:
-                soc = self._at_timestep(b.electrical_storage.soc)
+                soc = accessor(b.electrical_storage.soc)
                 if soc is not None:
                     soc_values.append(soc)
         return float(np.mean(soc_values)) if soc_values else None
@@ -149,7 +150,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        mean_soc = self._mean_electrical_soc()
+        mean_soc = self._mean_electrical_soc(pre_step=True)
         if mean_soc is None:
             return 0
 
@@ -157,7 +158,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         has_usable = False
         for b in buildings:
             if b.electrical_storage is not None:
-                soc = self._at_timestep(b.electrical_storage.soc)
+                soc = self._at_pre_step(b.electrical_storage.soc)
                 if soc is not None and soc > self._soc_usable_thresh:
                     has_usable = True
                     break
@@ -171,7 +172,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         # Frontier: high price tempts discharge near safety boundary
         if self._price_threshold is None:
             return 0
-        max_price = self._max_current_price(buildings)
+        max_price = self._max_pre_step_price(buildings)
         if max_price is None or max_price <= self._price_threshold:
             return 0
 

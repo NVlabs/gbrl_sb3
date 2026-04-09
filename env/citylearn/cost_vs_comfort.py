@@ -199,14 +199,14 @@ class CostVsComfortWrapper(CityLearnBaseWrapper):
             if headroom <= 0:
                 # Already violating — cost should drive recovery
                 if b.electrical_storage is not None:
-                    soc = self._at_timestep(b.electrical_storage.soc)
+                    soc = self._at_pre_step(b.electrical_storage.soc)
                     if soc is not None and soc > self._soc_usable_thresh:
                         return 1
 
         # Frontier: high price + near-boundary + usable storage
         if self._price_threshold is None:
             return 0
-        max_price = self._max_current_price(buildings)
+        max_price = self._max_pre_step_price(buildings)
         if max_price is None or max_price <= self._price_threshold:
             return 0
 
@@ -218,7 +218,7 @@ class CostVsComfortWrapper(CityLearnBaseWrapper):
 
             # Check electrical storage only (DHW ≠ indoor thermal comfort)
             if b.electrical_storage is not None:
-                soc = self._at_timestep(b.electrical_storage.soc)
+                soc = self._at_pre_step(b.electrical_storage.soc)
                 if soc is not None and soc > self._soc_usable_thresh:
                     return 1
 

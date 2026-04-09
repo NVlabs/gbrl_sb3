@@ -151,18 +151,47 @@ class CityLearnBaseWrapper(gym.Wrapper):
         return float(series)
 
     def _at_timestep(self, series):
-        """Element at ``time_step - 1`` of a pre-allocated array (pricing, SOC)."""
+        """Element at ``time_step - 1`` of a pre-allocated array (pricing, SOC).
+
+        Correct for **post-step** reads (reward, cost) where CityLearn has
+        already incremented ``time_step``.
+        """
         ts = self._get_time_step() - 1
         if hasattr(series, "__len__") and 0 <= ts < len(series):
             return float(series[ts])
         return None
 
+    def _at_pre_step(self, series):
+        """Element at ``time_step`` of a pre-allocated array.
+
+        Correct for **pre-step** reads (label) where CityLearn has NOT
+        yet incremented ``time_step``.  Reads the state the agent is
+        currently observing.
+        """
+        ts = self._get_time_step()
+        if hasattr(series, "__len__") and 0 <= ts < len(series):
+            return float(series[ts])
+        return None
+
     def _max_current_price(self, buildings) -> Optional[float]:
-        """Max electricity price at the current timestep across buildings."""
+        """Max electricity price at the current timestep across buildings.
+
+        Uses post-step accessor (for reward/cost computation).
+        """
         max_p = None
         for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
                 p = self._at_timestep(b.pricing.electricity_pricing)
+                if p is not None and (max_p is None or p > max_p):
+                    max_p = p
+        return max_p
+
+    def _max_pre_step_price(self, buildings) -> Optional[float]:
+        """Max electricity price using pre-step accessor (for label computation)."""
+        max_p = None
+        for b in buildings:
+            if hasattr(b, "pricing") and b.pricing is not None:
+                p = self._at_pre_step(b.pricing.electricity_pricing)
                 if p is not None and (max_p is None or p > max_p):
                     max_p = p
         return max_p
