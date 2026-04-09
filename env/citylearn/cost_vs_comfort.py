@@ -11,11 +11,12 @@
 reward  =  negative price-weighted electricity consumption  (minimize spending)
 cost    =  thermal discomfort: mean deviation outside the two-sided comfort
            band  [heating_sp − band,  cooling_sp + band]  across buildings
-label   =  1 when  (1) price is high,  (2) at least one building is still
-           comfortable but has low thermal headroom (pre-violation frontier),
-           and  (3) the building has usable electrical storage — marking
-           states where the next dispatch action could push comfort into
-           violation territory.
+label   =  1 when cost should own the sample:
+           (a) any building is already violating comfort bounds with
+           usable storage (recovery), or
+           (b) high price + low thermal headroom + usable storage
+           (pre-violation frontier).
+           label=0 elsewhere → reward objective owns the sample.
 
 The label explicitly excludes already-violating states (where the conflict
 has already materialised) and DHW storage (hot water is not indoor thermal
@@ -75,21 +76,18 @@ class CostVsComfortWrapper(CityLearnBaseWrapper):
 
     Cost  =  mean_i  clamp(v_i / max_delta,  0,  1)
 
-    Label — pre-violation decision frontier
+    Label — objective routing (label=1 → cost, label=0 → reward)
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    All four conditions must hold simultaneously:
+    Two zones route to cost:
 
-    1. Electricity price is above the *price_quantile* of the historical
-       pricing distribution  (dispatch would save money).
-    2. At least one building is still comfortable (discomfort == 0) but
-       has thermal headroom below *headroom_thresh* — the next action
-       matters but the conflict has not yet materialised.
-    3. That same building has usable **electrical** storage
-       (SOC > *soc_usable_thresh*), giving the agent a controllable lever.
-       DHW storage is excluded (hot water ≠ indoor thermal comfort).
+    1. **Already violating** — any building has headroom ≤ 0 (outside
+       comfort band) AND has usable electrical storage → label=1.
+       Cost should drive recovery.
+    2. **Pre-violation frontier** — high price + a building is still
+       comfortable but has headroom < ``headroom_thresh`` + usable
+       electrical storage → label=1.
 
     No electrical storage at all → label = 0  (no dispatch choice exists).
-    Already-violating buildings are excluded from headroom consideration.
     """
 
     def __init__(
@@ -194,21 +192,27 @@ class CostVsComfortWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        # 1) High electricity price (max across buildings for robustness)
+        # Check for any building already violating with usable storage
+        # → cost should own recovery
+        for b in buildings:
+            headroom = self._building_headroom(b)
+            if headroom <= 0:
+                # Already violating — cost should drive recovery
+                if b.electrical_storage is not None:
+                    soc = self._at_timestep(b.electrical_storage.soc)
+                    if soc is not None and soc > self._soc_usable_thresh:
+                        return 1
+
+        # Frontier: high price + near-boundary + usable storage
         if self._price_threshold is None:
             return 0
         max_price = self._max_current_price(buildings)
         if max_price is None or max_price <= self._price_threshold:
             return 0
 
-        # 2+3) Find a building that is:
-        #   - still comfortable (discomfort == 0, headroom > 0)
-        #   - but has low positive headroom (< threshold)
-        #   - AND has usable electrical storage (not DHW)
         for b in buildings:
             headroom = self._building_headroom(b)
-            # Must be still inside comfort zone (headroom > 0)
-            # but near the boundary (headroom < threshold)
+            # Still inside comfort zone but near the boundary
             if headroom <= 0 or headroom >= self._headroom_thresh:
                 continue
 

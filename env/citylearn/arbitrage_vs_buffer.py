@@ -12,10 +12,10 @@ reward  =  negative price-weighted electricity consumption  (minimize spending)
 cost    =  storage buffer depletion: fires when mean battery SOC drops below
            a safety level, penalising aggressive discharge that leaves
            buildings without a resilience buffer.
-label   =  1 when  (1) price is high,  (2) at least one building has
-           usable storage, and  (3) the mean SOC is near the safety
-           frontier — marking the true decision boundary where the next
-           discharge action directly risks activating the cost.
+label   =  1 when cost should own the sample:
+           (a) SOC already below safety (recovery), or
+           (b) high price + near-safety frontier (imminent crossing risk).
+           label=0 elsewhere → reward objective owns the sample.
 
 No storage at all → label = 0, cost = 0  (no dispatch choice exists).
 """
@@ -39,7 +39,7 @@ from utils.helpers import make_cost_vec_env
 DEFAULT_PRICE_QUANTILE = 0.70
 DEFAULT_SOC_USABLE_THRESH = 0.15  # label condition: SOC above this
 DEFAULT_SOC_SAFETY_LEVEL = 0.30   # cost fires when SOC drops below this
-DEFAULT_SOC_FRONTIER_BAND = 0.20  # label fires when mean SOC is within
+DEFAULT_SOC_FRONTIER_BAND = 0.05  # label fires when mean SOC is within
                                    # [safety, safety + band]
 
 
@@ -59,18 +59,18 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 
     If no building has electrical storage, cost is always 0.
 
-    Label — dispatch decision frontier
+    Label — objective routing (label=1 → cost, label=0 → reward)
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    All three conditions must hold simultaneously:
+    Three zones:
 
-    1. Electricity price is above the *price_quantile* of the historical
-       pricing distribution.
-    2. At least one building has usable storage (SOC > *soc_usable_thresh*).
-    3. Mean SOC is near the safety frontier: within
-       ``[soc_safety_level,  soc_safety_level + soc_frontier_band]``.
-       This ensures the label fires only when the next discharge action
-       could push SOC into the cost-active zone, not when the buffer is
-       comfortably full.
+    1. **Comfortably above safety** (SOC > safety + band) → label=0.
+       Reward owns these states; no risk of cost activation.
+    2. **Near-safety frontier** (safety ≤ SOC ≤ safety + band, AND
+       high price + usable storage) → label=1.
+       Reward is tempted to discharge but doing so risks crossing below
+       safety. Cost objective should govern.
+    3. **Below safety** (SOC < safety, with usable storage) → label=1.
+       Cost is already active; cost objective should drive recovery.
 
     No storage at all → label = 0  (no dispatch choice exists).
     """
@@ -149,14 +149,11 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        # 1) High electricity price (max across buildings for robustness)
-        if self._price_threshold is None:
-            return 0
-        max_price = self._max_current_price(buildings)
-        if max_price is None or max_price <= self._price_threshold:
+        mean_soc = self._mean_electrical_soc()
+        if mean_soc is None:
             return 0
 
-        # 2) Usable storage exists (no storage → no dispatch choice → 0)
+        # Usable storage exists (no storage → no dispatch choice → 0)
         has_usable = False
         for b in buildings:
             if b.electrical_storage is not None:
@@ -167,19 +164,22 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if not has_usable:
             return 0
 
-        # 3) Mean SOC is within the safety frontier band:
-        #    [soc_safety_level, soc_safety_level + soc_frontier_band]
-        #    Below safety = already cost-active (not a frontier).
-        #    Above safety + band = buffer comfortably full (no risk).
-        mean_soc = self._mean_electrical_soc()
-        if mean_soc is None:
+        # Already below safety → cost owns recovery
+        if mean_soc < self._soc_safety_level:
+            return 1
+
+        # Frontier: high price tempts discharge near safety boundary
+        if self._price_threshold is None:
             return 0
-        frontier_lower = self._soc_safety_level
-        frontier_upper = self._soc_safety_level + self._soc_frontier_band
-        if mean_soc < frontier_lower or mean_soc > frontier_upper:
+        max_price = self._max_current_price(buildings)
+        if max_price is None or max_price <= self._price_threshold:
             return 0
 
-        return 1
+        frontier_upper = self._soc_safety_level + self._soc_frontier_band
+        if mean_soc <= frontier_upper:
+            return 1
+
+        return 0
 
 
 # -----------------------------------------------------------------------
