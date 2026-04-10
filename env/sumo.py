@@ -236,6 +236,9 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._bus_counter: int = 0
         self._convoy_counter: int = 0
         self._premium_counter: int = 0
+        # Live sets of injected special vehicle IDs (for fast detection)
+        self._active_bus_ids: Set[str] = set()
+        self._active_premium_ids: Set[str] = set()
         # Per-agent per-lane bus/convoy/premium features (updated each step)
         self._has_bus: Dict[str, np.ndarray] = {}
         self._bus_wait: Dict[str, np.ndarray] = {}
@@ -261,6 +264,8 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._internal_edges: List[str] = []  # candidate edges for road works
         self._next_roadwork_time: float = 0.0
         self._roadwork_counter: int = 0
+        # Reverse lookup: lane_name → (agent_id, lane_index) — built once at reset
+        self._lane_to_agent: Dict[str, Tuple[str, int]] = {}
 
         # Number of green phases per agent (for obs transformation)
         self._n_green_phases: Optional[int] = None
@@ -1063,6 +1068,7 @@ class SumoRewardCostWrapper(ParallelEnv):
                     try:
                         sumo.route.add(route_id, [origin, dest])
                         sumo.vehicle.add(bus_id, route_id, typeID="priority_bus")
+                        self._active_bus_ids.add(bus_id)
                         self._bus_counter += 1
                     except Exception:
                         pass  # route might be invalid (no path), skip
@@ -1142,6 +1148,7 @@ class SumoRewardCostWrapper(ParallelEnv):
                 try:
                     sumo.route.add(route_id, route_edges)
                     sumo.vehicle.add(prem_id, route_id, typeID="premium_vehicle")
+                    self._active_premium_ids.add(prem_id)
                     self._premium_counter += 1
                 except Exception:
                     pass
@@ -1150,8 +1157,11 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _detect_special_vehicles(self):
         """Detect bus/convoy/premium vehicles on each agent's incoming lanes.
 
-        Updates per-agent per-lane feature arrays used for obs extension,
-        cost computation, and label.
+        Optimised: instead of scanning ALL vehicles on ALL lanes, we query
+        only the known injected special vehicle IDs (tracked in
+        _active_bus_ids, _active_convoys, _active_premium_ids) and look
+        up their lane via a single TraCI call per vehicle.  This reduces
+        TraCI calls from O(agents × lanes × vehicles) to O(special_vehicles).
         """
         sumo = self._get_traci()
         if sumo is None:
@@ -1161,96 +1171,133 @@ class SumoRewardCostWrapper(ParallelEnv):
         need_convoy = self._cost_fn == "convoy_priority"
         need_premium = self._cost_fn == "premium_priority"
 
+        # Reset per-agent per-lane arrays (reuse existing allocations)
         for agent_id in self.possible_agents:
-            ts = self._get_traffic_signal(agent_id)
-            if ts is None:
-                continue
-
-            n_lanes = len(ts.lanes)
-            has_bus = np.zeros(n_lanes, dtype=np.float32)
-            bus_wait = np.zeros(n_lanes, dtype=np.float32)
-            bus_count = np.zeros(n_lanes, dtype=np.float32)
-            has_convoy = np.zeros(n_lanes, dtype=np.float32)
-            convoy_count = np.zeros(n_lanes, dtype=np.float32)
-            convoy_progress = np.zeros(n_lanes, dtype=np.float32)
-            has_premium = np.zeros(n_lanes, dtype=np.float32)
-            premium_wait = np.zeros(n_lanes, dtype=np.float32)
-
-            # Track which convoy vehicles are on THIS agent's incoming lanes
-            convoy_on_incoming: Dict[int, int] = {}   # convoy_id → count on incoming
-            convoy_on_incoming_vids: Dict[int, Set[str]] = {}  # convoy_id → set of vids on incoming
-            convoy_lane_map: Dict[int, int] = {}       # convoy_id → lane_idx (first seen)
-
-            for i, lane in enumerate(ts.lanes):
-                try:
-                    veh_ids = sumo.lane.getLastStepVehicleIDs(lane)
-                except Exception:
-                    continue
-                for vid in veh_ids:
-                    try:
-                        vtype = sumo.vehicle.getTypeID(vid)
-                        vwait = sumo.vehicle.getWaitingTime(vid)
-                    except Exception:
-                        continue
-                    if need_bus and vtype == "priority_bus":
-                        has_bus[i] = 1.0
-                        bus_count[i] += 1.0
-                        bus_wait[i] = max(bus_wait[i], vwait)
-                    if need_convoy and vtype == "convoy_vehicle":
-                        has_convoy[i] = 1.0
-                        convoy_count[i] += 1.0
-                        # Parse convoy_id from vid: "convoy_{id}_v{n}"
-                        try:
-                            cid = int(vid.split('_')[1])
-                            convoy_on_incoming[cid] = convoy_on_incoming.get(cid, 0) + 1
-                            convoy_on_incoming_vids.setdefault(cid, set()).add(vid)
-                            if cid not in convoy_lane_map:
-                                convoy_lane_map[cid] = i
-                        except (IndexError, ValueError):
-                            pass
-                    if need_premium and vtype == "premium_vehicle":
-                        has_premium[i] = 1.0
-                        premium_wait[i] = max(premium_wait[i], vwait)
-
-            # Normalize and store bus features
             if need_bus:
-                bus_wait = np.clip(bus_wait / self._bus_cost_threshold, 0.0, 1.0)
-                bus_count = np.clip(bus_count / 5.0, 0.0, 1.0)  # normalize by max expected
-                self._has_bus[agent_id] = has_bus
-                self._bus_wait[agent_id] = bus_wait
-                self._bus_count[agent_id] = bus_count
-
-            # Compute convoy progress PER AGENT using persistent tracking.
-            # progress = (ever_seen_on_incoming − still_on_incoming) / ever_seen
-            # Only counts vehicles that THIS agent has actually observed on
-            # its own incoming lanes.  No cross-agent leakage.
+                self._has_bus[agent_id].fill(0)
+                self._bus_wait[agent_id].fill(0)
+                self._bus_count[agent_id].fill(0)
             if need_convoy:
-                agent_history = self._convoy_seen_by_agent.setdefault(agent_id, {})
+                self._has_convoy[agent_id].fill(0)
+                self._convoy_count[agent_id].fill(0)
+                self._convoy_progress[agent_id].fill(0)
+            if need_premium:
+                self._has_premium[agent_id].fill(0)
+                self._premium_wait[agent_id].fill(0)
 
-                for cid, lane_idx in convoy_lane_map.items():
-                    current_vids = convoy_on_incoming_vids.get(cid, set())
-                    # Register newly-seen vehicles
+        # Per-agent convoy tracking for this step
+        # convoy_on_incoming[agent_id][convoy_id] = set of vids on incoming
+        convoy_on_incoming: Dict[str, Dict[int, Set[str]]] = {} if need_convoy else {}
+        convoy_lane_map: Dict[str, Dict[int, int]] = {} if need_convoy else {}
+
+        # ── Query only known special vehicles ──
+        departed = set()
+
+        if need_bus:
+            for vid in list(self._active_bus_ids):
+                try:
+                    lane = sumo.vehicle.getLaneID(vid)
+                    vwait = sumo.vehicle.getWaitingTime(vid)
+                except Exception:
+                    departed.add(vid)
+                    continue
+                mapping = self._lane_to_agent.get(lane)
+                if mapping is None:
+                    continue
+                agent_id, lane_idx = mapping
+                self._has_bus[agent_id][lane_idx] = 1.0
+                self._bus_count[agent_id][lane_idx] += 1.0
+                self._bus_wait[agent_id][lane_idx] = max(
+                    self._bus_wait[agent_id][lane_idx], vwait)
+            self._active_bus_ids -= departed
+
+        if need_convoy:
+            all_convoy_vids = set()
+            for cid, vids in self._active_convoys.items():
+                all_convoy_vids.update(vids)
+            departed_convoy = set()
+            for vid in all_convoy_vids:
+                try:
+                    lane = sumo.vehicle.getLaneID(vid)
+                    # no need for getWaitingTime for convoy — we use count/progress
+                except Exception:
+                    departed_convoy.add(vid)
+                    continue
+                mapping = self._lane_to_agent.get(lane)
+                if mapping is None:
+                    continue
+                agent_id, lane_idx = mapping
+                self._has_convoy[agent_id][lane_idx] = 1.0
+                self._convoy_count[agent_id][lane_idx] += 1.0
+                # Parse convoy_id from vid: "convoy_{id}_v{n}"
+                try:
+                    cid = int(vid.split('_')[1])
+                except (IndexError, ValueError):
+                    continue
+                agent_convoys = convoy_on_incoming.setdefault(agent_id, {})
+                agent_convoys.setdefault(cid, set()).add(vid)
+                agent_lanes = convoy_lane_map.setdefault(agent_id, {})
+                if cid not in agent_lanes:
+                    agent_lanes[cid] = lane_idx
+            # Prune departed convoy vehicles from _active_convoys
+            if departed_convoy:
+                for cid in list(self._active_convoys):
+                    self._active_convoys[cid] = [
+                        v for v in self._active_convoys[cid] if v not in departed_convoy]
+                    if not self._active_convoys[cid]:
+                        del self._active_convoys[cid]
+
+        if need_premium:
+            departed.clear()
+            for vid in list(self._active_premium_ids):
+                try:
+                    lane = sumo.vehicle.getLaneID(vid)
+                    vwait = sumo.vehicle.getWaitingTime(vid)
+                except Exception:
+                    departed.add(vid)
+                    continue
+                mapping = self._lane_to_agent.get(lane)
+                if mapping is None:
+                    continue
+                agent_id, lane_idx = mapping
+                self._has_premium[agent_id][lane_idx] = 1.0
+                self._premium_wait[agent_id][lane_idx] = max(
+                    self._premium_wait[agent_id][lane_idx], vwait)
+            self._active_premium_ids -= departed
+
+        # ── Normalize and store ──
+        if need_bus:
+            for agent_id in self.possible_agents:
+                self._bus_wait[agent_id] = np.clip(
+                    self._bus_wait[agent_id] / self._bus_cost_threshold, 0.0, 1.0)
+                self._bus_count[agent_id] = np.clip(
+                    self._bus_count[agent_id] / 5.0, 0.0, 1.0)
+
+        if need_convoy:
+            for agent_id in self.possible_agents:
+                # Convoy progress PER AGENT using persistent tracking
+                agent_history = self._convoy_seen_by_agent.setdefault(agent_id, {})
+                agent_cmap = convoy_lane_map.get(agent_id, {})
+                agent_con = convoy_on_incoming.get(agent_id, {})
+
+                for cid, lane_idx in agent_cmap.items():
+                    current_vids = agent_con.get(cid, set())
                     seen = agent_history.setdefault(cid, set())
                     seen.update(current_vids)
-                    # Progress: fraction of ever-seen that are no longer on incoming
                     if len(seen) > 0:
                         still_here = len(current_vids & seen)
                         passed = len(seen) - still_here
                         progress = passed / len(seen)
-                        convoy_progress[lane_idx] = max(
-                            convoy_progress[lane_idx], progress
-                        )
+                        self._convoy_progress[agent_id][lane_idx] = max(
+                            self._convoy_progress[agent_id][lane_idx], progress)
 
-                convoy_count_norm = np.clip(convoy_count / self._convoy_size_max, 0.0, 1.0)
-                self._has_convoy[agent_id] = has_convoy
-                self._convoy_count[agent_id] = convoy_count_norm
-                self._convoy_progress[agent_id] = convoy_progress
+                self._convoy_count[agent_id] = np.clip(
+                    self._convoy_count[agent_id] / self._convoy_size_max, 0.0, 1.0)
 
-            # Store premium features
-            if need_premium:
-                premium_wait = np.clip(premium_wait / self._premium_cost_threshold, 0.0, 1.0)
-                self._has_premium[agent_id] = has_premium
-                self._premium_wait[agent_id] = premium_wait
+        if need_premium:
+            for agent_id in self.possible_agents:
+                self._premium_wait[agent_id] = np.clip(
+                    self._premium_wait[agent_id] / self._premium_cost_threshold, 0.0, 1.0)
 
     def _extend_obs_spaces(self):
         """No-op: obs spaces are pre-extended in __init__."""
@@ -2096,6 +2143,8 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._convoy_counter = 0
             self._premium_counter = 0
             self._active_convoys = {}  # reset convoy tracking
+            self._active_bus_ids = set()
+            self._active_premium_ids = set()
             self._convoy_seen_by_agent = {}  # reset per-agent convoy history
             if self._is_clean_episode:
                 # Push injection past episode horizon → no events
@@ -2127,6 +2176,13 @@ class SumoRewardCostWrapper(ParallelEnv):
                     self._convoy_progress[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._has_premium[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._premium_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+            # Build reverse lookup: lane_name → (agent_id, lane_index)
+            self._lane_to_agent = {}
+            for agent_id in self.possible_agents:
+                ts = self._get_traffic_signal(agent_id)
+                if ts is not None:
+                    for i, lane in enumerate(ts.lanes):
+                        self._lane_to_agent[lane] = (agent_id, i)
 
         # Spillback / road works setup
         if self._cost_fn == "spillback":
@@ -2539,8 +2595,8 @@ def make_sumo_raw_env(
     reward_fn: str = "diff-waiting-time",
     sumo_seed: Union[str, int] = "random",
     use_gui: bool = False,
-    add_system_info: bool = True,
-    add_per_agent_info: bool = True,
+    add_system_info: bool = False,
+    add_per_agent_info: bool = False,
 ):
     """
     Create a SUMO-RL PettingZoo parallel env.

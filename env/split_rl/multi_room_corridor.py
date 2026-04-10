@@ -88,10 +88,10 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         #   corridor:    rows (top_room_h+1) .. (corridor_end)
         #   bottom rooms: rows (bottom_start) .. (height-2)
         #
-        # The corridor is 1 tile wide centered on the grid.
+        # The corridor is 3 tiles wide centered on the grid.
 
         corridor_x = width // 2  # center column for corridor
-        corridor_width = 1  # single tile wide
+        corridor_width = 3  # 3 tiles wide for easier transit
 
         # Vertical splits:
         # top room: rows 1 to top_room_bottom (exclusive)
@@ -122,10 +122,18 @@ class MultiRoomCorridorEnv(MiniGridEnv):
             self.grid.set(x, top_room_bottom, Wall())
 
         # ============================================================
-        # Carve out the CORRIDOR (single column)
+        # Fill corridor section with walls, then carve passage
+        # (wall_rect only creates borders, interior is empty by default)
         # ============================================================
+        corridor_left = corridor_x - corridor_width // 2   # 9 - 1 = 8
+        corridor_right = corridor_x + corridor_width // 2  # 9 + 1 = 10
         for y in range(corridor_top, corridor_bottom + 1):
-            self.grid.set(corridor_x, y, None)
+            for x in range(1, width - 1):
+                self.grid.set(x, y, Wall())
+        # Now carve out the 3-tile wide corridor
+        for y in range(corridor_top, corridor_bottom + 1):
+            for cx in range(corridor_left, corridor_right + 1):
+                self.grid.set(cx, y, None)
 
         # ============================================================
         # Build the wall row at bottom_top
@@ -154,14 +162,16 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         # ============================================================
 
         # 1. Door from corridor into top room (locked, top_door_color)
-        #    Opening in the top_room_bottom wall at corridor_x
+        #    Only the center tile has the door; side tiles remain walls
+        #    so the agent cannot bypass the locked door.
         top_door = Door(self.top_door_color, is_locked=True)
         self.grid.set(corridor_x, top_room_bottom, top_door)
         self.top_door_pos = (corridor_x, top_room_bottom)
 
         # 2. Door from corridor into middle bottom room
-        #    Opening in the bottom_top wall at corridor_x (open passage)
-        self.grid.set(corridor_x, bottom_top, None)
+        #    Opening in the bottom_top wall — all corridor tiles are open passage
+        for cx in range(corridor_left, corridor_right + 1):
+            self.grid.set(cx, bottom_top, None)
 
         # 3. Door from middle room to left room (passage blocked by ball)
         #    Opening in the left_wall at a middle row
@@ -301,7 +311,7 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         if self._prev_dist_to_goal is not None:
             # Reward for getting closer to goal (potential-based shaping)
             dist_delta = self._prev_dist_to_goal - dist_to_goal
-            reward += 0.1 * dist_delta
+            reward += 0.01 * dist_delta
         self._prev_dist_to_goal = dist_to_goal
 
         # --- Goal completion: big reward ---
