@@ -379,6 +379,9 @@ def parse_args():
     parser.add_argument('--line_search_shrinking_factor', type=float)
     parser.add_argument('--kappa', type=float)
     parser.add_argument('--penalty_max', type=float)
+    # CUP
+    parser.add_argument('--cup_target_kl', type=float)
+    parser.add_argument('--cup_update_iters', type=int)
     
     args = parser.parse_args()
 
@@ -495,6 +498,8 @@ def get_defaults(args, defaults):
         algo_defaults.get('line_search_max_iter', 15)
     args.line_search_shrinking_factor = args.line_search_shrinking_factor if args.line_search_shrinking_factor is not None else \
         algo_defaults.get('line_search_shrinking_factor', 0.8)
+    args.cup_target_kl = args.cup_target_kl if args.cup_target_kl is not None else algo_defaults.get('cup_target_kl', 0.02)
+    args.cup_update_iters = args.cup_update_iters if args.cup_update_iters is not None else algo_defaults.get('cup_update_iters', 10)
     # NN Params
     args.learning_rate = preprocess_lr(args.learning_rate if args.learning_rate is not None else
                                        algo_defaults.get('learning_rate', 1.e-2))
@@ -1221,7 +1226,9 @@ def process_policy_kwargs(args):
             "lambda_lr": args.lambda_lr,
             "lambda_optimizer": args.lambda_optimizer,
             "lagrangian_upper_bound": args.lagrangian_upper_bound,
-            "cf_coef": args.cf_coef
+            "cf_coef": args.cf_coef,
+            "cup_target_kl": args.cup_target_kl,
+            "cup_update_iters": args.cup_update_iters
         }
     elif args.algo_type == 'cpo':
         from policies.cost_actor_critic import CostActorCriticPolicy
