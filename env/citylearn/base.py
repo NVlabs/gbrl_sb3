@@ -249,9 +249,11 @@ class CityLearnBaseWrapper(gym.Wrapper):
 
     def step(self, action):
         # ---- pre-step: label from the state the agent OBSERVED --------
-        # _at_timestep / _latest read the current observable state before
-        # the environment advances, so the label is a *pre-decision*
-        # frontier indicator (matches the obs stored in the rollout buffer).
+        # The label is computed BEFORE env.step(action) so it reflects
+        # the same state the agent used to choose the action.  Pre-step
+        # accessors (_at_pre_step, _max_pre_step_price) read pre-allocated
+        # arrays at index time_step (not yet incremented); _latest reads
+        # the tail of live-appended series.
         self._ensure_base_init()
         pre_label = self._compute_label(None)
 

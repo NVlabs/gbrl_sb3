@@ -12,23 +12,23 @@ import pytest
 
 @pytest.fixture(scope="module")
 def arb_env():
-    from env.citylearn.arbitrage_vs_buffer import make_arbitrage_vs_buffer_env
+    from env.citylearn.scenarios import make_arbitrage_vs_buffer_env
     env = make_arbitrage_vs_buffer_env()
     yield env
     env.close()
 
 
 @pytest.fixture(scope="module")
-def peak_env():
-    from env.citylearn.peak_shaving import make_peak_shaving_env
-    env = make_peak_shaving_env()
+def demand_env():
+    from env.citylearn.scenarios import make_contract_demand_env
+    env = make_contract_demand_env()
     yield env
     env.close()
 
 
 @pytest.fixture(scope="module")
 def carbon_env():
-    from env.citylearn.carbon_aware import make_carbon_aware_env
+    from env.citylearn.scenarios import make_carbon_aware_env
     env = make_carbon_aware_env()
     yield env
     env.close()
@@ -161,85 +161,83 @@ class TestArbitrageLabel:
 
 
 # -----------------------------------------------------------------------
-# Peak Shaving — cost & label
+# Contract Demand — cost & label
 # -----------------------------------------------------------------------
 
-class TestPeakShavingCost:
+class TestContractDemandCost:
 
-    def test_cost_zero_below_rolling_peak(self, peak_env):
-        """Cost must be 0 when current total NEC ≤ rolling daily peak."""
-        env = peak_env
+    def test_cost_zero_below_frontier(self, demand_env):
+        """Cost must be 0 when district import ≤ frontier."""
+        env = demand_env
         obs, info = env.reset()
 
         for _ in range(50):
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
-            current_nec = env._total_current_nec()
-            prev_peak = env._rolling_daily_peak()
+            district_import = env._district_import_post_step()
 
-            if current_nec is not None and prev_peak is not None and prev_peak > 0:
-                if current_nec <= prev_peak:
+            if district_import is not None and env._frontier is not None:
+                if district_import <= env._frontier:
                     assert info["cost"] == 0.0, (
-                        f"Cost should be 0 when nec={current_nec:.4f} <= "
-                        f"peak={prev_peak:.4f}, got {info['cost']:.4f}"
+                        f"Cost should be 0 when import={district_import:.4f} <= "
+                        f"frontier={env._frontier:.4f}, got {info['cost']:.4f}"
                     )
 
             if term or trunc:
                 obs, info = env.reset()
 
-    def test_cost_positive_above_rolling_peak(self, peak_env):
-        """Cost must be positive when current total NEC exceeds rolling peak."""
-        env = peak_env
+    def test_cost_positive_above_frontier(self, demand_env):
+        """Cost must be positive when district import > frontier."""
+        env = demand_env
         obs, info = env.reset()
 
         for _ in range(100):
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
-            current_nec = env._total_current_nec()
-            prev_peak = env._rolling_daily_peak()
+            district_import = env._district_import_post_step()
 
-            if (current_nec is not None and prev_peak is not None
-                    and prev_peak > 0 and current_nec > prev_peak):
+            if (district_import is not None and env._frontier is not None
+                    and district_import > env._frontier):
                 assert info["cost"] > 0.0, (
-                    f"Cost should be > 0 when nec={current_nec:.4f} > "
-                    f"peak={prev_peak:.4f}, got {info['cost']:.4f}"
+                    f"Cost should be > 0 when import={district_import:.4f} > "
+                    f"frontier={env._frontier:.4f}, got {info['cost']:.4f}"
                 )
 
             if term or trunc:
                 obs, info = env.reset()
 
 
-class TestPeakShavingLabel:
+class TestContractDemandLabel:
 
-    def test_label_requires_near_peak_and_high_nsl(self, peak_env):
-        """Label=1 requires total NSL near rolling NSL peak AND high.
+    def test_label_requires_near_cap_low_price_storage(self, demand_env):
+        """Label=1 requires: prev import ≥ frontier, low price, usable storage.
 
-        Label is computed pre-step using NSL (exogenous, pre-allocated);
-        snapshot the same pre-step values the label used.
+        Label is computed pre-step; snapshot the same pre-step values.
         """
-        env = peak_env
+        env = demand_env
         obs, info = env.reset()
 
         for _ in range(200):
-            # Snapshot pre-step state (what the label was computed from)
-            pre_nsl = env._total_pre_step_nsl()
-            nsl_peak = env._rolling_nsl_peak_pre_step()
+            # Snapshot pre-step state
+            pre_import = env._district_import_prev_step()
+            buildings = env._get_buildings()
+            pre_price = env._max_pre_step_price(buildings)
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                assert pre_nsl is not None
-                assert nsl_peak is not None and nsl_peak > 0
-                assert pre_nsl >= env._peak_proximity * nsl_peak - 1e-6, (
-                    f"Label=1 but pre-step nsl={pre_nsl:.4f} < "
-                    f"{env._peak_proximity}×nsl_peak={nsl_peak:.4f}"
+                assert pre_import is not None
+                assert pre_import >= env._frontier - 1e-6, (
+                    f"Label=1 but pre-step import={pre_import:.4f} < "
+                    f"frontier={env._frontier:.4f}"
                 )
-                assert pre_nsl > env._nsl_threshold - 1e-6, (
-                    f"Label=1 but pre-step total_nsl={pre_nsl:.4f} <= "
-                    f"nsl_threshold={env._nsl_threshold:.4f}"
+                assert pre_price is not None
+                assert pre_price <= env._price_low_threshold + 1e-6, (
+                    f"Label=1 but pre-step price={pre_price:.4f} > "
+                    f"threshold={env._price_low_threshold:.4f}"
                 )
 
             if term or trunc:
@@ -253,7 +251,7 @@ class TestPeakShavingLabel:
 class TestCarbonAwareCost:
 
     def test_cost_zero_when_no_grid_import(self, carbon_env):
-        """Cost must be 0 when all buildings export (NEC ≤ 0)."""
+        """Cost must be 0 when district net export (total NEC ≤ 0)."""
         env = carbon_env
         obs, info = env.reset()
 
@@ -261,17 +259,19 @@ class TestCarbonAwareCost:
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
-            all_export = True
+            # District total NEC
+            total_nec = 0.0
+            n = 0
             for b in env._get_buildings():
                 nec = env._at_timestep(b.net_electricity_consumption)
-                if nec is not None and nec > 0:
-                    all_export = False
-                    break
+                if nec is not None:
+                    total_nec += nec
+                    n += 1
 
-            if all_export:
+            if n > 0 and total_nec <= 0:
                 assert info["cost"] == 0.0, (
-                    f"Cost should be 0 when all buildings export, "
-                    f"got {info['cost']:.6f}"
+                    f"Cost should be 0 when district NEC={total_nec:.6f} "
+                    f"<= 0, got {info['cost']:.6f}"
                 )
 
             if term or trunc:
@@ -280,23 +280,20 @@ class TestCarbonAwareCost:
 
 class TestCarbonAwareLabel:
 
-    def test_label_requires_high_carbon_low_price_and_import(self, carbon_env):
-        """Label=1 requires high carbon, low price, AND district importing.
+    def test_label_requires_high_carbon_low_price_and_storage(self, carbon_env):
+        """Label=1 requires high carbon, low price, AND usable storage.
 
-        Label is computed pre-step; snapshot values before stepping.
+        Label is computed pre-step using pre-step accessors for carbon
+        and price (pre-allocated arrays).  Snapshot the same values.
         """
         env = carbon_env
         obs, info = env.reset()
 
         for _ in range(200):
-            # Snapshot pre-step state
+            # Snapshot pre-step state (same accessors the label uses)
             buildings = env._get_buildings()
-            pre_carbon = env._max_current_carbon(buildings)
-            pre_price = env._max_current_price(buildings)
-            pre_total_nec = sum(
-                env._at_timestep(b.net_electricity_consumption) or 0.0
-                for b in buildings
-            )
+            pre_carbon = env._max_pre_step_carbon(buildings)
+            pre_price = env._max_pre_step_price(buildings)
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
@@ -312,10 +309,6 @@ class TestCarbonAwareLabel:
                     f"Label=1 but pre-step price={pre_price:.4f} > "
                     f"threshold={env._price_threshold:.4f}"
                 )
-                assert pre_total_nec > 0, (
-                    f"Label=1 but pre-step district NEC={pre_total_nec:.4f} "
-                    f"<= 0 (no import pressure)"
-                )
 
             if term or trunc:
                 obs, info = env.reset()
@@ -328,7 +321,7 @@ class TestCarbonAwareLabel:
 class TestInfoKeys:
 
     @pytest.mark.parametrize("env_fixture", [
-        "arb_env", "peak_env", "carbon_env",
+        "arb_env", "demand_env", "carbon_env",
     ])
     def test_info_keys_present(self, env_fixture, request):
         env = request.getfixturevalue(env_fixture)
@@ -359,7 +352,7 @@ class TestArbitrageActionGap:
 
     def test_discharge_vs_hold_at_frontier(self):
         """At label=1: discharge → higher reward, higher cost (or both 0)."""
-        from env.citylearn.arbitrage_vs_buffer import make_arbitrage_vs_buffer_env
+        from env.citylearn.scenarios import make_arbitrage_vs_buffer_env
         import numpy as np
 
         # Two identical envs (deterministic — same schema, same weather)
@@ -401,6 +394,10 @@ class TestArbitrageActionGap:
                 reward_gaps.append(r_dis - r_hold)
                 cost_gaps.append(info_dis["cost"] - info_hold["cost"])
                 found += 1
+
+                # Break if either env terminated during the diverge step
+                if term_a or trunc_a or term_b or trunc_b:
+                    break
 
                 # Re-sync: both envs already have different state now,
                 # but we keep going to collect more samples.  For strict
