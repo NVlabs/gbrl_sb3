@@ -707,9 +707,11 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         edge = rng.choice(candidates)
 
-        # Save original speed and reduce to near-zero
+        # Save original speed (read from first lane) and reduce to near-zero
         try:
-            original_speed = sumo.edge.getMaxSpeed(edge)
+            lanes = sumo.edge.getLaneNumber(edge)
+            first_lane = f"{edge}_0"
+            original_speed = sumo.lane.getMaxSpeed(first_lane)
             sumo.edge.setMaxSpeed(edge, self._roadwork_speed)
         except Exception:
             self._next_roadwork_time = sim_time + 60.0
@@ -1433,16 +1435,24 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _convoy_priority_label(self, agent_id: str) -> int:
         """State partition for convoy priority: g(s) → {0, 1}.
 
-        Routes gradients to the cost head when a convoy is actively
-        splitting (0 < progress < 1 on an unserved lane).
+        Routes gradients to the cost head in two windows:
 
-        This partitions the state space into the region where the
-        cost objective (keep the convoy together) should dominate
-        vs where the reward objective (minimise total waiting) is
-        sufficient on its own.
+        1. **Anticipatory** (progress == 0, can_switch, count >= τ):
+           Convoy is waiting on an unserved lane and the agent CAN
+           switch phase to serve it. This is the decision frontier
+           where the next action changes the reward-vs-cost tradeoff.
+
+        2. **Reactive** (0 < progress < 1):
+           Active split already in progress. Reinforces that split
+           states are costly regardless of whether the agent can act.
+
+        Window 1 is what gives Split-RL an edge over CUP: the cost
+        head gets gradients BEFORE the split, enabling preemptive
+        phase switches that CUP cannot learn from cost alone.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
+        convoy_count = self._convoy_count.get(agent_id)
         if has_convoy is None or convoy_progress is None:
             return 0
 
@@ -1452,12 +1462,17 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
 
         for i in range(len(has_convoy)):
             if has_convoy[i] > 0 and i not in served_lanes:
-                # Active split: some passed, some still on incoming lane
+                # Window 2: active split (always fires)
                 if 0 < convoy_progress[i] < 1.0:
                     return 1
+                # Window 1: anticipatory — convoy waiting, agent can act
+                if convoy_progress[i] == 0 and can_switch:
+                    if convoy_count is not None and convoy_count[i] >= 0.25:
+                        return 1
         return 0
 
     # ── Spillback cost/label ─────────────────────────────────────────────
