@@ -1,4 +1,6 @@
 #!/usr/bin/env python3.10
+import os
+os.environ.setdefault("LIBSUMO_AS_TRACI", "1")  # in-process C++ instead of TCP socket
 """Training runner with checkpointing, wandb integration, and optional SLURM auto-resume.
 
 Wraps scripts/train.py to add:

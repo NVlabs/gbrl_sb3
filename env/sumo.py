@@ -354,6 +354,11 @@ class SumoRewardCostWrapper(ParallelEnv):
         else:
             self.observation_spaces = raw_obs_spaces
 
+        # Per-step TraCI query cache — avoids redundant IPC for the same
+        # agent+method across cost / label / metrics within one step.
+        # Cleared at top of _process_step(); keyed by (agent_id, method_name).
+        self._step_cache: Dict[tuple, Any] = {}
+
         # TraCI connection (set after first reset)
         self._sumo = None
         self._sumo_env = None  # underlying SumoEnvironment
@@ -426,6 +431,23 @@ class SumoRewardCostWrapper(ParallelEnv):
         if sumo_env is not None and hasattr(sumo_env, 'traffic_signals'):
             return sumo_env.traffic_signals.get(agent_id)
         return None
+
+    def _ts_query(self, agent_id: str, method_name: str):
+        """Cached TrafficSignal query — avoids redundant TraCI calls within one step.
+
+        Each (agent_id, method_name) pair is queried at most once per
+        env step.  Cache is cleared at the start of _process_step().
+        """
+        key = (agent_id, method_name)
+        result = self._step_cache.get(key)
+        if result is not None:
+            return result
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return None
+        result = getattr(ts, method_name)()
+        self._step_cache[key] = result
+        return result
 
     def _patch_sumo_step(self):
         """Monkey-patch SumoEnvironment._sumo_step to accumulate failure events.
@@ -1586,13 +1608,12 @@ class SumoRewardCostWrapper(ParallelEnv):
         Positive when mainline waiting decreases (mainline served).
         Negative when mainline waiting increases (mainline starved).
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
         ml_idx = self._mainline_lane_indices.get(agent_id, [])
         if not ml_idx:
             return 0.0
-        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        wait_per_lane = self._ts_query(agent_id, 'get_accumulated_waiting_time_per_lane')
+        if not wait_per_lane:
+            return 0.0
         ml_wait = sum(wait_per_lane[i] for i in ml_idx) / 100.0
         prev = self._prev_mainline_wait.get(agent_id, 0.0)
         self._prev_mainline_wait[agent_id] = ml_wait
@@ -1614,16 +1635,12 @@ class SumoRewardCostWrapper(ParallelEnv):
         while preserving the continuous severity signal that makes a
         cheap green flick only partially relieve the cost.
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-
         side_idx = self._side_lane_indices.get(agent_id, [])
         if not side_idx:
             return 0.0
 
         counters = self._steps_since_served.get(agent_id, {})
-        lane_queues = ts.get_lanes_queue()
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
 
         deficit = 0.0
         for li in side_idx:
@@ -1642,16 +1659,12 @@ class SumoRewardCostWrapper(ParallelEnv):
         low-deficit states (reward update) from urgent-neglect states
         (cost update) for SPLIT-RL gradient routing.
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-
         side_idx = self._side_lane_indices.get(agent_id, [])
         if not side_idx:
             return 0
 
         counters = self._steps_since_served.get(agent_id, {})
-        lane_queues = ts.get_lanes_queue()
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
 
         deficit = 0.0
         for li in side_idx:
@@ -1685,15 +1698,11 @@ class SumoRewardCostWrapper(ParallelEnv):
             side-street queue features → SPLIT-RL gradient routing is
             meaningful, not random
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-
         side_idx = self._side_lane_indices.get(agent_id, [])
         if not side_idx:
             return 0.0
 
-        lane_queues = ts.get_lanes_queue()
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
         side_queues = [lane_queues[i] for i in side_idx if i < len(lane_queues)]
         return max(side_queues) if side_queues else 0.0
 
@@ -1712,15 +1721,11 @@ class SumoRewardCostWrapper(ParallelEnv):
           - label=1: side-streets are overloaded → cost gradient must
             steer the policy toward serving them
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-
         side_idx = self._side_lane_indices.get(agent_id, [])
         if not side_idx:
             return 0
 
-        lane_queues = ts.get_lanes_queue()
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
         side_queues = [lane_queues[i] for i in side_idx if i < len(lane_queues)]
         if not side_queues:
             return 0
@@ -1740,16 +1745,12 @@ class SumoRewardCostWrapper(ParallelEnv):
           - But side-street steps_since_served grows → cost fires
           - Must periodically serve side-streets → mainline reward ↓
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-
         side_idx = self._side_lane_indices.get(agent_id, [])
         if not side_idx:
             return 0.0
 
         counters = self._steps_since_served.get(agent_id, {})
-        lane_queues = ts.get_lanes_queue()
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
 
         for li in side_idx:
             steps_unserved = counters.get(li, 0)
@@ -1762,28 +1763,21 @@ class SumoRewardCostWrapper(ParallelEnv):
 
     def _compute_agent_cost_queue_overflow(self, agent_id: str) -> float:
         """1 if total queued vehicles at this intersection > queue_threshold."""
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
+        queued = self._ts_query(agent_id, 'get_total_queued')
+        if queued is None:
             return 0.0
-        queued = ts.get_total_queued()
         return 1.0 if queued > self._queue_threshold else 0.0
 
     def _compute_agent_cost_max_wait(self, agent_id: str) -> float:
         """1 if max accumulated waiting time on any lane > wait_threshold."""
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        wait_per_lane = self._ts_query(agent_id, 'get_accumulated_waiting_time_per_lane')
         if not wait_per_lane:
             return 0.0
         return 1.0 if max(wait_per_lane) > self._wait_threshold else 0.0
 
     def _compute_agent_cost_lane_saturation(self, agent_id: str) -> float:
         """1 if any lane's queue ratio > saturation_threshold."""
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-        lane_queues = ts.get_lanes_queue()
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue')
         if not lane_queues:
             return 0.0
         return 1.0 if max(lane_queues) > self._saturation_threshold else 0.0
@@ -1794,10 +1788,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         Fires when max_wait > tau_abs AND max_wait / (mean_wait + eps) > rho.
         The absolute floor prevents spurious triggers when all waits are tiny.
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        wait_per_lane = self._ts_query(agent_id, 'get_accumulated_waiting_time_per_lane')
         if not wait_per_lane or len(wait_per_lane) < 2:
             return 0.0
         max_w = max(wait_per_lane)
@@ -1840,7 +1831,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0.0
-        return float(-ts.get_pressure())
+        return float(-self._ts_query(agent_id, 'get_pressure'))
 
     def _compute_agent_directional_reward(self, agent_id: str) -> float:
         """Number of moving vehicles on priority lanes only.
@@ -1889,13 +1880,12 @@ class SumoRewardCostWrapper(ParallelEnv):
         when mainline waiting decreases (= mainline is being served).
         Named 'ns_wait' / 'arterial' in override_reward for compat.
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
         ml_idx = self._mainline_lane_indices.get(agent_id, [])
         if not ml_idx:
             return 0.0
-        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        wait_per_lane = self._ts_query(agent_id, 'get_accumulated_waiting_time_per_lane')
+        if not wait_per_lane:
+            return 0.0
         ml_wait = sum(wait_per_lane[i] for i in ml_idx) / 100.0
         prev = self._prev_mainline_wait.get(agent_id, 0.0)
         self._prev_mainline_wait[agent_id] = ml_wait
@@ -1913,13 +1903,12 @@ class SumoRewardCostWrapper(ParallelEnv):
           Cost   = side-street service deficit (minimize, subject to budget)
           Green time is finite: serving mainline starves side-streets.
         """
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
         side_idx = self._side_lane_indices.get(agent_id, [])
         if not side_idx:
             return 0.0
-        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        wait_per_lane = self._ts_query(agent_id, 'get_accumulated_waiting_time_per_lane')
+        if not wait_per_lane:
+            return 0.0
         side_wait = sum(wait_per_lane[i] for i in side_idx) / 100.0
         prev = self._prev_side_wait.get(agent_id, 0.0)
         self._prev_side_wait[agent_id] = side_wait
@@ -1979,18 +1968,21 @@ class SumoRewardCostWrapper(ParallelEnv):
     # ── Per-agent metrics (always computed, for logging) ──────────────────
 
     def _get_agent_metrics(self, agent_id: str) -> Dict[str, float]:
-        """Get per-agent traffic metrics for logging (independent of cost_fn)."""
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
+        """Get per-agent traffic metrics for logging (independent of cost_fn).
+
+        Uses _ts_query() so that queries already made by cost/label
+        functions in the same step are served from cache.
+        """
+        queued = self._ts_query(agent_id, 'get_total_queued')
+        if queued is None:
             return {"queued": 0, "max_wait": 0.0, "max_lane_queue": 0.0,
                     "avg_speed": 1.0, "pressure": 0}
-        queued = ts.get_total_queued()
-        wait_per_lane = ts.get_accumulated_waiting_time_per_lane()
+        wait_per_lane = self._ts_query(agent_id, 'get_accumulated_waiting_time_per_lane')
         max_wait = max(wait_per_lane) if wait_per_lane else 0.0
-        lane_queues = ts.get_lanes_queue()
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue')
         max_lane_queue = max(lane_queues) if lane_queues else 0.0
-        avg_speed = ts.get_average_speed()
-        pressure = ts.get_pressure()
+        avg_speed = self._ts_query(agent_id, 'get_average_speed')
+        pressure = self._ts_query(agent_id, 'get_pressure')
         return {
             "queued": queued,
             "max_wait": max_wait,
@@ -2029,11 +2021,10 @@ class SumoRewardCostWrapper(ParallelEnv):
             return 1
 
         # Event 2: side-street queue above cap
-        ts = self._get_traffic_signal(agent_id)
-        if ts is not None:
-            side_idx = self._side_lane_indices.get(agent_id, [])
-            if side_idx:
-                lane_queues = ts.get_lanes_queue()
+        side_idx = self._side_lane_indices.get(agent_id, [])
+        if side_idx:
+            lane_queues = self._ts_query(agent_id, 'get_lanes_queue')
+            if lane_queues:
                 avg_side_q = sum(lane_queues[i] for i in side_idx) / len(side_idx)
                 if avg_side_q > self._side_queue_cap:
                     return 1
@@ -2227,9 +2218,16 @@ class SumoRewardCostWrapper(ParallelEnv):
         Separated from step() so the outer try/except can catch TraCI
         failures in any of the downstream calls.
 
+        Uses _ts_query() for all TrafficSignal queries to avoid redundant
+        TraCI calls within a single step (cost + label + metrics often
+        query the same data).
+
         label = g(s_{t+1}): describes the state the agent is NOW in.
         cost  = c(s_{t+1}): cost of the resulting state.
         """
+        # Clear per-step TraCI query cache
+        self._step_cache.clear()
+
         # Inject new scenario events + detect from resulting state s_{t+1}.
         # Both injection and detection happen post-step so label/cost
         # reflect the current state the agent just transitioned into.

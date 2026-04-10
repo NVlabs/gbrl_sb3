@@ -11,6 +11,9 @@ import sys
 import warnings
 from pathlib import Path
 
+# Use LIBSUMO (in-process C++) instead of TraCI (TCP socket) for 2-5x speedup
+os.environ.setdefault("LIBSUMO_AS_TRACI", "1")
+
 ROOT_PATH = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT_PATH))
 

@@ -301,7 +301,7 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         if self._prev_dist_to_goal is not None:
             # Reward for getting closer to goal (potential-based shaping)
             dist_delta = self._prev_dist_to_goal - dist_to_goal
-            reward += 0.01 * dist_delta
+            reward += 0.1 * dist_delta
         self._prev_dist_to_goal = dist_to_goal
 
         # --- Goal completion: big reward ---
