@@ -111,13 +111,18 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _mean_electrical_soc(self, pre_step: bool = False) -> Optional[float]:
-        """Mean electrical-storage SOC across buildings that have batteries."""
-        accessor = self._at_pre_step if pre_step else self._at_timestep
+    def _mean_electrical_soc(self) -> Optional[float]:
+        """Mean electrical-storage SOC across buildings that have batteries.
+
+        Always uses ``_at_timestep`` which reads ``soc[ts-1]``.  This is
+        correct for both post-step (cost) and pre-step (label) reads
+        because SOC arrays are written during each step, so the
+        last-written value is always at index ``time_step - 1``.
+        """
         soc_values = []
         for b in self._get_buildings():
             if b.electrical_storage is not None:
-                soc = accessor(b.electrical_storage.soc)
+                soc = self._at_timestep(b.electrical_storage.soc)
                 if soc is not None:
                     soc_values.append(soc)
         return float(np.mean(soc_values)) if soc_values else None
@@ -150,7 +155,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        mean_soc = self._mean_electrical_soc(pre_step=True)
+        mean_soc = self._mean_electrical_soc()
         if mean_soc is None:
             return 0
 
@@ -158,7 +163,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         has_usable = False
         for b in buildings:
             if b.electrical_storage is not None:
-                soc = self._at_pre_step(b.electrical_storage.soc)
+                soc = self._at_timestep(b.electrical_storage.soc)
                 if soc is not None and soc > self._soc_usable_thresh:
                     has_usable = True
                     break

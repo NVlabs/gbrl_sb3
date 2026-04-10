@@ -125,7 +125,9 @@ class TestArbitrageCost:
 class TestArbitrageLabel:
 
     def test_label_requires_frontier_soc(self, arb_env):
-        """Label=1 requires mean SOC within [safety, safety + band].
+        """Label=1 requires either:
+        - mean SOC < safety level (cost recovery), or
+        - mean SOC within [safety, safety + band] (frontier).
 
         Label is computed pre-step, so we snapshot SOC before stepping
         and check the returned label against that snapshot.
@@ -144,13 +146,14 @@ class TestArbitrageLabel:
 
             if info["safety_label"] == 1:
                 assert pre_soc is not None
-                assert pre_soc >= frontier_lower - 1e-6, (
-                    f"Label=1 but pre-step mean_soc={pre_soc:.4f} < "
-                    f"frontier_lower={frontier_lower:.4f}"
-                )
-                assert pre_soc <= frontier_upper + 1e-6, (
-                    f"Label=1 but pre-step mean_soc={pre_soc:.4f} > "
-                    f"frontier_upper={frontier_upper:.4f}"
+                below_safety = pre_soc < frontier_lower
+                in_frontier = (pre_soc >= frontier_lower - 1e-6 and
+                               pre_soc <= frontier_upper + 1e-6)
+                assert below_safety or in_frontier, (
+                    f"Label=1 but pre-step mean_soc={pre_soc:.4f} is "
+                    f"neither below safety={frontier_lower:.4f} nor "
+                    f"within frontier [{frontier_lower:.4f}, "
+                    f"{frontier_upper:.4f}]"
                 )
 
             if term or trunc:
@@ -211,30 +214,29 @@ class TestPeakShavingCost:
 class TestPeakShavingLabel:
 
     def test_label_requires_near_peak_and_high_nsl(self, peak_env):
-        """Label=1 requires total NEC near daily peak AND high total NSL.
+        """Label=1 requires total NSL near rolling NSL peak AND high.
 
-        Label is computed pre-step; snapshot values before stepping.
+        Label is computed pre-step using NSL (exogenous, pre-allocated);
+        snapshot the same pre-step values the label used.
         """
         env = peak_env
         obs, info = env.reset()
 
         for _ in range(200):
-            # Snapshot pre-step state
-            pre_nec = env._total_current_nec()
-            pre_peak = env._rolling_daily_peak()
-            pre_nsl = env._total_current_nsl()
+            # Snapshot pre-step state (what the label was computed from)
+            pre_nsl = env._total_pre_step_nsl()
+            nsl_peak = env._rolling_nsl_peak_pre_step()
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                assert pre_nec is not None
-                assert pre_peak is not None and pre_peak > 0
-                assert pre_nec >= env._peak_proximity * pre_peak - 1e-6, (
-                    f"Label=1 but pre-step nec={pre_nec:.4f} < "
-                    f"{env._peak_proximity}×peak={pre_peak:.4f}"
-                )
                 assert pre_nsl is not None
+                assert nsl_peak is not None and nsl_peak > 0
+                assert pre_nsl >= env._peak_proximity * nsl_peak - 1e-6, (
+                    f"Label=1 but pre-step nsl={pre_nsl:.4f} < "
+                    f"{env._peak_proximity}×nsl_peak={nsl_peak:.4f}"
+                )
                 assert pre_nsl > env._nsl_threshold - 1e-6, (
                     f"Label=1 but pre-step total_nsl={pre_nsl:.4f} <= "
                     f"nsl_threshold={env._nsl_threshold:.4f}"

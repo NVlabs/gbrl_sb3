@@ -12,12 +12,16 @@ reward  =  negative price-weighted net electricity cash-flow  (maximize savings)
 cost    =  daily-peak penalty: fires when district-total net consumption
            sets a new rolling daily maximum, penalising demand spikes
            that translate into demand charges.
-label   =  1 when  (1) district-total NEC is near or above the running
-           daily peak,  (2) district-total non-shiftable load is high
-           (the spike is exogenous, not caused by storage charging),
-           (3) usable electrical storage exists (discharge could shave
-           the peak),  and  (4) price is not extreme (reward does not
-           already dominate the decision).
+label   =  1 when  (1) district-total non-shiftable load (NSL) is near or
+           above the rolling daily NSL peak,  (2) district-total NSL is
+           above the historical ``nsl_quantile`` threshold,  (3) usable
+           electrical storage exists (discharge could shave the peak),
+           and  (4) price is not extreme (reward does not already
+           dominate the decision).
+
+           NEC (net electricity consumption) is action-dependent and
+           therefore not valid for pre-step labels; NSL is exogenous and
+           fully observable before the agent acts.
 
 All aggregation uses **district total** (sum across buildings), because
 demand charges are levied on aggregate grid import, not per-building mean.
@@ -72,9 +76,10 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     All four conditions must hold simultaneously:
 
-    1. Current district-total NEC is ≥
-       ``peak_proximity × rolling_daily_peak`` — the system is near or
-       at the point of setting a new peak.
+    1. Current district-total NSL is ≥
+       ``peak_proximity × rolling_daily_nsl_peak`` — the exogenous
+       demand is near or at the point that could set a new NEC peak.
+       (NEC itself is action-dependent and invalid for pre-step labels.)
     2. District-total non-shiftable load is above the
        ``nsl_quantile``-th percentile of historical district-total NSL —
        the spike is exogenous, not caused by the agent's own storage
@@ -198,6 +203,52 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
                 n += 1
         return float(total) if n > 0 else None
 
+    def _total_pre_step_nsl(self) -> Optional[float]:
+        """District-total non-shiftable load using pre-step accessor.
+
+        NSL arrays are pre-allocated (full episode from CSV), so
+        ``_at_pre_step`` reads ``nsl[ts]`` = the current hour's
+        exogenous demand, valid before the agent acts.
+        """
+        total = 0.0
+        n = 0
+        for b in self._get_buildings():
+            val = self._at_pre_step(b.non_shiftable_load)
+            if val is not None:
+                total += val
+                n += 1
+        return float(total) if n > 0 else None
+
+    def _rolling_nsl_peak_pre_step(self) -> Optional[float]:
+        """Max district-total NSL over the last ``peak_lookback`` hours
+        (excluding current hour), using pre-step timing.
+
+        At pre-step, ``time_step`` has not been incremented, so indices
+        ``0 .. time_step-1`` are the committed previous hours.
+        """
+        ts = self._get_time_step()  # pre-step: not yet incremented
+        lookback_start = max(0, ts - self._peak_lookback)
+        if lookback_start >= ts:
+            return None
+
+        buildings = self._get_buildings()
+        if not buildings:
+            return None
+
+        peak = None
+        for t in range(lookback_start, ts):
+            hour_total = 0.0
+            n = 0
+            for b in buildings:
+                nsl = b.non_shiftable_load
+                if hasattr(nsl, "__len__") and 0 <= t < len(nsl):
+                    hour_total += float(nsl[t])
+                    n += 1
+            if n > 0 and hour_total > 0:
+                if peak is None or hour_total > peak:
+                    peak = hour_total
+        return peak
+
     # ------------------------------------------------------------------
     # Cost
     # ------------------------------------------------------------------
@@ -231,21 +282,22 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        # 1) District-total consumption near daily peak
-        current_nec = self._total_current_nec()
-        if current_nec is None:
+        # 1) District-total NSL near rolling NSL peak (pre-step).
+        #    NSL is the exogenous demand component, fully observable
+        #    before the agent acts.  NEC is action-dependent and invalid.
+        current_nsl = self._total_pre_step_nsl()
+        if current_nsl is None:
             return 0
-        prev_peak = self._rolling_daily_peak()
-        if prev_peak is None or prev_peak <= 0:
+        nsl_peak = self._rolling_nsl_peak_pre_step()
+        if nsl_peak is None or nsl_peak <= 0:
             return 0
-        if current_nec < self._peak_proximity * prev_peak:
+        if current_nsl < self._peak_proximity * nsl_peak:
             return 0
 
         # 2) District-total non-shiftable load is high (spike is exogenous)
         if self._nsl_threshold is None:
             return 0
-        total_nsl = self._total_current_nsl()
-        if total_nsl is None or total_nsl <= self._nsl_threshold:
+        if current_nsl <= self._nsl_threshold:
             return 0
 
         # 3) Usable storage exists
@@ -262,7 +314,7 @@ class PeakShavingWrapper(CityLearnBaseWrapper):
         # 4) Price is not extreme (reward doesn't already dominate)
         if self._price_upper_threshold is None:
             return 0
-        max_price = self._max_current_price(buildings)
+        max_price = self._max_pre_step_price(buildings)
         if max_price is not None and max_price >= self._price_upper_threshold:
             return 0
 
