@@ -211,8 +211,9 @@ class TestContractDemandCost:
 
 class TestContractDemandLabel:
 
-    def test_label_requires_near_cap_low_price_storage(self, demand_env):
-        """Label=1 requires: prev import ≥ frontier, low price, usable storage.
+    def test_label_requires_danger_zone_and_storage(self, demand_env):
+        """Label=1 requires either warning zone (high NSL) or recovery zone
+        (prev import ≥ frontier), plus electrical storage.
 
         Label is computed pre-step; snapshot the same pre-step values.
         """
@@ -222,22 +223,26 @@ class TestContractDemandLabel:
         for _ in range(200):
             # Snapshot pre-step state
             pre_import = env._district_import_prev_step()
-            buildings = env._get_buildings()
-            pre_price = env._max_pre_step_price(buildings)
+            pre_nsl = env._district_current_nsl()
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                assert pre_import is not None
-                assert pre_import >= env._frontier - 1e-6, (
-                    f"Label=1 but pre-step import={pre_import:.4f} < "
-                    f"frontier={env._frontier:.4f}"
+                in_warning = (
+                    pre_nsl is not None
+                    and env._nsl_warning_threshold is not None
+                    and pre_nsl >= env._nsl_warning_threshold - 1e-6
                 )
-                assert pre_price is not None
-                assert pre_price <= env._price_low_threshold + 1e-6, (
-                    f"Label=1 but pre-step price={pre_price:.4f} > "
-                    f"threshold={env._price_low_threshold:.4f}"
+                in_recovery = (
+                    pre_import is not None
+                    and env._frontier is not None
+                    and pre_import >= env._frontier - 1e-6
+                )
+                assert in_warning or in_recovery, (
+                    f"Label=1 but neither warning zone (nsl={pre_nsl}, "
+                    f"thresh={env._nsl_warning_threshold}) nor recovery zone "
+                    f"(import={pre_import}, frontier={env._frontier})"
                 )
 
             if term or trunc:
@@ -280,20 +285,18 @@ class TestCarbonAwareCost:
 
 class TestCarbonAwareLabel:
 
-    def test_label_requires_high_carbon_low_price_and_storage(self, carbon_env):
-        """Label=1 requires high carbon, low price, AND usable storage.
+    def test_label_requires_high_carbon_and_storage(self, carbon_env):
+        """Label=1 requires high carbon AND electrical storage.
 
-        Label is computed pre-step using pre-step accessors for carbon
-        and price (pre-allocated arrays).  Snapshot the same values.
+        Label is computed pre-step using pre-step accessor for carbon.
         """
         env = carbon_env
         obs, info = env.reset()
 
         for _ in range(200):
-            # Snapshot pre-step state (same accessors the label uses)
+            # Snapshot pre-step state (same accessor the label uses)
             buildings = env._get_buildings()
             pre_carbon = env._max_pre_step_carbon(buildings)
-            pre_price = env._max_pre_step_price(buildings)
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
@@ -303,11 +306,6 @@ class TestCarbonAwareLabel:
                 assert pre_carbon > env._carbon_threshold - 1e-6, (
                     f"Label=1 but pre-step carbon={pre_carbon:.4f} <= "
                     f"threshold={env._carbon_threshold:.4f}"
-                )
-                assert pre_price is not None
-                assert pre_price <= env._price_threshold + 1e-6, (
-                    f"Label=1 but pre-step price={pre_price:.4f} > "
-                    f"threshold={env._price_threshold:.4f}"
                 )
 
             if term or trunc:

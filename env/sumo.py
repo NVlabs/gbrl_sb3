@@ -143,24 +143,26 @@ class SumoRewardCostWrapper(ParallelEnv):
         side_queue_cap: float = 0.7,
         deficit_kappa: float = 5.0,
         # Bus / convoy injection parameters
-        bus_injection_interval: float = 25.0,
+        bus_injection_interval: float = 30.0,
         bus_count_per_injection: int = 1,
-        bus_cost_threshold: float = 30.0,
-        bus_warn_threshold: float = 10.0,
+        bus_cost_threshold: float = 15.0,
+        bus_warn_threshold: float = 6.0,
         convoy_injection_interval: float = 80.0,
         convoy_size_min: int = 10,
         convoy_size_max: int = 12,
         convoy_headway: float = 2.0,
         # Premium vehicle injection parameters
-        premium_injection_interval: float = 40.0,
-        premium_cost_threshold: float = 15.0,
-        premium_warn_threshold: float = 5.0,
+        premium_injection_interval: float = 15.0,
+        premium_cost_threshold: float = 8.0,
+        premium_warn_threshold: float = 3.0,
+        premium_count_per_injection: int = 1,
+        premium_headway: float = 2.0,
         # Spillback / road works parameters
-        roadwork_interval_mean: float = 300.0,
-        roadwork_duration_mean: float = 400.0,
-        roadwork_speed: float = 0.3,
-        spillback_occ_threshold: float = 0.45,
-        spillback_warn_threshold: float = 0.25,
+        roadwork_interval_mean: float = 180.0,
+        roadwork_duration_mean: float = 900.0,
+        roadwork_speed: float = 0.05,
+        spillback_occ_threshold: float = 0.30,
+        spillback_warn_threshold: float = 0.18,
         # Scenario event probability (0.0 = events every episode, 0.25 = 25% clean)
         clean_episode_prob: float = 0.0,
     ):
@@ -212,6 +214,8 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._premium_injection_interval = premium_injection_interval
         self._premium_cost_threshold = premium_cost_threshold   # T_premium
         self._premium_warn_threshold = premium_warn_threshold   # T_warn_premium
+        self._premium_count_per_injection = premium_count_per_injection
+        self._premium_headway = premium_headway
 
         # Spillback / road works parameters
         self._roadwork_interval_mean = roadwork_interval_mean
@@ -230,6 +234,8 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         # Precomputed conflict-route pool (built at reset from network metadata)
         self._conflict_routes: List[List[str]] = []
+        self._bus_routes: List[List[str]] = []     # deterministic side-direction routes for buses
+        self._bus_route_cursor: int = 0            # round-robin index into _bus_routes
         self._side_edges: Set[str] = set()
 
         # Bus / convoy runtime state (populated in reset)
@@ -677,36 +683,49 @@ class SumoRewardCostWrapper(ParallelEnv):
         not on boundary edges where vehicles enter/exit the network.
         Only considers edges that appear as downstream targets for at
         least one controlled lane (so blocking them has cost impact).
+
+        Edges are ranked by downstream support count (how many
+        agent-lane pairs reference them) so that _inject_roadwork
+        preferentially blocks high-impact edges.
         """
         sumo = self._get_traci()
         if sumo is None:
             return
 
-        # Collect all downstream edges referenced by any agent
+        # Collect all downstream edges and count how many lane→edge
+        # references each one has (higher = more impactful to block)
+        from collections import Counter
+        edge_support = Counter()
         downstream_set = set()
         for agent_mapping in self._lane_to_downstream_edges.values():
             for edges in agent_mapping.values():
                 downstream_set.update(edges)
+                for e in edges:
+                    edge_support[e] += 1
 
         # Internal = downstream edges that are NOT boundary edges
         all_edges = sumo.edge.getIDList()
         normal_edges = [e for e in all_edges if not e.startswith(':')]
 
-        from collections import Counter
         node_edge_count = Counter()
         for e in normal_edges:
             node_edge_count[sumo.edge.getFromJunction(e)] += 1
             node_edge_count[sumo.edge.getToJunction(e)] += 1
         boundary_nodes = {n for n, c in node_edge_count.items() if c <= 2}
 
-        self._internal_edges = [
+        internal = [
             e for e in downstream_set
             if (sumo.edge.getFromJunction(e) not in boundary_nodes
                 and sumo.edge.getToJunction(e) not in boundary_nodes)
         ]
         # Fallback: if network is too small, use all downstream edges
-        if len(self._internal_edges) < 2:
-            self._internal_edges = list(downstream_set)
+        if len(internal) < 2:
+            internal = list(downstream_set)
+
+        # Sort by support count descending — most-referenced edges first
+        self._internal_edges = sorted(
+            internal, key=lambda e: edge_support[e], reverse=True
+        )
 
     # ── Road works injection / clearing (for spillback) ──────────────
 
@@ -723,7 +742,10 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         rng = self._scenario_rng
 
-        # Pick a random internal edge not already blocked
+        # Pick from top-ranked internal edges not already blocked.
+        # _internal_edges is sorted by support count (descending), so
+        # we prefer high-impact edges.  Pick from the top half with
+        # higher probability to keep some variety across episodes.
         blocked_edges = {rw["edge"] for rw in self._active_roadworks}
         candidates = [e for e in self._internal_edges if e not in blocked_edges]
         if not candidates:
@@ -731,7 +753,11 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._next_roadwork_time = sim_time + 60.0
             return
 
-        edge = rng.choice(candidates)
+        # Weighted selection: top edges get higher weight
+        n = len(candidates)
+        weights = np.array([max(1, n - i) for i in range(n)], dtype=float)
+        weights /= weights.sum()
+        edge = candidates[rng.choice(n, p=weights)]
 
         # Save original speed (read from first lane) and reduce to near-zero
         try:
@@ -754,14 +780,9 @@ class SumoRewardCostWrapper(ParallelEnv):
         })
         self._roadwork_counter += 1
 
-        # Schedule next road work: maybe another, maybe not (randomness)
-        # 70% chance of another road work after interval, 30% skip
-        if rng.random() < 0.7:
-            interval = self._roadwork_interval_mean * (0.6 + 0.8 * rng.random())
-            self._next_roadwork_time = sim_time + interval
-        else:
-            # Skip this cycle — no new road work for a while
-            self._next_roadwork_time = sim_time + self._roadwork_interval_mean * 2.0
+        # Schedule next road work
+        interval = self._roadwork_interval_mean * (0.6 + 0.8 * rng.random())
+        self._next_roadwork_time = sim_time + interval
 
     def _clear_roadworks(self, sim_time: float):
         """Clear expired road works, restoring original edge speeds."""
@@ -979,6 +1000,35 @@ class SumoRewardCostWrapper(ParallelEnv):
         candidates.sort(key=lambda x: x[0], reverse=True)
         self._conflict_routes = [r for _, r in candidates[:50]]
 
+    def _precompute_bus_routes(self):
+        """Build a small fixed set of bus-corridor routes.
+
+        Bus corridors are the top 2-4 conflict routes ranked by
+        side-edge fraction.  These are used round-robin so that
+        buses always arrive on the SAME designated lanes — a
+        recurring structured service obligation.
+
+        Falls back to conflict routes if fewer than 2 candidates.
+        """
+        if not self._conflict_routes:
+            self._bus_routes = []
+            return
+        # Take top 4 routes with most side-street edges (already sorted)
+        self._bus_routes = self._conflict_routes[:4]
+        self._bus_route_cursor = 0
+
+    def _select_bus_route(self) -> Optional[List[str]]:
+        """Pick next bus corridor route (round-robin).
+
+        Deterministic cycling through the fixed bus-corridor pool.
+        Every bus uses the same small set of lanes.
+        """
+        if not self._bus_routes:
+            return self._select_conflict_route()
+        route = list(self._bus_routes[self._bus_route_cursor % len(self._bus_routes)])
+        self._bus_route_cursor += 1
+        return route
+
     def _select_conflict_route(self) -> Optional[List[str]]:
         """Pick a route from the precomputed conflict-route pool.
 
@@ -1056,10 +1106,10 @@ class SumoRewardCostWrapper(ParallelEnv):
             return
         rng = self._scenario_rng
 
-        # Bus injection — static conflict route (side-street approach)
+        # Bus injection — fixed corridor routes (round-robin)
         if self._cost_fn == "bus_priority" and sim_time >= self._next_bus_time:
             for _b in range(self._bus_count_per_injection):
-                route_edges = self._select_conflict_route()
+                route_edges = self._select_bus_route()
                 if route_edges is not None and len(route_edges) >= 2:
                     bus_id = f"bus_{self._bus_counter}"
                     route_id = f"bus_route_{self._bus_counter}"
@@ -1099,16 +1149,18 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._convoy_counter += 1
             self._next_convoy_time = sim_time + self._convoy_injection_interval * (0.8 + 0.4 * rng.random())
 
-        # Premium injection — static conflict route (side-street approach)
+        # Premium injection — single VIP on random route (any direction)
         if self._cost_fn == "premium_priority" and sim_time >= self._next_premium_time:
-            route_edges = self._select_conflict_route()
+            route_edges = self._select_random_route(self._scenario_rng)
             if route_edges is not None and len(route_edges) >= 2:
-                prem_id = f"premium_{self._premium_counter}"
                 route_id = f"premium_route_{self._premium_counter}"
                 try:
                     sumo.route.add(route_id, route_edges)
-                    sumo.vehicle.add(prem_id, route_id, typeID="premium_vehicle")
-                    self._active_premium_ids.add(prem_id)
+                    for k in range(self._premium_count_per_injection):
+                        prem_id = f"premium_{self._premium_counter}_{k}"
+                        depart = str(sim_time + k * self._premium_headway)
+                        sumo.vehicle.add(prem_id, route_id, typeID="premium_vehicle", depart=depart)
+                        self._active_premium_ids.add(prem_id)
                     self._premium_counter += 1
                 except Exception:
                     pass
@@ -1313,52 +1365,33 @@ class SumoRewardCostWrapper(ParallelEnv):
     # ── Bus priority cost/label ───────────────────────────────────────────
 
     def _compute_bus_priority_cost(self, agent_id: str) -> float:
-        """Binary violation cost: 1 when a bus has waited past T_cost.
+        """Binary violation cost: 1 when a bus is still overdue.
 
-        cost = 1  if any bus on an unserved lane has bus_wait >= 1.0
-                  (bus_wait is normalized by T_cost, so 1.0 = threshold)
+        cost = 1  if any bus has bus_wait >= 1.0 (normalised by T_cost)
              = 0  otherwise
 
-        Binary (0/1). Scalarised baselines (CUP/CPO) get no gradient
-        direction from this — only a sparse violation signal.
-        Split-RL gets the early label routing via _bus_priority_label.
+        Phase-independent: cost stays active as long as the entity is
+        overdue, even if its lane is currently green.  The vehicle may
+        still be stuck in queue — switching to green is necessary but
+        not sufficient.
         """
         bus_wait = self._bus_wait.get(agent_id)
         has_bus = self._has_bus.get(agent_id)
         if bus_wait is None or has_bus is None:
             return 0.0
-        if not np.any(has_bus > 0):
-            return 0.0
-
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-
-        for i in range(len(has_bus)):
-            if has_bus[i] > 0 and i not in served_lanes:
-                if bus_wait[i] >= 1.0 - 1e-6:
-                    return 1.0
-        return 0.0
+        return 1.0 if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)) else 0.0
 
     def _bus_priority_label(self, agent_id: str) -> int:
         """Danger-zone label for bus priority: g(s) → {0, 1}.
 
-        Marks the region of state space where a bus violation is
-        approaching and the agent can still act.  Fires BEFORE cost
-        (T_warn < T_cost), giving Split-RL an anticipatory routing
-        advantage that scalarised baselines cannot exploit.
-
-        Conditions (all must hold):
-          1. Bus on an unserved lane.
-          2. min_green satisfied — agent CAN switch phase.
-          3. bus_wait > warn_norm — bus has waited past the early
-             warning threshold (but not yet past T_cost).
-
-        No pressure proxy — the value function learns where the
-        reward-cost tradeoff is.  The label just marks the danger
-        region, like minigrid's ``int(facing_lava)``.
+        Two modes:
+          • **Reactive**: any bus already overdue (bus_wait >= 1.0) → label=1
+            immediately.  This keeps the label aligned with cost so
+            Split-RL routes gradients through the cost head while
+            cost is active.
+          • **Anticipatory**: bus approaching overdue (warn < wait < 1.0)
+            on an unserved lane with min_green satisfied.  Fires
+            BEFORE cost, giving Split-RL an early routing advantage.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
@@ -1367,11 +1400,15 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not np.any(has_bus > 0):
             return 0
 
+        # Reactive: already overdue — label must be on while cost is on
+        if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)):
+            return 1
+
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0
 
-        # Condition 2: min_green satisfied (agent can actually switch)
+        # Anticipatory: min_green satisfied (agent can actually switch)
         if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
             return 0
 
@@ -1457,9 +1494,11 @@ class SumoRewardCostWrapper(ParallelEnv):
                     return 1
                 # Window 1: anticipatory — convoy waiting, agent can act
                 # convoy_count is normalized: raw_count / convoy_size_max.
-                # Threshold: at least 3 raw vehicles (meaningful platoon presence).
+                # Threshold: at least 50% of platoon present — fires late
+                # enough that the cost head doesn't take over prematurely,
+                # but early enough to give Split-RL routing advantage.
                 if convoy_progress[i] == 0 and can_switch:
-                    raw_threshold = 3.0 / max(self._convoy_size_max, 1)
+                    raw_threshold = 0.5  # 50% of platoon (already normalised)
                     if convoy_count is not None and convoy_count[i] >= raw_threshold:
                         return 1
         return 0
@@ -1534,51 +1573,30 @@ class SumoRewardCostWrapper(ParallelEnv):
     # ── Premium priority cost/label ──────────────────────────────────────
 
     def _compute_premium_priority_cost(self, agent_id: str) -> float:
-        """Binary violation cost: 1 when a premium vehicle has waited past T_cost.
+        """Binary violation cost: 1 when a premium vehicle is still overdue.
 
-        cost = 1  if any premium on an unserved lane has premium_wait >= 1.0
-                  (premium_wait is normalized by T_cost, so 1.0 = threshold)
+        cost = 1  if any premium has premium_wait >= 1.0 (normalised by T_cost)
              = 0  otherwise
 
-        Binary (0/1). Scalarised baselines get no gradient direction.
-        Split-RL gets early routing via _premium_priority_label.
+        Phase-independent: cost stays active as long as the entity is
+        overdue, even if its lane is currently green.  The vehicle may
+        still be stuck in queue — switching to green is necessary but
+        not sufficient.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
         if has_premium is None or premium_wait is None:
             return 0.0
-        if not np.any(has_premium > 0):
-            return 0.0
-
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-
-        for i in range(len(has_premium)):
-            if has_premium[i] > 0 and i not in served_lanes:
-                if premium_wait[i] >= 1.0 - 1e-6:
-                    return 1.0
-        return 0.0
+        return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str) -> int:
         """Danger-zone label for premium priority: g(s) → {0, 1}.
 
-        Marks the region of state space where a premium violation is
-        approaching and the agent can still act.  Fires BEFORE cost
-        (T_warn < T_cost), giving Split-RL an anticipatory routing
-        advantage that scalarised baselines cannot exploit.
-
-        Conditions (all must hold):
-          1. Premium vehicle on an unserved lane.
-          2. min_green satisfied — agent CAN switch phase.
-          3. premium_wait > warn_norm — premium has waited past the
-             early warning threshold (but not yet past T_cost).
-
-        No pressure proxy — the value function learns where the
-        reward-cost tradeoff is.  The label just marks the danger
-        region, like minigrid's ``int(facing_lava)``.
+        Two modes:
+          • **Reactive**: any premium already overdue (wait >= 1.0) →
+            label=1 immediately.  Keeps label aligned with cost.
+          • **Anticipatory**: premium approaching overdue on an unserved
+            lane with min_green satisfied.  Early routing advantage.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -1587,11 +1605,15 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not np.any(has_premium > 0):
             return 0
 
+        # Reactive: already overdue — label must be on while cost is on
+        if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)):
+            return 1
+
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0
 
-        # Condition 2: min_green satisfied (agent can actually switch)
+        # Anticipatory: min_green satisfied (agent can actually switch)
         if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
             return 0
 
@@ -2104,6 +2126,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._classify_mainline_side()  # also builds phase_to_lanes
             self._discover_boundary_edges()
             self._precompute_conflict_routes()
+            if self._cost_fn == "bus_priority":
+                self._precompute_bus_routes()
             self._bus_vtype_created = False
             self._convoy_vtype_created = False
             self._premium_vtype_created = False
@@ -2708,22 +2732,24 @@ def make_sumo_vec_env(
     tau_service: int = 6,
     side_queue_cap: float = 0.7,
     deficit_kappa: float = 5.0,
-    bus_injection_interval: float = 25.0,
+    bus_injection_interval: float = 30.0,
     bus_count_per_injection: int = 1,
-    bus_cost_threshold: float = 30.0,
-    bus_warn_threshold: float = 10.0,
+    bus_cost_threshold: float = 15.0,
+    bus_warn_threshold: float = 6.0,
     convoy_injection_interval: float = 80.0,
     convoy_size_min: int = 10,
     convoy_size_max: int = 12,
     convoy_headway: float = 2.0,
-    premium_injection_interval: float = 40.0,
-    premium_cost_threshold: float = 15.0,
-    premium_warn_threshold: float = 5.0,
-    roadwork_interval_mean: float = 300.0,
-    roadwork_duration_mean: float = 400.0,
-    roadwork_speed: float = 0.3,
-    spillback_occ_threshold: float = 0.45,
-    spillback_warn_threshold: float = 0.25,
+    premium_injection_interval: float = 15.0,
+    premium_cost_threshold: float = 8.0,
+    premium_warn_threshold: float = 3.0,
+    premium_count_per_injection: int = 1,
+    premium_headway: float = 2.0,
+    roadwork_interval_mean: float = 180.0,
+    roadwork_duration_mean: float = 900.0,
+    roadwork_speed: float = 0.05,
+    spillback_occ_threshold: float = 0.30,
+    spillback_warn_threshold: float = 0.18,
     clean_episode_prob: float = 0.0,
     use_gui: bool = False,
     debug: bool = False,
@@ -2838,6 +2864,8 @@ def make_sumo_vec_env(
         premium_injection_interval=premium_injection_interval,
         premium_cost_threshold=premium_cost_threshold,
         premium_warn_threshold=premium_warn_threshold,
+        premium_count_per_injection=premium_count_per_injection,
+        premium_headway=premium_headway,
         roadwork_interval_mean=roadwork_interval_mean,
         roadwork_duration_mean=roadwork_duration_mean,
         roadwork_speed=roadwork_speed,

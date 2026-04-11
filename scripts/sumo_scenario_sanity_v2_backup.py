@@ -9,16 +9,10 @@ Stage A — Random-policy smoke test:
   - label lead time, horizon-based label P/R/F1
   - Δ = E[r|cost>0] - E[r|cost=0]
 
-Stage B — Scenario-specific probe-policy conflict test:
-  - reward_probe:  scenario-specific reward-maximising heuristic
-  - safety_probe:  scenario-specific safety-maximising heuristic
+Stage B — Rule-based probe-policy conflict test:
+  - reward_greedy: always holds mainline phase (maximize reward)
+  - safety_greedy: switches to side-street phase when entity detected
   - Reports reward drop, cost drop, and conflict verdict
-
-Probe designs per scenario:
-  convoy_priority:  reward=queue_chase, safety=serve convoy lane
-  bus_priority:     reward=queue_chase, safety=urgency-serve bus near threshold (sticky)
-  premium_priority: reward=queue_chase, safety=urgency-serve premium near threshold (sticky)
-  spillback:        reward=queue_chase (ignore ds_occ), safety=avoid high-ds-occ phases
 
 No training. No VecNormalize. Pure scenario measurement.
 All output to stdout. Use tee to save:
@@ -56,31 +50,19 @@ SCENARIOS = {
     },
     "bus_priority": {
         "cost_fn": "bus_priority",
-        "bus_injection_interval": 30.0,
-        "bus_cost_threshold": 15.0,
-        "bus_warn_threshold": 6.0,
+        "bus_injection_interval": 60.0,
+        "bus_cost_threshold": 30.0,
+        "bus_warn_threshold": 10.0,
         "clean_episode_prob": 0.0,
         "label_horizon_steps": 4,
     },
     "premium_priority": {
         "cost_fn": "premium_priority",
-        "premium_injection_interval": 15.0,
-        "premium_cost_threshold": 8.0,
-        "premium_warn_threshold": 3.0,
-        "premium_count_per_injection": 1,
-        "premium_headway": 2.0,
+        "premium_injection_interval": 40.0,
+        "premium_cost_threshold": 15.0,
+        "premium_warn_threshold": 5.0,
         "clean_episode_prob": 0.0,
         "label_horizon_steps": 2,
-    },
-    "spillback": {
-        "cost_fn": "spillback",
-        "roadwork_interval_mean": 180.0,
-        "roadwork_duration_mean": 900.0,
-        "roadwork_speed": 0.05,
-        "spillback_occ_threshold": 0.30,
-        "spillback_warn_threshold": 0.18,
-        "clean_episode_prob": 0.0,
-        "label_horizon_steps": 4,
     },
 }
 
@@ -108,28 +90,23 @@ def make_env(env_name, scenario_name):
     return env
 
 
-def collect_rollout(env, n_steps, scenario_name):
+def collect_rollout(env, n_steps):
     obs = env.reset()
     records = []
-    warn_thresh = SCENARIOS[scenario_name].get("spillback_warn_threshold", 0.25)
     for _ in range(n_steps):
         actions = np.array([env.action_space.sample() for _ in range(env.num_envs)])
         obs, rewards, dones, infos = env.step(actions)
         for i in range(env.num_envs):
             info = infos[i]
-            if scenario_name == "spillback":
-                has_ent = int(info.get("dbg_downstream_occ_max", 0.0) > warn_thresh)
-            else:
-                has_ent = int(bool(
-                    info.get("dbg_has_convoy", 0) or
-                    info.get("dbg_has_bus", 0) or
-                    info.get("dbg_has_premium", 0)))
             records.append({
                 "raw_reward": float(info.get("raw_reward",
                                     info.get("original_reward", rewards[i]))),
                 "cost": float(info.get("cost", 0.0)),
                 "label": int(info.get("safety_label", 0)),
-                "has_entity": has_ent,
+                "has_entity": int(bool(
+                    info.get("dbg_has_convoy", 0) or
+                    info.get("dbg_has_bus", 0) or
+                    info.get("dbg_has_premium", 0))),
             })
     return records
 
@@ -149,10 +126,12 @@ def _find_wrapper(env):
         visited.add(cid)
         if isinstance(cur, SumoRewardCostWrapper):
             return cur
+        # Standard wrapper attributes
         for attr in ('venv', 'par_env', 'env', 'aec_env', '_env'):
             child = getattr(cur, attr, None)
             if child is not None and id(child) not in visited:
                 queue.append(child)
+        # SuperSuit ConcatVecEnv stores sub-envs in a list
         vec_envs = getattr(cur, 'vec_envs', None)
         if isinstance(vec_envs, list):
             for child in vec_envs:
@@ -162,7 +141,13 @@ def _find_wrapper(env):
 
 
 def _build_probe_tables(wrapper):
-    """Extract per-agent phase→lane mapping for probe policies."""
+    """Extract per-agent phase→lane mapping for probe policies.
+
+    Returns (agents, tables, raw_max_obs_dim, ext_max_n_lanes) where
+    tables[agent_id] = {n_act, n_lanes, phase_lanes, lane_to_phase}.
+    phase_lanes[ph] = list of lane indices that phase serves.
+    lane_to_phase[lane_idx] = phase that serves it.
+    """
     agents = list(wrapper.possible_agents)
     ptl = wrapper._phase_to_lanes
     n_actions = wrapper._agent_n_actions
@@ -196,7 +181,11 @@ def _build_probe_tables(wrapper):
 
 
 def _queue_chasing_action(obs_i, t):
-    """Pick the phase whose lanes have the highest total queue."""
+    """Pick the phase whose lanes have the highest total queue.
+
+    Obs layout: [phase_one_hot(n_act), min_green(1), density(n_lanes), queue(n_lanes)]
+    Queue starts at offset n_act + 1 + n_lanes.
+    """
     n_act = t["n_act"]
     n_lanes = t["n_lanes"]
     queue_start = n_act + 1 + n_lanes
@@ -211,195 +200,53 @@ def _queue_chasing_action(obs_i, t):
     return best_ph
 
 
-# ── Scenario-specific safety probes ──────────────────────────────────
-
-def _convoy_safety_action(obs_i, t, raw_max, ext_max):
-    """Convoy: serve the lane with a convoy entity; else queue-chase.
-
-    Obs extension: [has_convoy(M), convoy_count(M), convoy_progress(M)]
-    """
-    if ext_max > 0:
-        has_ent = obs_i[raw_max:raw_max + ext_max]
-        for li in range(min(t["n_lanes"], len(has_ent))):
-            if has_ent[li] > 0 and li in t["lane_to_phase"]:
-                return t["lane_to_phase"][li]
-    return _queue_chasing_action(obs_i, t)
-
-
-def _bus_safety_action(obs_i, t, raw_max, ext_max, sticky_state):
-    """Bus: urgency-aware — only intervene when bus_wait > warn, pick most urgent.
-
-    Obs extension: [has_bus(M), bus_count(M), bus_wait(M)]
-    bus_wait starts at raw_max + 2*ext_max.
-    bus_wait normalised by T_cost, warn_norm = T_warn / T_cost.
-    Sticky: once committed to serving an urgent bus lane, hold for min_hold steps.
-    """
-    warn_norm = 6.0 / 15.0  # bus_warn / bus_cost
-
-    if ext_max > 0:
-        has_bus = obs_i[raw_max:raw_max + ext_max]
-        bus_wait = obs_i[raw_max + 2 * ext_max:raw_max + 3 * ext_max]
-
-        # Check sticky commitment
-        committed_lane = sticky_state.get("committed_lane", -1)
-        committed_ttl = sticky_state.get("committed_ttl", 0)
-        if committed_lane >= 0 and committed_ttl > 0:
-            if (committed_lane < len(has_bus) and has_bus[committed_lane] > 0
-                    and committed_lane < len(bus_wait)
-                    and bus_wait[committed_lane] > warn_norm * 0.5):
-                sticky_state["committed_ttl"] = committed_ttl - 1
-                if committed_lane in t["lane_to_phase"]:
-                    return t["lane_to_phase"][committed_lane]
-            else:
-                sticky_state["committed_lane"] = -1
-                sticky_state["committed_ttl"] = 0
-
-        # Find most urgent unserved bus
-        n_act = t["n_act"]
-        phase_oh = obs_i[:n_act]
-        cur_phase = int(np.argmax(phase_oh))
-        served = set(t["phase_lanes"].get(cur_phase, []))
-
-        best_lane, best_urgency = -1, -1.0
-        for li in range(min(t["n_lanes"], len(has_bus))):
-            if has_bus[li] > 0 and li not in served and li in t["lane_to_phase"]:
-                urgency = bus_wait[li] if li < len(bus_wait) else 0.0
-                if urgency > warn_norm and urgency > best_urgency:
-                    best_urgency = urgency
-                    best_lane = li
-
-        if best_lane >= 0:
-            sticky_state["committed_lane"] = best_lane
-            sticky_state["committed_ttl"] = 3
-            return t["lane_to_phase"][best_lane]
-
-    return _queue_chasing_action(obs_i, t)
-
-
-def _premium_safety_action(obs_i, t, raw_max, ext_max, sticky_state):
-    """Premium: urgency-aware — intervene when premium_wait > warn, sticky.
-
-    Obs extension: [has_premium(M), premium_wait(M)]
-    premium_wait starts at raw_max + ext_max.
-    """
-    warn_norm = 3.0 / 8.0  # premium_warn / premium_cost
-
-    if ext_max > 0:
-        has_prem = obs_i[raw_max:raw_max + ext_max]
-        prem_wait = obs_i[raw_max + ext_max:raw_max + 2 * ext_max]
-
-        committed_lane = sticky_state.get("committed_lane", -1)
-        committed_ttl = sticky_state.get("committed_ttl", 0)
-        if committed_lane >= 0 and committed_ttl > 0:
-            if (committed_lane < len(has_prem) and has_prem[committed_lane] > 0
-                    and committed_lane < len(prem_wait)
-                    and prem_wait[committed_lane] > warn_norm * 0.5):
-                sticky_state["committed_ttl"] = committed_ttl - 1
-                if committed_lane in t["lane_to_phase"]:
-                    return t["lane_to_phase"][committed_lane]
-            else:
-                sticky_state["committed_lane"] = -1
-                sticky_state["committed_ttl"] = 0
-
-        n_act = t["n_act"]
-        phase_oh = obs_i[:n_act]
-        cur_phase = int(np.argmax(phase_oh))
-        served = set(t["phase_lanes"].get(cur_phase, []))
-
-        best_lane, best_urgency = -1, -1.0
-        for li in range(min(t["n_lanes"], len(has_prem))):
-            if has_prem[li] > 0 and li not in served and li in t["lane_to_phase"]:
-                urgency = prem_wait[li] if li < len(prem_wait) else 0.0
-                if urgency > warn_norm and urgency > best_urgency:
-                    best_urgency = urgency
-                    best_lane = li
-
-        if best_lane >= 0:
-            sticky_state["committed_lane"] = best_lane
-            sticky_state["committed_ttl"] = 3
-            return t["lane_to_phase"][best_lane]
-
-    return _queue_chasing_action(obs_i, t)
-
-
-def _spillback_safety_action(obs_i, t, raw_max, ext_max):
-    """Spillback: avoid phases with high downstream occupancy.
-
-    Obs extension: [downstream_occ(M)]
-    Safety = pick phase with LOWEST max downstream_occ (avoid congestion).
-    """
-    warn_thresh = 0.18
-
-    if ext_max > 0:
-        ds_occ = obs_i[raw_max:raw_max + ext_max]
-
-        max_occ = max(ds_occ[li] for li in range(min(t["n_lanes"], len(ds_occ))))
-        if max_occ <= warn_thresh:
-            return _queue_chasing_action(obs_i, t)
-
-        # Score phases: prefer low downstream_occ, tiebreak by queue
-        n_act = t["n_act"]
-        n_lanes = t["n_lanes"]
-        queue_start = n_act + 1 + n_lanes
-        queue = obs_i[queue_start:queue_start + n_lanes]
-
-        best_ph, best_score = 0, -999.0
-        for ph, lanes in t["phase_lanes"].items():
-            if not lanes:
-                continue
-            max_ds = max((ds_occ[li] if li < len(ds_occ) else 0.0) for li in lanes)
-            q_score = sum(queue[li] for li in lanes if li < n_lanes)
-            score = -max_ds * 10.0 + q_score
-            if score > best_score:
-                best_score = score
-                best_ph = ph
-        return best_ph
-
-    return _queue_chasing_action(obs_i, t)
-
-
 def collect_probe_rollout(env, n_steps, agents, tables,
                           raw_max_obs_dim, ext_max_n_lanes,
-                          probe_type, scenario_name,
-                          reset_seed=None, wrapper=None):
+                          probe_type, reset_seed=None, wrapper=None):
     """Run rollout with a deterministic probe policy.
 
-    probe_type: "reward" or "safety"
-    Dispatches to scenario-specific probe based on scenario_name.
+    probe_type:
+      "queue_chasing" — pick phase with highest total queue (reward proxy).
+                        Ignores entities, chases throughput/pressure.
+      "entity_serving" — when entity detected on any lane, pick the phase
+                         that serves that lane; otherwise queue-chase.
+
+    Queue-chasing approximates what a pressure-optimizing policy does.
+    Entity-serving sacrifices queue management to serve special vehicles.
+    The gap between them is the structural reward-cost conflict.
+
+    reset_seed: if set, force the wrapper's episode counter so both probes
+    see the same injected-event realization on reset.
     """
     if reset_seed is not None and wrapper is not None:
-        wrapper._episode_count = reset_seed - 1
+        # Force the wrapper's episode counter so reset() produces the same
+        # _scenario_rng seed (ep_seed = self._episode_count when seed=None).
+        wrapper._episode_count = reset_seed - 1  # reset increments by 1
     obs = env.reset()
     records = []
     n_agents = len(agents)
-
-    # Per-agent sticky state for bus/premium probes
-    sticky_states = {aid: {} for aid in agents}
 
     for _ in range(n_steps):
         actions = np.zeros(env.num_envs, dtype=int)
         for i in range(env.num_envs):
             agent_id = agents[i % n_agents]
             t = tables[agent_id]
-            o = obs[i]
 
-            if probe_type == "reward":
-                # All scenarios: reward = pure queue-chase (ignore entities/ds_occ)
-                actions[i] = _queue_chasing_action(o, t)
+            if probe_type == "queue_chasing":
+                actions[i] = _queue_chasing_action(obs[i], t)
             else:
-                # Safety probe: scenario-specific
-                if scenario_name == "convoy_priority":
-                    actions[i] = _convoy_safety_action(o, t, raw_max_obs_dim, ext_max_n_lanes)
-                elif scenario_name == "bus_priority":
-                    actions[i] = _bus_safety_action(o, t, raw_max_obs_dim, ext_max_n_lanes,
-                                                    sticky_states[agent_id])
-                elif scenario_name == "premium_priority":
-                    actions[i] = _premium_safety_action(o, t, raw_max_obs_dim, ext_max_n_lanes,
-                                                        sticky_states[agent_id])
-                elif scenario_name == "spillback":
-                    actions[i] = _spillback_safety_action(o, t, raw_max_obs_dim, ext_max_n_lanes)
+                # entity_serving: check if any lane has an entity
+                chosen = None
+                if ext_max_n_lanes > 0:
+                    has_ent = obs[i, raw_max_obs_dim:raw_max_obs_dim + ext_max_n_lanes]
+                    for li in range(min(t["n_lanes"], len(has_ent))):
+                        if has_ent[li] > 0 and li in t["lane_to_phase"]:
+                            chosen = t["lane_to_phase"][li]
+                            break
+                if chosen is not None:
+                    actions[i] = chosen
                 else:
-                    actions[i] = _queue_chasing_action(o, t)
+                    actions[i] = _queue_chasing_action(obs[i], t)
 
         obs, rewards, dones, infos = env.step(actions)
         for i in range(env.num_envs):
@@ -413,14 +260,15 @@ def collect_probe_rollout(env, n_steps, agents, tables,
 
 
 def analyze_probes(env_name, scenario_name, n_steps):
-    """Stage B: run reward and safety probes, compare."""
+    """Stage B: run queue-chasing and entity-serving probes, compare."""
     result = dict(env=env_name, scenario=scenario_name,
-                  rew_reward=0.0, rew_cost_rate=0.0,
-                  saf_reward=0.0, saf_cost_rate=0.0,
+                  qc_reward=0.0, qc_cost_rate=0.0,
+                  es_reward=0.0, es_cost_rate=0.0,
                   d_reward=0.0, d_cost=0.0,
                   probe_verdict="ERROR", error=None)
     try:
         env = make_env(env_name, scenario_name)
+        # First reset populates _classify_mainline_side
         env.reset()
         wrapper = _find_wrapper(env)
         if wrapper is None:
@@ -430,6 +278,7 @@ def analyze_probes(env_name, scenario_name, n_steps):
 
         agents, tables, raw_max, ext_m = _build_probe_tables(wrapper)
 
+        # Print probe table summary
         for aid in agents:
             t = tables[aid]
             print(f"      {aid}: n_act={t['n_act']} n_lanes={t['n_lanes']} "
@@ -437,43 +286,48 @@ def analyze_probes(env_name, scenario_name, n_steps):
                   f"lane→phase={t['lane_to_phase']}")
 
         probe_seed = 123
-        rew_recs = collect_probe_rollout(env, n_steps, agents, tables,
-                                          raw_max, ext_m, "reward", scenario_name,
-                                          reset_seed=probe_seed, wrapper=wrapper)
-        saf_recs = collect_probe_rollout(env, n_steps, agents, tables,
-                                          raw_max, ext_m, "safety", scenario_name,
-                                          reset_seed=probe_seed, wrapper=wrapper)
+        qc = collect_probe_rollout(env, n_steps, agents, tables,
+                                   raw_max, ext_m, "queue_chasing",
+                                   reset_seed=probe_seed, wrapper=wrapper)
+        es = collect_probe_rollout(env, n_steps, agents, tables,
+                                   raw_max, ext_m, "entity_serving",
+                                   reset_seed=probe_seed, wrapper=wrapper)
         env.close()
     except Exception as e:
         traceback.print_exc()
         result["error"] = str(e)
         return result
 
-    if not rew_recs or not saf_recs:
+    if not qc or not es:
         result["error"] = "no data from probes"
         return result
 
-    result["rew_reward"] = float(np.mean([r["raw_reward"] for r in rew_recs]))
-    result["rew_cost_rate"] = float(np.mean([r["cost"] > 0 for r in rew_recs]))
-    result["saf_reward"] = float(np.mean([r["raw_reward"] for r in saf_recs]))
-    result["saf_cost_rate"] = float(np.mean([r["cost"] > 0 for r in saf_recs]))
+    result["qc_reward"] = float(np.mean([r["raw_reward"] for r in qc]))
+    result["qc_cost_rate"] = float(np.mean([r["cost"] > 0 for r in qc]))
+    result["es_reward"] = float(np.mean([r["raw_reward"] for r in es]))
+    result["es_cost_rate"] = float(np.mean([r["cost"] > 0 for r in es]))
 
-    result["d_reward"] = result["saf_reward"] - result["rew_reward"]
-    result["d_cost"] = result["rew_cost_rate"] - result["saf_cost_rate"]
+    result["d_reward"] = result["es_reward"] - result["qc_reward"]
+    result["d_cost"] = result["qc_cost_rate"] - result["es_cost_rate"]
 
+    # Verdict logic:
+    # Conflict exists when queue-chaser triggers cost that entity-server avoids,
+    # but entity-server pays a reward penalty.
+    # d_cost > 0 means entity-server reduces cost (good).
+    # d_reward < 0 means entity-server gets worse reward (tradeoff).
     d_r = result["d_reward"]
     d_c = result["d_cost"]
-    rew_cr = result["rew_cost_rate"]
-    saf_cr = result["saf_cost_rate"]
+    qc_cr = result["qc_cost_rate"]
+    es_cr = result["es_cost_rate"]
 
     if result["error"]:
         verdict = "ERROR"
-    elif rew_cr < 0.01 and saf_cr < 0.01:
+    elif qc_cr < 0.01 and es_cr < 0.01:
         verdict = "NO COST (neither probe triggers cost)"
     elif d_c < 0.01:
-        verdict = "NO SEPARATION (safety probe doesn't reduce cost)"
+        verdict = "NO SEPARATION (entity probe doesn't reduce cost)"
     elif d_r >= 0:
-        verdict = "NO TRADEOFF (safety dominates — no reward sacrifice)"
+        verdict = "NO TRADEOFF (entity dominates — no reward sacrifice)"
     elif d_c > 0.03 and d_r < -0.005:
         verdict = "CONFLICT CONFIRMED"
     else:
@@ -535,7 +389,7 @@ def analyze_pair(env_name, scenario_name, n_steps):
 
     try:
         env = make_env(env_name, scenario_name)
-        records = collect_rollout(env, n_steps, scenario_name)
+        records = collect_rollout(env, n_steps)
         env.close()
     except Exception as e:
         traceback.print_exc()
@@ -572,6 +426,8 @@ def analyze_pair(env_name, scenario_name, n_steps):
     result["label_lead"] = lead
     result["n_onsets"] = n_onsets
 
+    # ── Smoke-test verdict ──
+    # Stage A is informational only. Stage B (probes) is the real go/no-go.
     cost_rate = result["cost_rate"]
     event_rate = result["event_rate"]
 
@@ -630,11 +486,11 @@ def print_table(results):
 
 def print_probe_table(results):
     hdr = (f"  {'Env':<26s} {'Scenario':<18s} "
-           f"{'Rew_r':>8s} {'Rew_c%':>6s} "
-           f"{'Saf_r':>8s} {'Saf_c%':>6s} "
+           f"{'QC_rew':>8s} {'QC_c%':>6s} "
+           f"{'ES_rew':>8s} {'ES_c%':>6s} "
            f"{'Δrew':>8s} {'Δcost':>7s} {'Probe Verdict'}")
     sep = "  " + "-" * 120
-    print(f"\n  ═══ Stage B Summary Table ═══")
+    print(f"\n  ═══ Stage B: Probe-Policy Conflict Test ═══")
     print(sep)
     print(hdr)
     print(sep)
@@ -644,8 +500,8 @@ def print_probe_table(results):
                   f"{'':>50s} ERROR: {r['error'][:40]}")
             continue
         print(f"  {r['env']:<26s} {r['scenario']:<18s} "
-              f"{r['rew_reward']:+8.2f} {r['rew_cost_rate']*100:5.1f}% "
-              f"{r['saf_reward']:+8.2f} {r['saf_cost_rate']*100:5.1f}% "
+              f"{r['qc_reward']:+8.2f} {r['qc_cost_rate']*100:5.1f}% "
+              f"{r['es_reward']:+8.2f} {r['es_cost_rate']*100:5.1f}% "
               f"{r['d_reward']:+8.3f} {r['d_cost']*100:+6.1f}% "
               f"{r['probe_verdict']}")
     print(sep)
@@ -660,8 +516,10 @@ def main():
                         choices=list(SCENARIOS.keys()))
     parser.add_argument("--steps", type=int, default=720,
                         help="Steps per rollout (default: 720 = 1 episode)")
-    parser.add_argument("--skip-stage-a", action="store_true")
-    parser.add_argument("--skip-stage-b", action="store_true")
+    parser.add_argument("--skip-stage-a", action="store_true",
+                        help="Skip Stage A (random-policy smoke test)")
+    parser.add_argument("--skip-stage-b", action="store_true",
+                        help="Skip Stage B (probe-policy conflict test)")
     args = parser.parse_args()
 
     envs = [args.env] if args.env else list(ENVS.keys())
@@ -672,7 +530,7 @@ def main():
     print(f"  Steps/rollout: {args.steps}")
     print(f"  Total pairs: {len(envs) * len(scenarios)}")
 
-    # ── Stage A ──
+    # ── Stage A: Random-policy smoke test ──
     stage_a_results = []
     if not args.skip_stage_a:
         print(f"\n  ═══ Stage A: Random-Policy Smoke Test ═══")
@@ -694,21 +552,16 @@ def main():
         issues = [r for r in stage_a_results
                   if not r["verdict"].startswith("ok") and r["verdict"] != "ERROR"]
         errors = [r for r in stage_a_results if r["verdict"] == "ERROR"]
-        print(f"\n  Stage A summary: ok={len(ok)}  "
+        print(f"\n  Stage A smoke test: ok={len(ok)}  "
               f"issues={len(issues)}  errors={len(errors)}")
 
-    # ── Stage B ──
+    # ── Stage B: Probe-policy conflict test ──
     stage_b_results = []
     if not args.skip_stage_b:
-        print(f"\n  ═══ Stage B: Scenario-Specific Probe-Policy Conflict Test (same-seed) ═══")
-        print(f"  reward_probe  = queue-chase (throughput maximiser, ignores entities)")
-        print(f"  safety_probe  = scenario-specific safety-maximising heuristic")
+        print(f"\n  ═══ Stage B: Probe-Policy Conflict Test (same-seed) ═══")
+        print(f"  queue_chasing = pick phase with highest total queue (reward proxy)")
+        print(f"  entity_serving = serve entity's lane when detected; else queue-chase")
         print(f"  Both probes seeded identically → same injection realization")
-        print(f"  Probe designs:")
-        print(f"    convoy:    safety = serve convoy lane on detection")
-        print(f"    bus:       safety = urgency-serve bus near threshold (sticky 3-step hold)")
-        print(f"    premium:   safety = urgency-serve premium near threshold (sticky 3-step hold)")
-        print(f"    spillback: safety = avoid phases with high downstream occupancy")
         for env_name in envs:
             for scenario_name in scenarios:
                 print(f"\n  >>> PROBES: {env_name} x {scenario_name} ...", flush=True)
@@ -718,10 +571,10 @@ def main():
                 if r["error"]:
                     print(f"    ERROR: {r['error']}")
                 else:
-                    print(f"    reward_probe:  E[r]={r['rew_reward']:+.3f}  "
-                          f"cost_rate={r['rew_cost_rate']*100:.1f}%")
-                    print(f"    safety_probe:  E[r]={r['saf_reward']:+.3f}  "
-                          f"cost_rate={r['saf_cost_rate']*100:.1f}%")
+                    print(f"    queue_chasing:  E[r]={r['qc_reward']:+.3f}  "
+                          f"cost_rate={r['qc_cost_rate']*100:.1f}%")
+                    print(f"    entity_serving: E[r]={r['es_reward']:+.3f}  "
+                          f"cost_rate={r['es_cost_rate']*100:.1f}%")
                     print(f"    Δ_reward={r['d_reward']:+.4f}  "
                           f"Δ_cost={r['d_cost']*100:+.1f}%")
                 print(f"    => {r['probe_verdict']}  ({elapsed:.0f}s)")
