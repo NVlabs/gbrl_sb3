@@ -332,7 +332,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 DEFAULT_CD_CAP_QUANTILE = 0.95
 DEFAULT_CD_CAP_MARGIN = 2.5
 DEFAULT_CD_FRONTIER_FRAC = 0.90
-DEFAULT_CD_PRICE_QUANTILE_LOW = 0.60
+DEFAULT_CD_NSL_WARNING_QUANTILE = 0.90
 
 
 class ContractDemandWrapper(CityLearnBaseWrapper):
@@ -362,14 +362,20 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
     Below the frontier: cost = 0.  At or above the cap: cost ≈ 1.
 
-    Label — near-cap + cheap-price frontier
+    Label — near-cap danger region
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    1. Previous-step district import ≥ frontier.
-    2. Current price is low (≤ ``price_quantile_low``).
-    3. Electrical storage exists (lever: "don't charge" or discharge).
+    Two-zone danger label:
 
-    The disagreement: reward likes cheap-price import; cost says we are
-    already near the import cap — reduce import (don't charge, or discharge).
+    * **Warning zone**: current district NSL ≥ ``nsl_warning_quantile``-th
+      percentile of the full-horizon NSL schedule.  Exogenous, observable
+      before the action, and an early predictor of high district import.
+    * **Recovery zone**: previous-step district import ≥ frontier.
+      The system is already near the cap — batteries should help reduce
+      import regardless of price.
+
+    Either zone triggers label = 1 if electrical storage exists.
+    Price is deliberately excluded — it is a reward signal, not a danger
+    signal.
     """
 
     def __init__(
@@ -378,17 +384,17 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
         cap_margin: float = DEFAULT_CD_CAP_MARGIN,
         frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-        price_quantile_low: float = DEFAULT_CD_PRICE_QUANTILE_LOW,
+        nsl_warning_quantile: float = DEFAULT_CD_NSL_WARNING_QUANTILE,
     ):
         super().__init__(env)
         self._cap_quantile = cap_quantile
         self._cap_margin = cap_margin
         self._frontier_frac = frontier_frac
-        self._price_quantile_low = price_quantile_low
+        self._nsl_warning_quantile = nsl_warning_quantile
 
         self._cap: Optional[float] = None
         self._frontier: Optional[float] = None
-        self._price_low_threshold: Optional[float] = None
+        self._nsl_warning_threshold: Optional[float] = None
 
     def _scenario_init(self):
         cl_env = self.unwrapped
@@ -432,17 +438,10 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         self._cap = self._cap_margin * base
         self._frontier = self._frontier_frac * self._cap
 
-        # Price threshold (low)
-        all_prices = []
-        for b in buildings:
-            if hasattr(b, "pricing") and b.pricing is not None:
-                ep = b.pricing.electricity_pricing
-                if hasattr(ep, "__len__") and len(ep) > 0:
-                    all_prices.extend(ep)
-        if all_prices:
-            self._price_low_threshold = float(
-                np.quantile(all_prices, self._price_quantile_low)
-            )
+        # NSL warning threshold from the same district total schedule
+        self._nsl_warning_threshold = float(
+            np.quantile(hourly_totals, self._nsl_warning_quantile)
+        )
 
     # -- Helpers -------------------------------------------------------
 
@@ -481,6 +480,25 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
             return None
         return max(total, 0.0)
 
+    def _district_current_nsl(self) -> Optional[float]:
+        """District non-shiftable load at the current pre-step timestep.
+
+        Uses ``_latest()`` on the live-appended NSL series so it reads
+        the most recent exogenous value *before* the action is applied.
+        """
+        total = 0.0
+        n = 0
+        for b in self._get_buildings():
+            nsl = getattr(b, "non_shiftable_load", None)
+            if nsl is not None and hasattr(nsl, "__len__") and len(nsl) > 0:
+                val = self._latest(nsl)
+                if val is not None:
+                    total += val
+                    n += 1
+        if n == 0:
+            return None
+        return total
+
     # -- Cost ----------------------------------------------------------
 
     def _compute_cost(self, obs) -> float:
@@ -508,23 +526,27 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         if self._frontier is None:
             return 0
 
-        # Condition 1: previous-step district import near/above frontier
-        prev_import = self._district_import_prev_step()
-        if prev_import is None or prev_import < self._frontier:
-            return 0
-
-        # Condition 2: current price is low (cheap → reward wants import)
         buildings = self._get_buildings()
         if not buildings:
             return 0
-        if self._price_low_threshold is None:
-            return 0
-        max_price = self._max_pre_step_price(buildings)
-        if max_price is None or max_price > self._price_low_threshold:
+
+        # Zone 1 — warning: exogenous NSL is high (early predictor)
+        in_warning = False
+        if self._nsl_warning_threshold is not None:
+            current_nsl = self._district_current_nsl()
+            if current_nsl is not None and current_nsl >= self._nsl_warning_threshold:
+                in_warning = True
+
+        # Zone 2 — recovery: already near/above capacity frontier
+        in_recovery = False
+        prev_import = self._district_import_prev_step()
+        if prev_import is not None and prev_import >= self._frontier:
+            in_recovery = True
+
+        if not (in_warning or in_recovery):
             return 0
 
-        # Condition 3: electrical storage exists (lever is "don't charge"
-        # to reduce import, not necessarily "discharge")
+        # Storage exists (lever: reduce import)
         has_storage = any(
             b.electrical_storage is not None for b in buildings
         )
@@ -536,7 +558,6 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_CA_CARBON_QUANTILE = 0.70
-DEFAULT_CA_PRICE_QUANTILE = 0.50
 
 
 class CarbonAwareWrapper(CityLearnBaseWrapper):
@@ -556,11 +577,14 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     This scales cost with actual import magnitude — a building importing
     0.01 kWh contributes far less cost than one importing 10 kWh.
 
-    Label — cheap-but-dirty dispatch frontier
+    Label — dirty-grid danger region
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    1. Carbon intensity above ``carbon_quantile``-th percentile (dirty).
-    2. Price below ``price_quantile``-th percentile (cheap — the disagreement).
-    3. Electrical storage exists (lever: "don't charge" during dirty grid).
+    1. Carbon intensity above ``carbon_quantile``-th percentile (dirty grid).
+    2. Electrical storage exists (lever: shift load away from dirty hours).
+
+    The label marks the danger region where cost is likely active, not
+    the reward-cost disagreement.  Price is deliberately excluded: it is
+    a reward signal, not a danger signal.
 
     No storage → label = 0.
     """
@@ -569,14 +593,11 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         self,
         env,
         carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-        price_quantile: float = DEFAULT_CA_PRICE_QUANTILE,
     ):
         super().__init__(env)
         self._carbon_quantile = carbon_quantile
-        self._price_quantile = price_quantile
 
         self._carbon_threshold: Optional[float] = None
-        self._price_threshold: Optional[float] = None
         self._carbon_min: Optional[float] = None
         self._carbon_max: Optional[float] = None
         self._import_scale: Optional[float] = None
@@ -598,17 +619,6 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
             )
             self._carbon_min = float(np.min(all_carbon))
             self._carbon_max = float(np.max(all_carbon))
-
-        all_prices = []
-        for b in cl_env.buildings:
-            if hasattr(b, "pricing") and b.pricing is not None:
-                ep = b.pricing.electricity_pricing
-                if hasattr(ep, "__len__") and len(ep) > 0:
-                    all_prices.extend(ep)
-        if all_prices:
-            self._price_threshold = float(
-                np.quantile(all_prices, self._price_quantile)
-            )
 
         # Import scale from full-horizon non-shiftable load schedule
         n_hours = None
@@ -721,22 +731,14 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         if not buildings:
             return 0
 
-        # Condition 1: high carbon
+        # Condition 1: high carbon (danger region)
         if self._carbon_threshold is None:
             return 0
         max_carbon = self._max_pre_step_carbon(buildings)
         if max_carbon is None or max_carbon <= self._carbon_threshold:
             return 0
 
-        # Condition 2: low price (the disagreement)
-        if self._price_threshold is None:
-            return 0
-        max_price = self._max_pre_step_price(buildings)
-        if max_price is None or max_price > self._price_threshold:
-            return 0
-
-        # Condition 3: electrical storage exists (lever: "don't charge"
-        # during dirty grid, not necessarily "discharge")
+        # Condition 2: electrical storage exists
         has_storage = any(
             b.electrical_storage is not None for b in buildings
         )
@@ -855,7 +857,7 @@ def make_contract_demand_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    price_quantile_low: float = DEFAULT_CD_PRICE_QUANTILE_LOW,
+    nsl_warning_quantile: float = DEFAULT_CD_NSL_WARNING_QUANTILE,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -866,7 +868,7 @@ def make_contract_demand_env(
         cap_quantile=cap_quantile,
         cap_margin=cap_margin,
         frontier_frac=frontier_frac,
-        price_quantile_low=price_quantile_low,
+        nsl_warning_quantile=nsl_warning_quantile,
     )
 
 
@@ -878,7 +880,7 @@ def make_contract_demand_vec_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    price_quantile_low: float = DEFAULT_CD_PRICE_QUANTILE_LOW,
+    nsl_warning_quantile: float = DEFAULT_CD_NSL_WARNING_QUANTILE,
     **kwargs,
 ):
     env_kwargs = {
@@ -887,7 +889,7 @@ def make_contract_demand_vec_env(
         "cap_quantile": cap_quantile,
         "cap_margin": cap_margin,
         "frontier_frac": frontier_frac,
-        "price_quantile_low": price_quantile_low,
+        "nsl_warning_quantile": nsl_warning_quantile,
     }
     return make_cost_vec_env(
         make_contract_demand_env,
@@ -903,7 +905,6 @@ def make_carbon_aware_env(
     env_name: str = DEFAULT_SCHEMA,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-    price_quantile: float = DEFAULT_CA_PRICE_QUANTILE,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -912,7 +913,6 @@ def make_carbon_aware_env(
     return CarbonAwareWrapper(
         inner,
         carbon_quantile=carbon_quantile,
-        price_quantile=price_quantile,
     )
 
 
@@ -922,14 +922,12 @@ def make_carbon_aware_vec_env(
     seed: Optional[int] = None,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-    price_quantile: float = DEFAULT_CA_PRICE_QUANTILE,
     **kwargs,
 ):
     env_kwargs = {
         "env_name": env_name,
         "episode_time_steps": episode_time_steps,
         "carbon_quantile": carbon_quantile,
-        "price_quantile": price_quantile,
     }
     return make_cost_vec_env(
         make_carbon_aware_env,
