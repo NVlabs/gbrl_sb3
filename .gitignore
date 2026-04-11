@@ -17,3 +17,4 @@ tmp/
 *.log
 datasets/
 logs/*
+sumo-rl/

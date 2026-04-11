@@ -61,10 +61,10 @@ COST_FN_REGISTRY: Dict[str, str] = {
     "emergency": "Global: 1 if emergency stops occur (+ teleport_weight if teleports)",
     "side_deficit": "Per-agent: continuous sum_l q_l * max(0, g_l - tau) — severity-weighted side-street neglect",
     "side_queue": "Per-agent: max queue ratio on side-street lanes — purely observation-based, no hidden state",
-    "bus_priority": "Per-agent: max(bus_wait/T_bus) across unserved lanes with buses — volume-driven priority conflict, obs-extended with has_bus+bus_count+bus_wait",
-    "convoy_priority": "Per-agent: 1 if convoy is being split (lead passed, tail stuck on unserved lane) — platoon integrity constraint, obs-extended",
-    "spillback": "Per-agent: max downstream occupancy on currently served lanes — road works / spillback protection, obs-extended",
-    "premium_priority": "Per-agent: steep cost when premium vehicle waits on unserved lane past T_premium — value-asymmetry priority, obs-extended",
+    "bus_priority": "Per-agent: 1 if any bus waited past T_cost on unserved lane — binary violation, label fires at T_warn (anticipatory), obs-extended",
+    "convoy_priority": "Per-agent: 1 if convoy is actively being split (0 < progress < 1) — binary violation, label fires anticipatorily, obs-extended",
+    "spillback": "Per-agent: 1 if any served lane has downstream_occ > T_occ — binary violation, obs-extended",
+    "premium_priority": "Per-agent: 1 if premium vehicle waited past T_cost on unserved lane — binary violation, label fires at T_warn (anticipatory), obs-extended",
 }
 
 
@@ -76,29 +76,28 @@ class SumoRewardCostWrapper(ParallelEnv):
     """
     PettingZoo ParallelEnv wrapper around sumo_rl.parallel_env that:
 
-      reward = throughput (vehicles on outgoing lanes) or original sumo-rl reward
-      info['cost']            = configurable constraint violation cost
+      reward = pressure (or override_reward) — the primary objective
+      info['cost']            = binary constraint violation cost (0/1)
       info['original_reward'] = original sumo-rl reward (e.g. diff-waiting-time)
-      info['safety_label']    = event-proximal fallback label (1 if cost > 0
-                                within last ``label_horizon`` steps).
-                                The preferred label is cost-advantage based,
-                                computed post-rollout in SPLIT-RL.
+      info['safety_label']    = anticipatory danger-zone label g(s) ∈ {0, 1}
+                                Pure function of state observations. Fires
+                                BEFORE cost (T_warn < T_cost) to give SPLIT-RL
+                                an anticipatory routing advantage.
 
-    Cost functions (selected via ``cost_fn``):
-      - "conflict": 1 if fairness OR phase-churn fires (default — genuinely conflicts with throughput)
-      - "fairness": 1 if max_wait > tau_abs AND max_wait/(mean_wait+eps) > rho
-      - "phase_churn": 1 if agent switched phase this step
-      - "combined": legacy sum of queue + wait + saturation (correlated with diff-wait reward)
-      - "queue_overflow": per-agent, 1 if queued vehicles > queue_threshold
-      - "max_wait": per-agent, 1 if max lane wait > wait_threshold seconds
-      - "lane_saturation": per-agent, 1 if any lane queue ratio > saturation_threshold
-      - "emergency": global, from native TraCI failure events
+    Primary benchmark scenarios (exogenous event injection):
+      - "premium_priority": binary cost when premium vehicle waits past T_cost.
+      - "convoy_priority":  binary cost when convoy is actively split.
+      - "bus_priority":     binary cost when bus waits past T_cost.
+      - "spillback":        binary cost when downstream occupancy > T_occ.
 
-    The "fairness" cost + throughput reward creates a genuine trade-off:
-    throughput wants maximum vehicle flow (greedy phase holding), but fairness
-    penalizes lane starvation when one lane's max wait dwarfs the mean.
-    NOTE: "conflict" (fairness OR churn) is NOT recommended — churn is
-    negatively correlated with throughput, masking the fairness signal.
+    Labels are minimal danger-region markers (not reward proxies):
+      - entity on unserved lane + can_switch + wait > T_warn  (bus/premium)
+      - entity waiting + can_switch + count ≥ τ OR active split  (convoy)
+      - downstream_occ > T_warn + can_switch  (spillback)
+
+    Event generation is exogenous: static conflict routes precomputed at
+    reset from network topology (side-street approaches), selected via
+    persistent episode RNG. All methods see identical event distributions.
 
     Parameters
     ----------
@@ -152,18 +151,16 @@ class SumoRewardCostWrapper(ParallelEnv):
         convoy_size_min: int = 10,
         convoy_size_max: int = 12,
         convoy_headway: float = 2.0,
-        convoy_cost_threshold: float = 20.0,
-        convoy_warn_threshold: float = 8.0,
         # Premium vehicle injection parameters
         premium_injection_interval: float = 40.0,
         premium_cost_threshold: float = 15.0,
         premium_warn_threshold: float = 5.0,
-        premium_pressure_beta: float = 1.5,
         # Spillback / road works parameters
         roadwork_interval_mean: float = 300.0,
         roadwork_duration_mean: float = 400.0,
         roadwork_speed: float = 0.3,
-        spillback_occ_threshold: float = 0.15,
+        spillback_occ_threshold: float = 0.45,
+        spillback_warn_threshold: float = 0.25,
         # Scenario event probability (0.0 = events every episode, 0.25 = 25% clean)
         clean_episode_prob: float = 0.0,
     ):
@@ -174,6 +171,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         if override_reward is not None and override_reward not in ("throughput", "directional", "ns_wait", "arterial", "mainline"):
             raise ValueError(
                 f"Unknown override_reward '{override_reward}'. Use 'mainline', 'arterial', 'throughput', 'directional', 'ns_wait', or None."
+            )
+        if mainline_direction not in ("ns", "ew", "auto"):
+            raise ValueError(
+                f"Unknown mainline_direction '{mainline_direction}'. Use 'ns', 'ew', or 'auto'."
             )
         self._env = env
         self.possible_agents = env.possible_agents
@@ -206,24 +207,30 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._convoy_size_min = convoy_size_min
         self._convoy_size_max = convoy_size_max
         self._convoy_headway = convoy_headway
-        self._convoy_cost_threshold = convoy_cost_threshold  # T_convoy
-        self._convoy_warn_threshold = convoy_warn_threshold  # T_warn_convoy
 
         # Premium vehicle injection parameters
         self._premium_injection_interval = premium_injection_interval
         self._premium_cost_threshold = premium_cost_threshold   # T_premium
         self._premium_warn_threshold = premium_warn_threshold   # T_warn_premium
-        self._premium_pressure_beta = premium_pressure_beta      # beta for label pressure ratio
 
         # Spillback / road works parameters
         self._roadwork_interval_mean = roadwork_interval_mean
         self._roadwork_duration_mean = roadwork_duration_mean
         self._roadwork_speed = roadwork_speed            # near-zero speed on blocked edge
-        self._spillback_occ_threshold = spillback_occ_threshold  # T_occ for label
+        self._spillback_occ_threshold = spillback_occ_threshold  # T_occ for cost
+        self._spillback_warn_threshold = spillback_warn_threshold  # T_warn for label (< T_occ)
 
         # Clean episode probability (shared across all event-based scenarios)
         self._clean_episode_prob = clean_episode_prob
         self._is_clean_episode = False  # set at each reset()
+        # Persistent episode-level RNG for all scenario randomness.
+        # Created fresh each reset() from the episode seed.
+        self._scenario_rng: Optional[np.random.RandomState] = None
+        self._episode_count: int = 0
+
+        # Precomputed conflict-route pool (built at reset from network metadata)
+        self._conflict_routes: List[List[str]] = []
+        self._side_edges: Set[str] = set()
 
         # Bus / convoy runtime state (populated in reset)
         self._boundary_edges: List[str] = []       # edges with dead-end nodes
@@ -296,17 +303,30 @@ class SumoRewardCostWrapper(ParallelEnv):
         raw_obs_spaces = {
             agent: env.observation_space(agent) for agent in self.possible_agents
         }
-        self.action_spaces = {
+        raw_action_spaces = {
             agent: env.action_space(agent) for agent in self.possible_agents
         }
 
-        # Validate uniform action spaces (phase selection must match)
-        sample_act = next(iter(self.action_spaces.values()))
-        for agent in self.possible_agents:
-            assert self.action_spaces[agent].n == sample_act.n, (
-                f"Agent {agent} action space {self.action_spaces[agent].n} "
-                f"!= {sample_act.n}. Shared policy requires uniform action spaces."
+        # Action space handling: uniform by default, opt-in heterogeneous.
+        action_dims = [raw_action_spaces[a].n for a in self.possible_agents]
+        self._max_n_actions = max(action_dims)
+        self._agent_n_actions = {a: raw_action_spaces[a].n for a in self.possible_agents}
+        self._heterogeneous_actions = not all(d == self._max_n_actions for d in action_dims)
+
+        if self._heterogeneous_actions:
+            import warnings
+            warnings.warn(
+                f"Heterogeneous action spaces detected "
+                f"(min={min(action_dims)}, max={max(action_dims)}). "
+                f"Out-of-range actions will be clipped to action 0. "
+                f"For clean benchmarks, use networks with uniform phase counts.",
+                stacklevel=2,
             )
+
+        self.action_spaces = {
+            agent: gym.spaces.Discrete(self._max_n_actions)
+            for agent in self.possible_agents
+        }
 
         # Pad observation spaces to max dim for real-world networks with
         # non-uniform intersection topologies (different #lanes → different obs dims).
@@ -316,38 +336,28 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._agent_obs_dims = {a: raw_obs_spaces[a].shape[0] for a in self.possible_agents}
 
         if self._use_categorical_phase:
-            # Detect n_phases from action space for later VecEnv-level transformation
-            sample_agent = self.possible_agents[0]
-            self._n_green_phases = self.action_spaces[sample_agent].n
+            self._n_green_phases = self._max_n_actions
 
-        # Bus/convoy obs extension: compute n_lanes from obs layout
+        # Bus/convoy obs extension: compute max_n_lanes from obs layout
         # obs = [phase_one_hot(n_phases), min_green(1), density(n_lanes), queue(n_lanes)]
-        # n_lanes = (obs_dim - n_phases - 1) / 2
+        # n_lanes = (obs_dim - n_phases_for_that_agent - 1) / 2
+        # Use max_n_lanes across ALL agents for uniform obs extension size.
         self._obs_extension_dim = 0
         self._raw_max_obs_dim = self._max_obs_dim  # pre-extension dim for padding
-        if self._cost_fn == "bus_priority":
-            n_phases_act = next(iter(self.action_spaces.values())).n
-            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
-            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
-            self._obs_extension_dim = 3 * n_lanes  # has_bus + bus_count + bus_wait per lane
-            self._max_obs_dim += self._obs_extension_dim
-        elif self._cost_fn == "convoy_priority":
-            n_phases_act = next(iter(self.action_spaces.values())).n
-            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
-            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
-            self._obs_extension_dim = 3 * n_lanes  # has_convoy + convoy_count + convoy_progress
-            self._max_obs_dim += self._obs_extension_dim
-        elif self._cost_fn == "spillback":
-            n_phases_act = next(iter(self.action_spaces.values())).n
-            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
-            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
-            self._obs_extension_dim = 1 * n_lanes  # downstream_occ per lane
-            self._max_obs_dim += self._obs_extension_dim
-        elif self._cost_fn == "premium_priority":
-            n_phases_act = next(iter(self.action_spaces.values())).n
-            sample_obs_dim = next(iter(raw_obs_spaces.values())).shape[0]
-            n_lanes = (sample_obs_dim - n_phases_act - 1) // 2
-            self._obs_extension_dim = 2 * n_lanes  # has_premium + premium_wait per lane
+        if self._cost_fn in ("bus_priority", "convoy_priority", "spillback", "premium_priority"):
+            max_n_lanes = max(
+                (raw_obs_spaces[a].shape[0] - self._agent_n_actions[a] - 1) // 2
+                for a in self.possible_agents
+            )
+            self._ext_max_n_lanes = max_n_lanes
+            if self._cost_fn == "bus_priority":
+                self._obs_extension_dim = 3 * max_n_lanes  # has_bus + bus_count + bus_wait
+            elif self._cost_fn == "convoy_priority":
+                self._obs_extension_dim = 3 * max_n_lanes  # has_convoy + convoy_count + convoy_progress
+            elif self._cost_fn == "spillback":
+                self._obs_extension_dim = 1 * max_n_lanes  # downstream_occ
+            elif self._cost_fn == "premium_priority":
+                self._obs_extension_dim = 2 * max_n_lanes  # has_premium + premium_wait
             self._max_obs_dim += self._obs_extension_dim
 
         if self._needs_obs_padding or self._obs_extension_dim > 0:
@@ -531,12 +541,15 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._prev_ew_wait[agent_id] = 0.0
 
     def _classify_mainline_side(self):
-        """Classify lanes as mainline vs side-street by traffic volume proxy.
+        """Classify lanes as mainline vs side-street per agent.
 
-        For asymmetric networks (arterial4x4): the direction with more
-        incoming lanes is the mainline (higher capacity = higher demand).
-        For symmetric networks (grid4x4): picks EW as mainline arbitrarily
-        (both directions have equal lane counts, so the split is symmetric).
+        Uses ``self._mainline_direction`` to decide which direction is
+        mainline:
+
+        - ``"ns"``: force North-South as mainline for all agents.
+        - ``"ew"``: force East-West as mainline for all agents.
+        - ``"auto"``: direction with more incoming lanes is mainline;
+          ties broken by lane count (EW wins ties).
 
         Also builds the phase→served-lanes mapping needed for service-gap
         tracking, and initialises per-side-lane steps_since_served counters.
@@ -574,13 +587,22 @@ class SumoRewardCostWrapper(ParallelEnv):
                 else:
                     ew_idx.append(i)
 
-            # Mainline = direction with more lanes (or EW if tied)
-            if len(ew_idx) >= len(ns_idx):
+            # Assign mainline/side based on mainline_direction setting
+            md = self._mainline_direction
+            if md == "ns":
+                self._mainline_lane_indices[agent_id] = ns_idx
+                self._side_lane_indices[agent_id] = ew_idx
+            elif md == "ew":
                 self._mainline_lane_indices[agent_id] = ew_idx
                 self._side_lane_indices[agent_id] = ns_idx
             else:
-                self._mainline_lane_indices[agent_id] = ns_idx
-                self._side_lane_indices[agent_id] = ew_idx
+                # "auto": direction with more lanes is mainline (EW wins ties)
+                if len(ew_idx) >= len(ns_idx):
+                    self._mainline_lane_indices[agent_id] = ew_idx
+                    self._side_lane_indices[agent_id] = ns_idx
+                else:
+                    self._mainline_lane_indices[agent_id] = ns_idx
+                    self._side_lane_indices[agent_id] = ew_idx
 
             self._prev_mainline_wait[agent_id] = 0.0
             self._prev_side_wait[agent_id] = 0.0
@@ -695,7 +717,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         if sumo is None:
             return
 
-        rng = np.random.RandomState(int(sim_time * 1000) % (2**31))
+        rng = self._scenario_rng
 
         # Pick a random internal edge not already blocked
         blocked_edges = {rw["edge"] for rw in self._active_roadworks}
@@ -834,161 +856,111 @@ class SumoRewardCostWrapper(ParallelEnv):
         if len(self._dest_edges) < 2:
             self._dest_edges = normal_edges
 
-    def _select_stress_target(self, rng) -> Optional[List[str]]:
-        """Pick a high-conflict incoming lane and return a route through it.
+    def _select_random_route(self, rng) -> Optional[List[str]]:
+        """Pick a random valid route through the network.
 
-        Selects an incoming lane that:
-          - belongs to a non-current (unserved) phase,
-          - sits at a junction where the currently served phase has high
-            competing pressure relative to the unserved phase.
+        Fallback when no conflict routes are available.  Exogenous: uses
+        ONLY network structure + RNG seed, not the agent's current phase
+        or queue state.
 
-        Returns a list of edge IDs forming a valid SUMO route that
-        traverses the chosen stress edge, or None if no suitable target.
+        Returns a list of edge IDs forming a valid SUMO route, or
+        None if no route can be found.
         """
         sumo = self._get_traci()
-        if sumo is None or not self._phase_to_lanes:
+        if sumo is None:
             return None
 
-        # Score every unserved lane across all agents
-        candidates: List[Tuple[float, str, int, str]] = []  # (score, agent_id, lane_idx, edge)
-        for agent_id in self.possible_agents:
-            ts = self._get_traffic_signal(agent_id)
-            if ts is None:
-                continue
-            phase = ts.green_phase
-            phase_map = self._phase_to_lanes.get(agent_id, {})
-            served_lanes = set(phase_map.get(phase, []))
-            if not served_lanes:
-                continue
+        origins = list(self._origin_edges)
+        dests = list(self._dest_edges)
+        rng.shuffle(origins)
+        rng.shuffle(dests)
 
-            lane_queues = ts.get_lanes_queue()
-            lane_densities = ts.get_lanes_density()
-
-            def _pressure(lane_indices):
-                p = 0.0
-                for li in lane_indices:
-                    if li < len(lane_queues):
-                        p += lane_queues[li] + lane_densities[li]
-                return p
-
-            served_pressure = _pressure(served_lanes)
-
-            for ph, lanes in phase_map.items():
-                if ph == phase:
-                    continue
-                unserved_pressure = _pressure(lanes)
-                # Higher score = served phase has much more traffic than
-                # the unserved phase → switching away is costly for reward,
-                # but needed for cost.  That is the conflict.
-                score = served_pressure - unserved_pressure
-                if score <= 0:
-                    continue  # unserved phase already has more traffic — no conflict
-                for li in lanes:
-                    if li not in served_lanes:
-                        lane_name = ts.lanes[li]
-                        edge = '_'.join(lane_name.split('_')[:-1])
-                        candidates.append((score, agent_id, li, edge))
-
-        if not candidates:
-            return None
-
-        # Weighted random selection: higher-scored lanes more likely
-        scores = np.array([c[0] for c in candidates], dtype=np.float64)
-        scores = scores / (scores.sum() + 1e-9)
-        idx = rng.choice(len(candidates), p=scores)
-        _, _, _, target_edge = candidates[idx]
-
-        # Build a route that traverses target_edge.
-        # Strategy: find the node upstream of target_edge, then find a
-        # boundary origin edge whose shortest path to a boundary dest
-        # passes through target_edge.
-        try:
-            target_from = sumo.edge.getFromJunction(target_edge)
-            target_to = sumo.edge.getToJunction(target_edge)
-        except Exception:
-            return None
-
-        # Try to find a boundary entry edge leading to target_from
-        # (one hop upstream: any boundary edge ending at target_from)
-        upstream_boundary = [
-            e for e in self._origin_edges
-            if sumo.edge.getToJunction(e) == target_from
-        ]
-        # If no direct boundary feeder, look one more hop up
-        if not upstream_boundary:
-            all_edges = sumo.edge.getIDList()
-            feeder_edges = [
-                e for e in all_edges
-                if not e.startswith(':') and sumo.edge.getToJunction(e) == target_from
-            ]
-            for fe in feeder_edges:
-                fe_from = sumo.edge.getFromJunction(fe)
-                for oe in self._origin_edges:
-                    if sumo.edge.getToJunction(oe) == fe_from:
-                        upstream_boundary.append(oe)
-
-        # Find boundary exit edges reachable from target_to
-        downstream_boundary = [
-            e for e in self._dest_edges
-            if sumo.edge.getFromJunction(e) == target_to
-        ]
-        if not downstream_boundary:
-            all_edges = sumo.edge.getIDList()
-            out_edges = [
-                e for e in all_edges
-                if not e.startswith(':') and sumo.edge.getFromJunction(e) == target_to
-            ]
-            for oe in out_edges:
-                oe_to = sumo.edge.getToJunction(oe)
-                for de in self._dest_edges:
-                    if sumo.edge.getFromJunction(de) == oe_to:
-                        downstream_boundary.append(de)
-
-        # Try (origin, dest) combos until findRoute gives a path through target_edge
-        rng.shuffle(upstream_boundary)
-        rng.shuffle(downstream_boundary)
-        # Also mix in some random boundary edges as fallback
-        fallback_origins = list(self._origin_edges)
-        rng.shuffle(fallback_origins)
-        fallback_dests = list(self._dest_edges)
-        rng.shuffle(fallback_dests)
-
-        origins_to_try = upstream_boundary[:4] + fallback_origins[:4]
-        dests_to_try = downstream_boundary[:4] + fallback_dests[:4]
-
-        for origin in origins_to_try:
-            for dest in dests_to_try:
+        for origin in origins[:8]:
+            for dest in dests[:8]:
                 if origin == dest:
                     continue
                 try:
                     stage = sumo.simulation.findRoute(origin, dest)
-                    if hasattr(stage, 'edges') and target_edge in stage.edges:
+                    if hasattr(stage, 'edges') and len(stage.edges) >= 2:
                         return list(stage.edges)
                 except Exception:
                     continue
+        return None
 
-        # Last resort: two-leg route (origin→target, target→dest) via findRoute
-        for origin in origins_to_try[:3]:
-            try:
-                leg1 = sumo.simulation.findRoute(origin, target_edge)
-                if not hasattr(leg1, 'edges') or not leg1.edges:
-                    continue
-            except Exception:
+    def _precompute_conflict_routes(self):
+        """Build a pool of routes through side-street approaches.
+
+        Computed once at reset from static network metadata:
+        - _classify_mainline_side() → side-street lane indices per agent
+        - Side-street lanes → incoming side-street edges
+        - Enumerate boundary→boundary routes via findRoute
+        - Keep routes with highest side-street edge fraction
+
+        These routes force special vehicles through minority approaches,
+        creating structural conflict with the pressure reward (which
+        optimises mainline throughput).  The routes are:
+        - Static: determined by network topology, not live state
+        - Exogenous: no dependence on current policy / queues / phases
+        - Conflict-inducing: side-street traversal opposes pressure
+        """
+        sumo = self._get_traci()
+        if sumo is None:
+            self._conflict_routes = []
+            return
+
+        # Collect all side-street incoming-edge IDs across intersections
+        side_edges = set()
+        for agent_id in self.possible_agents:
+            ts = self._get_traffic_signal(agent_id)
+            if ts is None:
                 continue
-            for dest in dests_to_try[:3]:
+            for i in self._side_lane_indices.get(agent_id, []):
+                if i < len(ts.lanes):
+                    edge = '_'.join(ts.lanes[i].split('_')[:-1])
+                    side_edges.add(edge)
+
+        self._side_edges = side_edges
+        if not side_edges:
+            self._conflict_routes = []
+            return
+
+        # Enumerate candidate routes, score by side-edge fraction
+        candidates = []
+        seen = set()
+        for origin in self._origin_edges:
+            for dest in self._dest_edges:
+                if origin == dest:
+                    continue
                 try:
-                    leg2 = sumo.simulation.findRoute(target_edge, dest)
-                    if hasattr(leg2, 'edges') and leg2.edges:
-                        # Merge: leg1 edges + leg2 edges (skip duplicate target_edge)
-                        route = list(leg1.edges)
-                        for e in leg2.edges:
-                            if e != route[-1]:
-                                route.append(e)
-                        return route
+                    stage = sumo.simulation.findRoute(origin, dest)
+                    if not hasattr(stage, 'edges') or len(stage.edges) < 2:
+                        continue
+                    route = tuple(stage.edges)
+                    if route in seen:
+                        continue
+                    seen.add(route)
+                    n_side = len(side_edges.intersection(route))
+                    if n_side > 0:
+                        score = n_side / len(route)
+                        candidates.append((score, list(route)))
                 except Exception:
                     continue
 
-        return None
+        # Sort by side-edge fraction (descending), keep top routes
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        self._conflict_routes = [r for _, r in candidates[:50]]
+
+    def _select_conflict_route(self) -> Optional[List[str]]:
+        """Pick a route from the precomputed conflict-route pool.
+
+        Static and conflict-inducing: routes traverse side-street
+        approaches.  Selection is exogenous (episode RNG).
+        Falls back to random route if no conflict routes available.
+        """
+        if not self._conflict_routes:
+            return self._select_random_route(self._scenario_rng)
+        idx = self._scenario_rng.randint(0, len(self._conflict_routes))
+        return list(self._conflict_routes[idx])
 
     def _create_bus_vtype(self):
         """Create a 'priority_bus' vehicle type via TraCI."""
@@ -1053,52 +1025,28 @@ class SumoRewardCostWrapper(ParallelEnv):
         sumo = self._get_traci()
         if sumo is None:
             return
-        rng = np.random.RandomState(int(sim_time * 1000) % (2**31))
+        rng = self._scenario_rng
 
-        # Bus injection (multiple vehicles per event for volume pressure)
+        # Bus injection — static conflict route (side-street approach)
         if self._cost_fn == "bus_priority" and sim_time >= self._next_bus_time:
             for _b in range(self._bus_count_per_injection):
-                origin = rng.choice(self._origin_edges)
-                dest = rng.choice(self._dest_edges)
-                attempts = 0
-                while dest == origin and attempts < 10:
-                    dest = rng.choice(self._dest_edges)
-                    attempts += 1
-                if dest != origin:
+                route_edges = self._select_conflict_route()
+                if route_edges is not None and len(route_edges) >= 2:
                     bus_id = f"bus_{self._bus_counter}"
                     route_id = f"bus_route_{self._bus_counter}"
                     try:
-                        sumo.route.add(route_id, [origin, dest])
+                        sumo.route.add(route_id, route_edges)
                         sumo.vehicle.add(bus_id, route_id, typeID="priority_bus")
                         self._active_bus_ids.add(bus_id)
                         self._bus_counter += 1
                     except Exception:
-                        pass  # route might be invalid (no path), skip
+                        pass
             # Schedule next bus injection with some randomness
             self._next_bus_time = sim_time + self._bus_injection_interval * (0.8 + 0.4 * rng.random())
 
-        # Convoy injection — targeted at a stress lane for sharp conflict
+        # Convoy injection — static conflict route (side-street approach)
         if self._cost_fn == "convoy_priority" and sim_time >= self._next_convoy_time:
-            route_edges = self._select_stress_target(rng)
-            # Fallback to random OD via findRoute if stress targeting fails
-            if route_edges is None:
-                origins = list(self._origin_edges)
-                dests = list(self._dest_edges)
-                rng.shuffle(origins)
-                rng.shuffle(dests)
-                for _o in origins[:6]:
-                    for _d in dests[:6]:
-                        if _o == _d:
-                            continue
-                        try:
-                            stage = sumo.simulation.findRoute(_o, _d)
-                            if hasattr(stage, 'edges') and len(stage.edges) >= 2:
-                                route_edges = list(stage.edges)
-                                break
-                        except Exception:
-                            continue
-                    if route_edges is not None:
-                        break
+            route_edges = self._select_conflict_route()
             if route_edges is not None and len(route_edges) >= 2:
                 platoon_size = rng.randint(self._convoy_size_min, self._convoy_size_max + 1)
                 route_id = f"convoy_route_{self._convoy_counter}"
@@ -1122,28 +1070,9 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._convoy_counter += 1
             self._next_convoy_time = sim_time + self._convoy_injection_interval * (0.8 + 0.4 * rng.random())
 
-        # Premium injection — targeted at a stress lane for sharp conflict
+        # Premium injection — static conflict route (side-street approach)
         if self._cost_fn == "premium_priority" and sim_time >= self._next_premium_time:
-            route_edges = self._select_stress_target(rng)
-            # Fallback to random OD via findRoute if stress targeting fails
-            if route_edges is None:
-                origins = list(self._origin_edges)
-                dests = list(self._dest_edges)
-                rng.shuffle(origins)
-                rng.shuffle(dests)
-                for _o in origins[:6]:
-                    for _d in dests[:6]:
-                        if _o == _d:
-                            continue
-                        try:
-                            stage = sumo.simulation.findRoute(_o, _d)
-                            if hasattr(stage, 'edges') and len(stage.edges) >= 2:
-                                route_edges = list(stage.edges)
-                                break
-                        except Exception:
-                            continue
-                    if route_edges is not None:
-                        break
+            route_edges = self._select_conflict_route()
             if route_edges is not None and len(route_edges) >= 2:
                 prem_id = f"premium_{self._premium_counter}"
                 route_id = f"premium_route_{self._premium_counter}"
@@ -1306,33 +1235,42 @@ class SumoRewardCostWrapper(ParallelEnv):
         pass
 
     def _extend_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Append bus/convoy/premium/spillback features to observation vectors."""
+        """Append bus/convoy/premium/spillback features to observation vectors.
+
+        Per-agent arrays are zero-padded to ``_ext_max_n_lanes`` so that
+        all agents produce the same extension size, even on non-uniform networks.
+        """
         if self._obs_extension_dim == 0:
             return obs
+
+        M = self._ext_max_n_lanes  # uniform pad target
+
+        def _pad(arr, target_len):
+            """Zero-pad a per-agent array to target_len."""
+            if len(arr) >= target_len:
+                return arr[:target_len]
+            return np.concatenate([arr, np.zeros(target_len - len(arr), dtype=np.float32)])
 
         extended = {}
         for agent, ob in obs.items():
             ob = np.asarray(ob, dtype=np.float32)
 
             if self._cost_fn == "bus_priority":
-                n_lanes = self._obs_extension_dim // 3
-                hb = self._has_bus.get(agent, np.zeros(n_lanes, dtype=np.float32))
-                bc = self._bus_count.get(agent, np.zeros(n_lanes, dtype=np.float32))
-                bw = self._bus_wait.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                hb = _pad(self._has_bus.get(agent, np.zeros(0, dtype=np.float32)), M)
+                bc = _pad(self._bus_count.get(agent, np.zeros(0, dtype=np.float32)), M)
+                bw = _pad(self._bus_wait.get(agent, np.zeros(0, dtype=np.float32)), M)
                 ob = np.concatenate([ob, hb, bc, bw])
             elif self._cost_fn == "convoy_priority":
-                n_lanes = self._obs_extension_dim // 3
-                hc = self._has_convoy.get(agent, np.zeros(n_lanes, dtype=np.float32))
-                cc = self._convoy_count.get(agent, np.zeros(n_lanes, dtype=np.float32))
-                cp = self._convoy_progress.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                hc = _pad(self._has_convoy.get(agent, np.zeros(0, dtype=np.float32)), M)
+                cc = _pad(self._convoy_count.get(agent, np.zeros(0, dtype=np.float32)), M)
+                cp = _pad(self._convoy_progress.get(agent, np.zeros(0, dtype=np.float32)), M)
                 ob = np.concatenate([ob, hc, cc, cp])
             elif self._cost_fn == "spillback":
-                ds = self._downstream_occ.get(agent, np.zeros(self._obs_extension_dim, dtype=np.float32))
+                ds = _pad(self._downstream_occ.get(agent, np.zeros(0, dtype=np.float32)), M)
                 ob = np.concatenate([ob, ds])
             elif self._cost_fn == "premium_priority":
-                n_lanes = self._obs_extension_dim // 2
-                hp = self._has_premium.get(agent, np.zeros(n_lanes, dtype=np.float32))
-                pw = self._premium_wait.get(agent, np.zeros(n_lanes, dtype=np.float32))
+                hp = _pad(self._has_premium.get(agent, np.zeros(0, dtype=np.float32)), M)
+                pw = _pad(self._premium_wait.get(agent, np.zeros(0, dtype=np.float32)), M)
                 ob = np.concatenate([ob, hp, pw])
 
             extended[agent] = ob
@@ -1341,12 +1279,15 @@ class SumoRewardCostWrapper(ParallelEnv):
     # ── Bus priority cost/label ───────────────────────────────────────────
 
     def _compute_bus_priority_cost(self, agent_id: str) -> float:
-        """Max bus wait ratio across *unserved* incoming lanes.
+        """Binary violation cost: 1 when a bus has waited past T_cost.
 
-        cost = max over unserved lanes of: bus_wait[lane] / T_bus
-             = 0  if no bus, or all buses are on served (green) lanes
+        cost = 1  if any bus on an unserved lane has bus_wait >= 1.0
+                  (bus_wait is normalized by T_cost, so 1.0 = threshold)
+             = 0  otherwise
 
-        Continuous in [0, 1]. Ramps as bus waits longer on a red lane.
+        Binary (0/1). Scalarised baselines (CUP/CPO) get no gradient
+        direction from this — only a sparse violation signal.
+        Split-RL gets the early label routing via _bus_priority_label.
         """
         bus_wait = self._bus_wait.get(agent_id)
         has_bus = self._has_bus.get(agent_id)
@@ -1361,27 +1302,33 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
-        max_cost = 0.0
         for i in range(len(has_bus)):
             if has_bus[i] > 0 and i not in served_lanes:
-                max_cost = max(max_cost, float(bus_wait[i]))
-        return max_cost
+                if bus_wait[i] >= 1.0 - 1e-6:
+                    return 1.0
+        return 0.0
 
     def _bus_priority_label(self, agent_id: str) -> int:
-        """Label = 1 when a bus is waiting on an unserved lane.
+        """Danger-zone label for bus priority: g(s) → {0, 1}.
 
-        This fires on the same condition as cost > 0: a bus exists on
-        a lane that the current green phase does NOT serve.
+        Marks the region of state space where a bus violation is
+        approaching and the agent can still act.  Fires BEFORE cost
+        (T_warn < T_cost), giving Split-RL an anticipatory routing
+        advantage that scalarised baselines cannot exploit.
 
-        Why this IS the conflict: the reward chose this phase because
-        it serves more vehicles (cars clear faster than buses). The
-        cost wants the bus served. The bus being on an unserved lane
-        means the agent's reward-optimal action is already hurting cost.
-        No additional threshold needed — the conflict exists the moment
-        the bus is on an unserved lane.
+        Conditions (all must hold):
+          1. Bus on an unserved lane.
+          2. min_green satisfied — agent CAN switch phase.
+          3. bus_wait > warn_norm — bus has waited past the early
+             warning threshold (but not yet past T_cost).
+
+        No pressure proxy — the value function learns where the
+        reward-cost tradeoff is.  The label just marks the danger
+        region, like minigrid's ``int(facing_lava)``.
         """
         has_bus = self._has_bus.get(agent_id)
-        if has_bus is None:
+        bus_wait = self._bus_wait.get(agent_id)
+        if has_bus is None or bus_wait is None:
             return 0
         if not np.any(has_bus > 0):
             return 0
@@ -1390,24 +1337,33 @@ class SumoRewardCostWrapper(ParallelEnv):
         if ts is None:
             return 0
 
+        # Condition 2: min_green satisfied (agent can actually switch)
+        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+            return 0
+
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
+        # Normalised warn threshold (bus_wait is already / cost_threshold)
+        warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
+
         for i in range(len(has_bus)):
             if has_bus[i] > 0 and i not in served_lanes:
-                return 1
+                if bus_wait[i] > warn_norm:
+                    return 1
         return 0
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
     def _compute_convoy_priority_cost(self, agent_id: str) -> float:
-        """Convoy split-detection cost: fires ONLY during active split.
+        """Binary violation cost: 1 when a convoy is actively being split.
 
-        cost = progress when 0 < progress < 1 and convoy is on an
-        unserved lane (some vehicles passed, rest still stuck).
+        cost = 1  if any convoy on an unserved lane has 0 < progress < 1
+                  (some vehicles passed, rest still stuck)
+             = 0  otherwise
 
-        Aligned with _convoy_priority_label: both fire in exactly the
-        same conflict window. No pre-split "risk" cost.
+        Binary (0/1). No gradient direction for CUP/CPO.
+        Split-RL gets anticipatory routing via _convoy_priority_label.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1422,33 +1378,28 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
-        max_cost = 0.0
         for i in range(len(has_convoy)):
             if has_convoy[i] > 0 and i not in served_lanes:
-                progress = convoy_progress[i]
-                if 0 < progress < 1.0:
-                    # Active split: some passed, rest stuck on unserved lane.
-                    # Cost = progress (higher = more split = worse).
-                    max_cost = max(max_cost, float(progress))
-        return min(max_cost, 1.0)
+                if 0 < convoy_progress[i] < 1.0:
+                    return 1.0
+        return 0.0
 
     def _convoy_priority_label(self, agent_id: str) -> int:
-        """State partition for convoy priority: g(s) → {0, 1}.
+        """Danger-zone label for convoy priority: g(s) → {0, 1}.
 
-        Routes gradients to the cost head in two windows:
+        Marks the region of state space where a convoy split is
+        imminent or active.  Two windows:
 
-        1. **Anticipatory** (progress == 0, can_switch, count >= τ):
+        1. **Anticipatory** (progress == 0, can_switch, count ≥ τ):
            Convoy is waiting on an unserved lane and the agent CAN
-           switch phase to serve it. This is the decision frontier
-           where the next action changes the reward-vs-cost tradeoff.
+           switch. Label fires BEFORE the split happens.
 
         2. **Reactive** (0 < progress < 1):
-           Active split already in progress. Reinforces that split
-           states are costly regardless of whether the agent can act.
+           Active split in progress.
 
-        Window 1 is what gives Split-RL an edge over CUP: the cost
-        head gets gradients BEFORE the split, enabling preemptive
-        phase switches that CUP cannot learn from cost alone.
+        No pressure proxy — the value function learns which phases
+        matter.  The label just marks the danger region, like
+        minigrid's ``int(carrying_heavy and near_ice)``.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1461,7 +1412,8 @@ class SumoRewardCostWrapper(ParallelEnv):
             return 0
 
         phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        phase_map = self._phase_to_lanes.get(agent_id, {})
+        served_lanes = set(phase_map.get(phase, []))
         can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
 
         for i in range(len(has_convoy)):
@@ -1470,21 +1422,24 @@ class SumoRewardCostWrapper(ParallelEnv):
                 if 0 < convoy_progress[i] < 1.0:
                     return 1
                 # Window 1: anticipatory — convoy waiting, agent can act
+                # convoy_count is normalized: raw_count / convoy_size_max.
+                # Threshold: at least 3 raw vehicles (meaningful platoon presence).
                 if convoy_progress[i] == 0 and can_switch:
-                    if convoy_count is not None and convoy_count[i] >= 0.25:
+                    raw_threshold = 3.0 / max(self._convoy_size_max, 1)
+                    if convoy_count is not None and convoy_count[i] >= raw_threshold:
                         return 1
         return 0
 
     # ── Spillback cost/label ─────────────────────────────────────────────
 
     def _compute_spillback_cost(self, agent_id: str) -> float:
-        """Max downstream occupancy across currently *served* incoming lanes.
+        """Binary violation cost: 1 when serving into a blocked downstream.
 
-        c_t = max_{l in served(phase_t)} downstream_occ(l)
+        cost = 1  if any served lane has downstream_occ > T_occ
+             = 0  otherwise
 
-        Continuous in [0, 1]. Cost is high when the agent is actively
-        sending vehicles into a blocked downstream direction.
-        Cost = 0 if downstream is clear, regardless of road works.
+        Binary (0/1). Fires when the agent is actively sending
+        vehicles into a congested downstream direction.
         """
         ds_occ = self._downstream_occ.get(agent_id)
         if ds_occ is None:
@@ -1498,16 +1453,24 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not served_lanes:
             return 0.0
 
-        max_cost = 0.0
         for i in served_lanes:
-            if i < len(ds_occ):
-                max_cost = max(max_cost, float(ds_occ[i]))
-        return max_cost
+            if i < len(ds_occ) and ds_occ[i] > self._spillback_occ_threshold:
+                return 1.0
+        return 0.0
 
     def _spillback_label(self, agent_id: str) -> int:
-        """Label = 1 when serving into a blocked downstream.
+        """Danger-zone label for spillback: g(s) → {0, 1}.
 
-        y_t = 1[max_{l in served(phase_t)} downstream_occ(l) > T_occ]
+        Fires at a LOWER occupancy threshold than cost, creating the
+        same anticipatory gap as bus/convoy/premium labels.
+
+          label fires at: downstream_occ > T_warn AND can_switch
+          cost  fires at: downstream_occ > T_occ   (violation, T_occ > T_warn)
+
+        can_switch = current phase serves a lane whose downstream is
+        congested.  This gates the label so it only fires when the agent
+        is at a genuine decision point (can switch away from the
+        congested direction).
 
         Pure function of observation state: phase one-hot (in obs) and
         downstream_occ features (in obs extension). No action dependence.
@@ -1522,25 +1485,29 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = self._phase_to_lanes.get(agent_id, {}).get(phase, [])
 
+        # can_switch: phase has been active long enough to actually change
+        can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
+        if not can_switch:
+            return 0
+
+        # Current phase serves a lane with high downstream occ →
+        # agent is at a decision point where switching away matters
         for i in served_lanes:
-            if i < len(ds_occ) and ds_occ[i] > self._spillback_occ_threshold:
+            if i < len(ds_occ) and ds_occ[i] > self._spillback_warn_threshold:
                 return 1
         return 0
 
     # ── Premium priority cost/label ──────────────────────────────────────
 
     def _compute_premium_priority_cost(self, agent_id: str) -> float:
-        """Steep cost when a premium vehicle waits on an unserved lane.
+        """Binary violation cost: 1 when a premium vehicle has waited past T_cost.
 
-        cost = max over unserved lanes of: (premium_wait[lane])^2
+        cost = 1  if any premium on an unserved lane has premium_wait >= 1.0
+                  (premium_wait is normalized by T_cost, so 1.0 = threshold)
+             = 0  otherwise
 
-        Squared to create a steep ramp: the cost accelerates as the premium
-        vehicle waits longer. This makes the agent pay a rapidly increasing
-        price for not serving the premium vehicle quickly.
-
-        The premium vehicle is a normal-sized car — the reward treats it as
-        1 vehicle among many. But the cost treats it as high-priority.
-        This is pure value-asymmetry conflict.
+        Binary (0/1). Scalarised baselines get no gradient direction.
+        Split-RL gets early routing via _premium_priority_label.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -1555,28 +1522,29 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
-        max_cost = 0.0
         for i in range(len(has_premium)):
             if has_premium[i] > 0 and i not in served_lanes:
-                # Squared cost: ramps steeply as normalized wait increases
-                max_cost = max(max_cost, float(premium_wait[i]) ** 2)
-        return min(max_cost, 1.0)
+                if premium_wait[i] >= 1.0 - 1e-6:
+                    return 1.0
+        return 0.0
 
     def _premium_priority_label(self, agent_id: str) -> int:
-        """State partition for premium priority: g(s) → {0, 1}.
+        """Danger-zone label for premium priority: g(s) → {0, 1}.
 
-        Labels the region of state space where the cost head should own
-        gradient updates. Fires when ALL of:
-          1. Premium vehicle on an unserved lane (prerequisite).
+        Marks the region of state space where a premium violation is
+        approaching and the agent can still act.  Fires BEFORE cost
+        (T_warn < T_cost), giving Split-RL an anticipatory routing
+        advantage that scalarised baselines cannot exploit.
+
+        Conditions (all must hold):
+          1. Premium vehicle on an unserved lane.
           2. min_green satisfied — agent CAN switch phase.
-          3. premium_wait > τ_warn (normalised) — premium has waited
-             long enough to be material.
-          4. current_phase_pressure > β · premium_phase_pressure —
-             the phase the agent is running has more traffic pressure
-             than the phase that would serve the premium lane.
+          3. premium_wait > warn_norm — premium has waited past the
+             early warning threshold (but not yet past T_cost).
 
-        Condition 4 compares phase-vs-phase (not phase-vs-lane) for
-        a fair comparison regardless of how many lanes each phase serves.
+        No pressure proxy — the value function learns where the
+        reward-cost tradeoff is.  The label just marks the danger
+        region, like minigrid's ``int(facing_lava)``.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -1594,41 +1562,14 @@ class SumoRewardCostWrapper(ParallelEnv):
             return 0
 
         phase = ts.green_phase
-        phase_map = self._phase_to_lanes.get(agent_id, {})
-        served_lanes = set(phase_map.get(phase, []))
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
 
         # Normalised warn threshold (premium_wait is already / cost_threshold)
         warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
 
-        lane_queues = ts.get_lanes_queue()
-        lane_densities = ts.get_lanes_density()
-
-        def _phase_pressure(lane_indices):
-            p = 0.0
-            for li in lane_indices:
-                if li < len(lane_queues):
-                    p += lane_queues[li] + lane_densities[li]
-            return p
-
-        # Current phase pressure
-        served_pressure = _phase_pressure(served_lanes)
-
         for i in range(len(has_premium)):
             if has_premium[i] > 0 and i not in served_lanes:
-                # Condition 3: premium has waited enough
-                if premium_wait[i] <= warn_norm:
-                    continue
-                # Condition 4: find the best phase that serves this lane
-                # (max pressure among all candidate phases, conservative).
-                best_prem_pressure = None
-                for ph, lanes in phase_map.items():
-                    if i in lanes and ph != phase:
-                        pp = _phase_pressure(lanes)
-                        if best_prem_pressure is None or pp > best_prem_pressure:
-                            best_prem_pressure = pp
-                if best_prem_pressure is None:
-                    continue  # no phase serves this lane
-                if served_pressure > self._premium_pressure_beta * max(best_prem_pressure, 1e-6):
+                if premium_wait[i] > warn_norm:
                     return 1
         return 0
 
@@ -1976,37 +1917,6 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._prev_side_wait[agent_id] = side_wait
         return max(0.0, side_wait - prev)
 
-    def _compute_agent_cost(self, agent_id: str) -> float:
-        """Dispatch to the selected cost function."""
-        if self._cost_fn == "service_gap":
-            return self._compute_service_gap_cost(agent_id)
-        elif self._cost_fn == "directional":
-            return self._compute_directional_ew_cost(agent_id)
-        elif self._cost_fn == "conflict":
-            # Binary OR: 1 if fairness or phase-churn fires
-            c_fair = self._compute_agent_cost_fairness(agent_id)
-            c_churn = self._compute_agent_cost_phase_churn(agent_id)
-            return 1.0 if (c_fair > 0 or c_churn > 0) else 0.0
-        elif self._cost_fn == "fairness":
-            return self._compute_agent_cost_fairness(agent_id)
-        elif self._cost_fn == "phase_churn":
-            return self._compute_agent_cost_phase_churn(agent_id)
-        elif self._cost_fn == "combined":
-            return (self._compute_agent_cost_queue_overflow(agent_id) +
-                    self._compute_agent_cost_max_wait(agent_id) +
-                    self._compute_agent_cost_lane_saturation(agent_id))
-        elif self._cost_fn == "queue_overflow":
-            return self._compute_agent_cost_queue_overflow(agent_id)
-        elif self._cost_fn == "max_wait":
-            return self._compute_agent_cost_max_wait(agent_id)
-        elif self._cost_fn == "lane_saturation":
-            return self._compute_agent_cost_lane_saturation(agent_id)
-        elif self._cost_fn == "emergency":
-            return self._compute_emergency_cost()
-        elif self._cost_fn == "side_queue":
-            return self._compute_side_queue_cost(agent_id)
-        return 0.0
-
     def _compute_emergency_cost(self) -> float:
         """Global cost from native SUMO failure events."""
         events = self._query_failure_events()
@@ -2122,6 +2032,14 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Patch _sumo_step for emergency cost (only if needed)
         self._patch_sumo_step()
 
+        # ── Episode-level RNG for all scenario randomness ──
+        # Seeded from the episode seed (reproducible) or episode counter
+        # (deterministic but varying). Used for injection timing, route
+        # selection, roadwork placement, and clean-episode coin flip.
+        self._episode_count += 1
+        ep_seed = seed if seed is not None else self._episode_count
+        self._scenario_rng = np.random.RandomState(ep_seed % (2**31))
+
         # Compute per-agent lane splits for directional reward / starvation cost
         if self._override_reward == "directional" or self._cost_fn == "starvation":
             self._priority_lanes.clear()
@@ -2142,7 +2060,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         # cost/label stay zero). Same train/test distribution for all methods.
         self._is_clean_episode = (
             self._clean_episode_prob > 0
-            and np.random.random() < self._clean_episode_prob
+            and self._scenario_rng.random() < self._clean_episode_prob
         )
 
         # Bus / convoy / premium injection setup
@@ -2151,6 +2069,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             if not self._phase_to_lanes:
                 self._classify_mainline_side()  # also builds phase_to_lanes
             self._discover_boundary_edges()
+            self._precompute_conflict_routes()
             self._bus_vtype_created = False
             self._convoy_vtype_created = False
             self._premium_vtype_created = False
@@ -2268,6 +2187,15 @@ class SumoRewardCostWrapper(ParallelEnv):
         # returning terminal observations until the env is reset.
         if getattr(self, '_traci_dead', False):
             return self._force_terminate_episode("TraCI connection already dead")
+
+        # Clip actions for agents with fewer green phases than max_n_actions.
+        # Out-of-range actions map to action 0 (safe default); no modulo
+        # aliasing, so policy outputs have unambiguous semantics.
+        if self._heterogeneous_actions:
+            actions = {
+                agent: int(act) if int(act) < self._agent_n_actions[agent] else 0
+                for agent, act in actions.items()
+            }
 
         try:
             obs, rewards, terminations, truncations, infos = self._env.step(actions)
@@ -2499,6 +2427,18 @@ def _resco_path(scenario: str, filename: str) -> str:
     return path
 
 
+def _sumo_rl_path(*parts) -> str:
+    """Resolve a path relative to sumo_rl/nets/."""
+    nets = _find_sumo_rl_nets()
+    if nets is None:
+        raise ImportError("sumo_rl is not installed.")
+    import os
+    path = os.path.join(nets, *parts)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"SUMO-RL file not found: {path}")
+    return path
+
+
 # RESCO benchmark configurations
 # Each has uniform obs/action spaces across all intersections
 SUMO_CONFIGS = {
@@ -2511,7 +2451,7 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 16,  # 4x4 grid
     },
     "sumo-arterial4x4-v0": {
@@ -2522,7 +2462,7 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 16,
     },
     # --- Real-world networks (RESCO) ---
@@ -2534,7 +2474,7 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 1,
     },
     "sumo-cologne1-v0": {
@@ -2545,7 +2485,7 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 1,
     },
     "sumo-cologne3-v0": {
@@ -2556,7 +2496,7 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 3,
     },
     "sumo-cologne8-v0": {
@@ -2567,7 +2507,7 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 8,
     },
     "sumo-ingolstadt7-v0": {
@@ -2578,7 +2518,7 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 7,
     },
     "sumo-ingolstadt21-v0": {
@@ -2589,8 +2529,39 @@ SUMO_CONFIGS = {
         "yellow_time": 2,
         "min_green": 5,
         "max_green": 50,
-        "reward_fn": "diff-waiting-time",
+        "reward_fn": "pressure",
         "n_agents": 21,
+    },
+    # --- Single intersection (1 agent, asymmetric traffic) ---
+    # Reward = pressure (#out - #in).  External costs (convoy, bus, premium,
+    # spillback) inject special vehicles on side-street (low-demand) approaches
+    # via precomputed conflict routes.  Serving them to reduce cost pulls green
+    # away from the mainline and worsens pressure.
+    #
+    # 4-way intersection: NS ~1000 veh/hr (major), EW ~250 veh/hr (minor).
+    # Use mainline_direction="ns" to correctly identify NS as mainline.
+    "sumo-single-vhvh-v0": {
+        "net_file_fn": lambda: _sumo_rl_path("2way-single-intersection", "single-intersection.net.xml"),
+        "route_file_fn": lambda: _sumo_rl_path("2way-single-intersection", "single-intersection-vhvh.rou.xml"),
+        "num_seconds": 3600,
+        "delta_time": 5,
+        "yellow_time": 2,
+        "min_green": 5,
+        "max_green": 50,
+        "reward_fn": "pressure",
+        "n_agents": 1,
+    },
+    # 2-way intersection: WE prob=0.5 (major), NS prob=0.2 (minor).
+    "sumo-single-v0": {
+        "net_file_fn": lambda: _sumo_rl_path("single-intersection", "single-intersection.net.xml"),
+        "route_file_fn": lambda: _sumo_rl_path("single-intersection", "single-intersection.rou.xml"),
+        "num_seconds": 3600,
+        "delta_time": 5,
+        "yellow_time": 2,
+        "min_green": 5,
+        "max_green": 50,
+        "reward_fn": "pressure",
+        "n_agents": 1,
     },
 }
 
@@ -2664,16 +2635,14 @@ def make_sumo_vec_env(
     convoy_size_min: int = 10,
     convoy_size_max: int = 12,
     convoy_headway: float = 2.0,
-    convoy_cost_threshold: float = 20.0,
-    convoy_warn_threshold: float = 8.0,
     premium_injection_interval: float = 40.0,
     premium_cost_threshold: float = 15.0,
     premium_warn_threshold: float = 5.0,
-    premium_pressure_beta: float = 1.5,
     roadwork_interval_mean: float = 300.0,
     roadwork_duration_mean: float = 400.0,
     roadwork_speed: float = 0.3,
-    spillback_occ_threshold: float = 0.15,
+    spillback_occ_threshold: float = 0.45,
+    spillback_warn_threshold: float = 0.25,
     clean_episode_prob: float = 0.0,
     use_gui: bool = False,
     **override_kwargs,
@@ -2784,16 +2753,14 @@ def make_sumo_vec_env(
         convoy_size_min=convoy_size_min,
         convoy_size_max=convoy_size_max,
         convoy_headway=convoy_headway,
-        convoy_cost_threshold=convoy_cost_threshold,
-        convoy_warn_threshold=convoy_warn_threshold,
         premium_injection_interval=premium_injection_interval,
         premium_cost_threshold=premium_cost_threshold,
         premium_warn_threshold=premium_warn_threshold,
-        premium_pressure_beta=premium_pressure_beta,
         roadwork_interval_mean=roadwork_interval_mean,
         roadwork_duration_mean=roadwork_duration_mean,
         roadwork_speed=roadwork_speed,
         spillback_occ_threshold=spillback_occ_threshold,
+        spillback_warn_threshold=spillback_warn_threshold,
         clean_episode_prob=clean_episode_prob,
     )
 
@@ -2810,8 +2777,13 @@ def make_sumo_vec_env(
 
     # Flag for GBRL mixed-mode detection
     if use_categorical_phase:
-        n_phases = config.get("n_agents", None)
-        # Get n_phases from action space
+        if par_env._heterogeneous_actions:
+            raise ValueError(
+                "use_categorical_phase=True is incompatible with heterogeneous "
+                "action spaces. Phase one-hot layout differs per agent, so "
+                "argmax-based categorical conversion would corrupt observations. "
+                "Either use a uniform-phase network or disable categorical phase."
+            )
         n_phases = vec_env.action_space.n  # Discrete action = n_green_phases
         vec_env = VecCategoricalPhase(vec_env, n_phases=n_phases)
 
