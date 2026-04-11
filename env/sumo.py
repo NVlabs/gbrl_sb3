@@ -2992,14 +2992,21 @@ def make_sumo_vec_env(
 
 
 class VecCategoricalPhase(VecMonitor.__bases__[0] if hasattr(VecMonitor, '__bases__') else object):
-    """VecEnv wrapper that replaces one-hot phase with an integer phase ID.
+    """VecEnv wrapper that replaces one-hot phase with a categorical phase ID.
 
     Converts float32 obs of shape (n_envs, n_phases + 1 + 2*n_lanes) to
-    float64 obs of shape (n_envs, 1 + 1 + 2*n_lanes) where column 0 is
-    an integer phase ID (0..n_phases-1) and the rest are float64.
+    object obs of shape (n_envs, 1 + 1 + 2*n_lanes) where column 0 is
+    a categorical string "p0".."p{n-1}" and the rest are float64.
 
-    The first column is marked as categorical via the is_categorical flag
-    for GBRL tree-splitting. All values are numeric — no object arrays.
+    GBRL auto-detects the string column as categorical (equality splits)
+    and the float columns as numerical (threshold splits) via its
+    per-element dtype inspection in process_array().
+
+    observation_space shape is correct (new_dim); dtype is approximate
+    because gym.spaces.Box cannot represent mixed str/float columns.
+    This is standard for mixed-type RL wrappers. The is_categorical flag
+    ensures downstream algos use CategoricalReplayBuffer (dtype=object),
+    bypassing Box dtype checks.
 
     Must be placed AFTER SuperSuit (which requires float arrays) and BEFORE
     any GBRL-facing wrapper (VecCostMonitor, training loop).
@@ -3010,14 +3017,13 @@ class VecCategoricalPhase(VecMonitor.__bases__[0] if hasattr(VecMonitor, '__base
         self._n_phases = n_phases
         self.is_mixed = True
         self.is_categorical = True
-        # Index of the categorical feature (phase ID) in the output obs
-        self.categorical_indices = [0]
 
         # Proxy attributes from inner venv
         self.num_envs = venv.num_envs
         self.action_space = venv.action_space
 
-        # Build correct observation space: n_phases one-hot cols → 1 integer col
+        # Build observation space with correct shape (n_phases one-hot → 1 col)
+        # dtype=float64 is approximate; actual column 0 is a string.
         inner_space = venv.observation_space
         new_dim = inner_space.shape[0] - n_phases + 1
         self.observation_space = gym.spaces.Box(
@@ -3029,16 +3035,23 @@ class VecCategoricalPhase(VecMonitor.__bases__[0] if hasattr(VecMonitor, '__base
             self.metadata = venv.metadata
 
     def _convert_obs(self, obs: np.ndarray) -> np.ndarray:
-        """Convert float obs batch: one-hot phase → integer phase ID."""
+        """Convert float obs batch: one-hot phase → categorical string + floats.
+
+        Returns dtype=object array so GBRL's process_array() sees:
+          col 0: string "p3" → categorical → equality splits
+          col 1+: float64    → numerical   → threshold splits
+        """
         n_envs, obs_dim = obs.shape
         n_phases = self._n_phases
-        new_dim = obs_dim - n_phases + 1  # replace n_phases cols with 1 col
-        out = np.empty((n_envs, new_dim), dtype=np.float64)
-        # Phase: argmax of one-hot → integer ID in column 0
-        out[:, 0] = np.argmax(obs[:, :n_phases], axis=1).astype(np.float64)
+        new_dim = obs_dim - n_phases + 1
+        mixed = np.empty((n_envs, new_dim), dtype=object)
+        # Phase: argmax of one-hot → categorical string
+        phase_ids = np.argmax(obs[:, :n_phases], axis=1)
+        for i in range(n_envs):
+            mixed[i, 0] = f"p{phase_ids[i]}"
         # Remaining features: min_green + density + queue
-        out[:, 1:] = obs[:, n_phases:].astype(np.float64)
-        return out
+        mixed[:, 1:] = obs[:, n_phases:].astype(np.float64)
+        return mixed
 
     def reset(self, **kwargs):
         obs = self.venv.reset(**kwargs)

@@ -52,11 +52,21 @@ def _resolve_schema(schema: str) -> str:
 def make_citylearn_inner_env(
     schema: str = DEFAULT_SCHEMA,
     episode_time_steps: Optional[int] = None,
+    ignore_dynamics: bool = True,
 ) -> gym.Env:
     """Create the inner CityLearn stack before any CMDP wrapper.
 
     Stack:  CityLearnEnv  →  NormalizedObservationWrapper
                            →  StableBaselines3Wrapper
+
+    Parameters
+    ----------
+    ignore_dynamics : bool, default True
+        Skip the LSTM indoor-temperature dynamics model each step.
+        This is the single biggest CityLearn bottleneck (~48% of step
+        time).  Safe to leave True for any scenario that does not use
+        indoor temperature (B, C, D).  Set False only if indoor-temp
+        observations or costs are needed.
     """
     from citylearn.citylearn import CityLearnEnv
     from citylearn.wrappers import NormalizedObservationWrapper, StableBaselines3Wrapper
@@ -69,6 +79,13 @@ def make_citylearn_inner_env(
         cl_kwargs["episode_time_steps"] = episode_time_steps
 
     env = CityLearnEnv(**cl_kwargs)
+
+    # Disable expensive LSTM dynamics when not needed (4x+ speedup)
+    if ignore_dynamics:
+        for b in env.buildings:
+            if hasattr(b, "ignore_dynamics"):
+                b.ignore_dynamics = True
+
     env = NormalizedObservationWrapper(env)
     env = StableBaselines3Wrapper(env)
     return env
