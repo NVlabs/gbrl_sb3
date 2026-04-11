@@ -208,7 +208,7 @@ def parse_args():
     parser.add_argument('--gae_lambda', type=float)
     parser.add_argument('--target_kl', type=float)
     parser.add_argument('--log_std_init', type=float)
-    parser.add_argument('--squash', type=float)  # squash continuous actions using tanh
+    parser.add_argument('--squash', type=str2bool)  # squash continuous actions using tanh
     parser.add_argument('--nn_critic', type=str2bool)
     # NN parameters
     parser.add_argument('--learning_rate', type=str)
