@@ -298,12 +298,12 @@ class MultiRoomCorridorEnv(MiniGridEnv):
                 ms["green_key_picked"] = True
                 reward += self._milestone_reward * 2  # box + key in one
 
-        # --- Milestone: top door opened ---
+        # --- Milestone: top door opened (hardest transition — big bonus) ---
         if not ms["top_door_opened"]:
             top_door_obj = self.grid.get(*self.top_door_pos)
             if top_door_obj is None or (isinstance(top_door_obj, Door) and top_door_obj.is_open):
                 ms["top_door_opened"] = True
-                reward += self._milestone_reward
+                reward += self._milestone_reward * 5  # 0.5 bonus for corridor transit
 
         # Distance shaping: always active, guides toward goal
         agent_pos = np.array(self.agent_pos, dtype=np.float64)

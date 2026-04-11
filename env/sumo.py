@@ -274,6 +274,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Reverse lookup: lane_name → (agent_id, lane_index) — built once at reset
         self._lane_to_agent: Dict[str, Tuple[str, int]] = {}
 
+        # Debug mode: when True, extra keys are added to info dict each step
+        self._debug: bool = False
+        self._debug_step_counter: int = 0
+
         # Number of green phases per agent (for obs transformation)
         self._n_green_phases: Optional[int] = None
 
@@ -875,6 +879,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         rng.shuffle(origins)
         rng.shuffle(dests)
 
+        import os as _os
+        _stderr_fd = _os.dup(2)
+        _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+        _os.dup2(_devnull, 2)
+        _os.close(_devnull)
+
+        result = None
         for origin in origins[:8]:
             for dest in dests[:8]:
                 if origin == dest:
@@ -882,10 +893,16 @@ class SumoRewardCostWrapper(ParallelEnv):
                 try:
                     stage = sumo.simulation.findRoute(origin, dest)
                     if hasattr(stage, 'edges') and len(stage.edges) >= 2:
-                        return list(stage.edges)
+                        result = list(stage.edges)
+                        break
                 except Exception:
                     continue
-        return None
+            if result is not None:
+                break
+
+        _os.dup2(_stderr_fd, 2)
+        _os.close(_stderr_fd)
+        return result
 
     def _precompute_conflict_routes(self):
         """Build a pool of routes through side-street approaches.
@@ -924,7 +941,15 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._conflict_routes = []
             return
 
-        # Enumerate candidate routes, score by side-edge fraction
+        # Enumerate candidate routes, score by side-edge fraction.
+        # Suppress stderr during findRoute: SUMO C++ prints "No connection"
+        # warnings for unreachable pairs, which we handle gracefully.
+        import os as _os
+        _stderr_fd = _os.dup(2)
+        _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+        _os.dup2(_devnull, 2)
+        _os.close(_devnull)
+
         candidates = []
         seen = set()
         for origin in self._origin_edges:
@@ -945,6 +970,10 @@ class SumoRewardCostWrapper(ParallelEnv):
                         candidates.append((score, list(route)))
                 except Exception:
                     continue
+
+        # Restore stderr
+        _os.dup2(_stderr_fd, 2)
+        _os.close(_stderr_fd)
 
         # Sort by side-edge fraction (descending), keep top routes
         candidates.sort(key=lambda x: x[0], reverse=True)
@@ -1122,16 +1151,20 @@ class SumoRewardCostWrapper(ParallelEnv):
         convoy_lane_map: Dict[str, Dict[int, int]] = {} if need_convoy else {}
 
         # ── Query only known special vehicles ──
+        # Get the set of vehicles currently in the simulation ONCE to avoid
+        # querying departed vehicles (which causes noisy libsumo stderr).
+        live_vehicles = set(sumo.vehicle.getIDList())
         departed = set()
 
         if need_bus:
             for vid in list(self._active_bus_ids):
-                try:
-                    lane = sumo.vehicle.getLaneID(vid)
-                    vwait = sumo.vehicle.getWaitingTime(vid)
-                except Exception:
-                    departed.add(vid)
+                if vid not in live_vehicles:
+                    if vid in self._seen_bus_ids:
+                        departed.add(vid)  # was in sim, now gone
                     continue
+                self._seen_bus_ids.add(vid)
+                lane = sumo.vehicle.getLaneID(vid)
+                vwait = sumo.vehicle.getWaitingTime(vid)
                 mapping = self._lane_to_agent.get(lane)
                 if mapping is None:
                     continue
@@ -1148,12 +1181,12 @@ class SumoRewardCostWrapper(ParallelEnv):
                 all_convoy_vids.update(vids)
             departed_convoy = set()
             for vid in all_convoy_vids:
-                try:
-                    lane = sumo.vehicle.getLaneID(vid)
-                    # no need for getWaitingTime for convoy — we use count/progress
-                except Exception:
-                    departed_convoy.add(vid)
+                if vid not in live_vehicles:
+                    if vid in self._seen_convoy_vids:
+                        departed_convoy.add(vid)  # was in sim, now gone
                     continue
+                self._seen_convoy_vids.add(vid)
+                lane = sumo.vehicle.getLaneID(vid)
                 mapping = self._lane_to_agent.get(lane)
                 if mapping is None:
                     continue
@@ -1181,12 +1214,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         if need_premium:
             departed.clear()
             for vid in list(self._active_premium_ids):
-                try:
-                    lane = sumo.vehicle.getLaneID(vid)
-                    vwait = sumo.vehicle.getWaitingTime(vid)
-                except Exception:
-                    departed.add(vid)
+                if vid not in live_vehicles:
+                    if vid in self._seen_premium_ids:
+                        departed.add(vid)  # was in sim, now gone
                     continue
+                self._seen_premium_ids.add(vid)
+                lane = sumo.vehicle.getLaneID(vid)
+                vwait = sumo.vehicle.getWaitingTime(vid)
                 mapping = self._lane_to_agent.get(lane)
                 if mapping is None:
                     continue
@@ -2079,6 +2113,12 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._active_convoys = {}  # reset convoy tracking
             self._active_bus_ids = set()
             self._active_premium_ids = set()
+            # Track which vehicles have been seen in sim at least once.
+            # Vehicles not yet spawned (future depart time) won't be in
+            # getIDList() but must NOT be pruned from active tracking.
+            self._seen_bus_ids = set()
+            self._seen_convoy_vids = set()
+            self._seen_premium_ids = set()
             self._convoy_seen_by_agent = {}  # reset per-agent convoy history
             if self._is_clean_episode:
                 # Push injection past episode horizon → no events
@@ -2350,6 +2390,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             new_rewards[agent] = reward
             info["cost"] = cost
             info["original_reward"] = original_reward
+            info["raw_reward"] = reward
             info["safety_label"] = label
             # Per-agent traffic metrics
             info["queued"] = metrics["queued"]
@@ -2357,6 +2398,46 @@ class SumoRewardCostWrapper(ParallelEnv):
             info["max_lane_queue"] = metrics["max_lane_queue"]
             info["avg_speed"] = metrics["avg_speed"]
             info["pressure"] = metrics["pressure"]
+
+            # ── Debug info (only when _debug=True) ──
+            if self._debug:
+                ts = self._get_traffic_signal(agent)
+                if ts is not None:
+                    can_switch = int(ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time)
+                    info["dbg_phase"] = ts.green_phase
+                    info["dbg_can_switch"] = can_switch
+                    info["dbg_time_in_phase"] = ts.time_since_last_phase_change
+                    info["dbg_sim_time"] = self._get_traci().simulation.getTime() if self._get_traci() else 0.0
+                else:
+                    info["dbg_phase"] = -1
+                    info["dbg_can_switch"] = 0
+                    info["dbg_time_in_phase"] = 0.0
+                    info["dbg_sim_time"] = 0.0
+                info["dbg_step"] = self._debug_step_counter
+                # Scenario-specific features
+                if self._cost_fn == "convoy_priority":
+                    hc = self._has_convoy.get(agent, np.zeros(0))
+                    cp = self._convoy_progress.get(agent, np.zeros(0))
+                    cc = self._convoy_count.get(agent, np.zeros(0))
+                    info["dbg_has_convoy"] = int(np.any(hc > 0))
+                    info["dbg_convoy_progress_max"] = float(cp.max()) if len(cp) > 0 else 0.0
+                    info["dbg_convoy_count_max"] = float(cc.max()) if len(cc) > 0 else 0.0
+                    info["dbg_n_active_convoys"] = len(self._active_convoys)
+                elif self._cost_fn == "bus_priority":
+                    hb = self._has_bus.get(agent, np.zeros(0))
+                    bw = self._bus_wait.get(agent, np.zeros(0))
+                    info["dbg_has_bus"] = int(np.any(hb > 0))
+                    info["dbg_bus_wait_max"] = float(bw.max()) if len(bw) > 0 else 0.0
+                elif self._cost_fn == "premium_priority":
+                    hp = self._has_premium.get(agent, np.zeros(0))
+                    pw = self._premium_wait.get(agent, np.zeros(0))
+                    info["dbg_has_premium"] = int(np.any(hp > 0))
+                    info["dbg_premium_wait_max"] = float(pw.max()) if len(pw) > 0 else 0.0
+                elif self._cost_fn == "spillback":
+                    ds = self._downstream_occ.get(agent, np.zeros(0))
+                    info["dbg_downstream_occ_max"] = float(ds.max()) if len(ds) > 0 else 0.0
+
+            self._debug_step_counter += 1
 
             # Track per-agent episode stats
             self._episode_costs[agent] = self._episode_costs.get(agent, 0.0) + cost
@@ -2645,6 +2726,7 @@ def make_sumo_vec_env(
     spillback_warn_threshold: float = 0.25,
     clean_episode_prob: float = 0.0,
     use_gui: bool = False,
+    debug: bool = False,
     **override_kwargs,
 ):
     """
@@ -2763,6 +2845,9 @@ def make_sumo_vec_env(
         spillback_warn_threshold=spillback_warn_threshold,
         clean_episode_prob=clean_episode_prob,
     )
+
+    if debug:
+        par_env._debug = True
 
     # PettingZoo → SB3 VecEnv via SuperSuit
     vec_env = ss.pettingzoo_env_to_vec_env_v1(par_env)
