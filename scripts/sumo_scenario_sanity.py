@@ -282,7 +282,7 @@ def _premium_safety_action(obs_i, t, raw_max, ext_max, sticky_state):
     Obs extension: [has_premium(M), premium_wait(M)]
     premium_wait starts at raw_max + ext_max.
     """
-    warn_norm = 3.0 / 8.0  # premium_warn / premium_cost
+    warn_norm = 3.0 / 8.0  # premium_warn / premium_cost (route-delay based)
 
     if ext_max > 0:
         has_prem = obs_i[raw_max:raw_max + ext_max]

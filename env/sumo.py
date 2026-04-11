@@ -61,10 +61,10 @@ COST_FN_REGISTRY: Dict[str, str] = {
     "emergency": "Global: 1 if emergency stops occur (+ teleport_weight if teleports)",
     "side_deficit": "Per-agent: continuous sum_l q_l * max(0, g_l - tau) — severity-weighted side-street neglect",
     "side_queue": "Per-agent: max queue ratio on side-street lanes — purely observation-based, no hidden state",
-    "bus_priority": "Per-agent: 1 if any bus waited past T_cost on unserved lane — binary violation, label fires at T_warn (anticipatory), obs-extended",
-    "convoy_priority": "Per-agent: 1 if convoy is actively being split (0 < progress < 1) — binary violation, label fires anticipatorily, obs-extended",
+    "bus_priority": "Per-agent: 1 if any bus local wait >= T_cost — binary violation, label fires at T_warn (anticipatory), fixed-corridor injection, obs-extended",
+    "convoy_priority": "Per-agent: 1 if convoy is actively being split (0 < progress < 1) on unserved lane — binary violation, label fires anticipatorily (regime-based, no decision-mask), obs-extended",
     "spillback": "Per-agent: 1 if any served lane has downstream_occ > T_occ — binary violation, obs-extended",
-    "premium_priority": "Per-agent: 1 if premium vehicle waited past T_cost on unserved lane — binary violation, label fires at T_warn (anticipatory), obs-extended",
+    "premium_priority": "Per-agent: 1 if premium vehicle route_delay >= T_cost — binary violation, route-level delay tracking, label fires at T_warn (anticipatory), obs-extended",
 }
 
 
@@ -257,11 +257,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._bus_wait: Dict[str, np.ndarray] = {}
         self._bus_count: Dict[str, np.ndarray] = {}  # number of buses per lane
         self._has_convoy: Dict[str, np.ndarray] = {}
-        self._convoy_count: Dict[str, np.ndarray] = {}
+        self._convoy_count: Dict[str, np.ndarray] = {}  # raw visible count per lane
+        self._convoy_seen_frac: Dict[str, np.ndarray] = {}  # seen/total_size per lane (obs-exposed)
         self._convoy_wait: Dict[str, np.ndarray] = {}
         self._convoy_progress: Dict[str, np.ndarray] = {}  # fraction of convoy past stop line
         # Track which convoy IDs belong to which platoon for split detection
         self._active_convoys: Dict[int, List[str]] = {}  # convoy_id → [veh_id, ...]
+        self._convoy_info: Dict[int, dict] = {}  # convoy_id → {total_size, vids}
         # Per-agent tracking: which convoy vehicle IDs have ever been seen
         # on this agent's incoming lanes.  Used for correct per-intersection
         # progress: progress = (ever_seen − still_on_incoming) / ever_seen
@@ -366,7 +368,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             if self._cost_fn == "bus_priority":
                 self._obs_extension_dim = 3 * max_n_lanes  # has_bus + bus_count + bus_wait
             elif self._cost_fn == "convoy_priority":
-                self._obs_extension_dim = 3 * max_n_lanes  # has_convoy + convoy_count + convoy_progress
+                self._obs_extension_dim = 3 * max_n_lanes  # has_convoy + convoy_seen_frac + convoy_progress
             elif self._cost_fn == "spillback":
                 self._obs_extension_dim = 1 * max_n_lanes  # downstream_occ
             elif self._cost_fn == "premium_priority":
@@ -508,50 +510,6 @@ class SumoRewardCostWrapper(ParallelEnv):
         sumo_env._sumo_step = types.MethodType(patched_sumo_step, sumo_env)
 
     # ── Lane direction classification ────────────────────────────────────
-
-    def _classify_lanes_by_direction(self):
-        """Classify each agent's incoming lanes as NS or EW using geometry.
-
-        Uses TraCI junction positions to determine whether each incoming
-        lane comes from a North/South direction or East/West direction.
-        Populates self._ns_lane_indices and self._ew_lane_indices with
-        indices into ts.lanes (the incoming lane list).
-        """
-        sumo = self._get_traci()
-        if sumo is None:
-            return
-
-        self._ns_lane_indices.clear()
-        self._ew_lane_indices.clear()
-        self._prev_ns_wait.clear()
-        self._prev_ew_wait.clear()
-
-        for agent_id in self.possible_agents:
-            ts = self._get_traffic_signal(agent_id)
-            if ts is None:
-                continue
-
-            agent_pos = sumo.junction.getPosition(agent_id)
-            ns_idx = []
-            ew_idx = []
-
-            for i, lane in enumerate(ts.lanes):
-                edge = '_'.join(lane.split('_')[:-1])
-                src_node = sumo.edge.getFromJunction(edge)
-                src_pos = sumo.junction.getPosition(src_node)
-
-                dx = src_pos[0] - agent_pos[0]
-                dy = src_pos[1] - agent_pos[1]
-
-                if abs(dy) >= abs(dx):
-                    ns_idx.append(i)  # North or South
-                else:
-                    ew_idx.append(i)  # East or West
-
-            self._ns_lane_indices[agent_id] = ns_idx
-            self._ew_lane_indices[agent_id] = ew_idx
-            self._prev_ns_wait[agent_id] = 0.0
-            self._prev_ew_wait[agent_id] = 0.0
 
     def _classify_mainline_side(self):
         """Classify lanes as mainline vs side-street per agent.
@@ -1032,6 +990,41 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._bus_route_cursor += 1
         return route
 
+    def _precompute_premium_routes(self):
+        """Build a small fixed set of premium-corridor routes.
+
+        Premium corridors are conflict routes that are DIFFERENT from
+        bus corridors, creating a distinct recurring obligation.  Uses
+        the next 2-4 conflict routes after the bus pool (or the full
+        pool if bus routes are empty).  Round-robin injection ensures
+        premium vehicles appear on the same designated lanes repeatedly,
+        strengthening the local gradient-conflict signal.
+
+        Falls back to conflict routes if fewer than 2 candidates.
+        """
+        if not self._conflict_routes:
+            self._premium_routes = []
+            return
+        # Use routes that are NOT in the bus pool to avoid overlap
+        bus_set = {tuple(r) for r in getattr(self, '_bus_routes', [])}
+        candidates = [r for r in self._conflict_routes if tuple(r) not in bus_set]
+        if len(candidates) < 2:
+            candidates = self._conflict_routes
+        self._premium_routes = candidates[:4]
+        self._premium_route_cursor = 0
+
+    def _select_premium_route(self) -> Optional[List[str]]:
+        """Pick next premium corridor route (round-robin).
+
+        Deterministic cycling through fixed premium-corridor pool.
+        Every premium vehicle uses the same small set of lanes.
+        """
+        if not self._premium_routes:
+            return self._select_conflict_route()
+        route = list(self._premium_routes[self._premium_route_cursor % len(self._premium_routes)])
+        self._premium_route_cursor += 1
+        return route
+
     def _select_conflict_route(self) -> Optional[List[str]]:
         """Pick a route from the precomputed conflict-route pool.
 
@@ -1149,16 +1142,32 @@ class SumoRewardCostWrapper(ParallelEnv):
                         pass
                 if veh_ids:
                     self._active_convoys[convoy_id] = veh_ids
+                    self._convoy_info[convoy_id] = {
+                        "total_size": len(veh_ids),
+                        "vids": set(veh_ids),
+                    }
                 self._convoy_counter += 1
             self._next_convoy_time = sim_time + self._convoy_injection_interval * (0.8 + 0.4 * rng.random())
 
-        # Premium injection — single VIP on random route (any direction)
+        # Premium injection — single VIP on fixed corridor (round-robin)
         if self._cost_fn == "premium_priority" and sim_time >= self._next_premium_time:
-            route_edges = self._select_random_route(self._scenario_rng)
+            route_edges = self._select_premium_route()
             if route_edges is not None and len(route_edges) >= 2:
                 route_id = f"premium_route_{self._premium_counter}"
                 try:
                     sumo.route.add(route_id, route_edges)
+                    # Precompute cumulative free-flow prefix times per edge
+                    # prefix_times[i] = free-flow time to reach START of edge i
+                    prefix_times = [0.0]
+                    for edge_id in route_edges:
+                        try:
+                            e_len = sumo.lane.getLength(edge_id + "_0")
+                            e_spd = sumo.lane.getMaxSpeed(edge_id + "_0")
+                            prefix_times.append(prefix_times[-1] + e_len / max(e_spd, 1.0))
+                        except Exception:
+                            prefix_times.append(prefix_times[-1])
+                    # Build edge→index lookup for fast position mapping
+                    edge_to_idx = {e: i for i, e in enumerate(route_edges)}
                     for k in range(self._premium_count_per_injection):
                         prem_id = f"premium_{self._premium_counter}_{k}"
                         depart_t = sim_time + k * self._premium_headway
@@ -1169,6 +1178,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                         self._premium_vehicle_info[prem_id] = {
                             "depart_time": depart_t,
                             "route_edges": list(route_edges),
+                            "prefix_times": prefix_times,
+                            "edge_to_idx": edge_to_idx,
                         }
                     self._premium_counter += 1
                 except Exception:
@@ -1201,6 +1212,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             if need_convoy:
                 self._has_convoy[agent_id].fill(0)
                 self._convoy_count[agent_id].fill(0)
+                self._convoy_seen_frac[agent_id].fill(0)
                 self._convoy_progress[agent_id].fill(0)
             if need_premium:
                 self._has_premium[agent_id].fill(0)
@@ -1209,7 +1221,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Per-agent convoy tracking for this step
         # convoy_on_incoming[agent_id][convoy_id] = set of vids on incoming
         convoy_on_incoming: Dict[str, Dict[int, Set[str]]] = {} if need_convoy else {}
-        convoy_lane_map: Dict[str, Dict[int, int]] = {} if need_convoy else {}
+        convoy_lane_map: Dict[str, Dict[int, int]] = {} if need_convoy else {}  # agent → {cid → lane_idx}
 
         # ── Query only known special vehicles ──
         # Get the set of vehicles currently in the simulation ONCE to avoid
@@ -1287,20 +1299,31 @@ class SumoRewardCostWrapper(ParallelEnv):
                     continue
                 agent_id, lane_idx = mapping
                 self._has_premium[agent_id][lane_idx] = 1.0
-                # Route-level delay: elapsed - free_flow_elapsed
-                # elapsed = time since depart
-                # free_flow approximation: distance_traveled / max_speed
-                # route_delay = max(0, elapsed - free_flow_time)
+                # Route-level delay: elapsed - prefix_free_flow to current edge
+                # This gives real-time delay at the vehicle's current position,
+                # not clipped-to-zero until the full route time elapses.
                 vinfo = self._premium_vehicle_info.get(vid)
                 if vinfo is not None:
                     elapsed = sim_time - vinfo["depart_time"]
-                    try:
-                        dist = sumo.vehicle.getDistance(vid)
-                        max_spd = sumo.vehicle.getMaxSpeed(vid)
-                        free_flow_time = dist / max(max_spd, 1.0)
-                        route_delay = max(0.0, elapsed - free_flow_time)
-                    except Exception:
-                        route_delay = 0.0
+                    # Find current edge from lane ID
+                    current_edge = '_'.join(lane.split('_')[:-1])
+                    edge_idx = vinfo["edge_to_idx"].get(current_edge)
+                    if edge_idx is not None:
+                        # prefix_times[edge_idx] = free-flow to reach START of this edge
+                        # prefix_times[edge_idx+1] = free-flow to reach END of this edge
+                        # Use prefix to start of current edge as expected elapsed
+                        expected_elapsed = vinfo["prefix_times"][edge_idx]
+                        # Add within-edge progress: lanePosition / edge_speed
+                        try:
+                            lane_pos = sumo.vehicle.getLanePosition(vid)
+                            edge_spd = sumo.lane.getMaxSpeed(lane)
+                            expected_elapsed += lane_pos / max(edge_spd, 1.0)
+                        except Exception:
+                            pass
+                        route_delay = max(0.0, elapsed - expected_elapsed)
+                    else:
+                        # Vehicle on internal/junction edge — use last known
+                        route_delay = max(0.0, elapsed - vinfo["prefix_times"][-1])
                 else:
                     route_delay = 0.0
                 self._premium_wait[agent_id][lane_idx] = max(
@@ -1329,15 +1352,32 @@ class SumoRewardCostWrapper(ParallelEnv):
                     current_vids = agent_con.get(cid, set())
                     seen = agent_history.setdefault(cid, set())
                     seen.update(current_vids)
-                    if len(seen) > 0:
+                    # Use actual total_size from convoy metadata for progress
+                    cinfo = self._convoy_info.get(cid)
+                    total = cinfo["total_size"] if cinfo else len(seen)
+                    if total > 0:
                         still_here = len(current_vids & seen)
                         passed = len(seen) - still_here
-                        progress = passed / len(seen)
+                        progress = passed / total
                         self._convoy_progress[agent_id][lane_idx] = max(
                             self._convoy_progress[agent_id][lane_idx], progress)
 
                 self._convoy_count[agent_id] = np.clip(
                     self._convoy_count[agent_id] / self._convoy_size_max, 0.0, 1.0)
+
+                # Compute convoy_seen_frac: seen / total_size per lane
+                # This is the obs-exposed feature the label reads from.
+                seen_frac = np.zeros_like(self._convoy_count[agent_id])
+                for cid, lane_idx in agent_cmap.items():
+                    cinfo = self._convoy_info.get(cid)
+                    total = cinfo["total_size"] if cinfo else self._convoy_size_max
+                    seen_count = len(agent_history.get(cid, set()))
+                    if total > 0:
+                        seen_frac[lane_idx] = max(seen_frac[lane_idx], seen_count / total)
+                self._convoy_seen_frac[agent_id] = np.clip(seen_frac, 0.0, 1.0)
+
+            # Persist for label lookups
+            self._convoy_lane_map = convoy_lane_map
 
         if need_premium:
             for agent_id in self.possible_agents:
@@ -1376,9 +1416,9 @@ class SumoRewardCostWrapper(ParallelEnv):
                 ob = np.concatenate([ob, hb, bc, bw])
             elif self._cost_fn == "convoy_priority":
                 hc = _pad(self._has_convoy.get(agent, np.zeros(0, dtype=np.float32)), M)
-                cc = _pad(self._convoy_count.get(agent, np.zeros(0, dtype=np.float32)), M)
+                sf = _pad(self._convoy_seen_frac.get(agent, np.zeros(0, dtype=np.float32)), M)
                 cp = _pad(self._convoy_progress.get(agent, np.zeros(0, dtype=np.float32)), M)
-                ob = np.concatenate([ob, hc, cc, cp])
+                ob = np.concatenate([ob, hc, sf, cp])
             elif self._cost_fn == "spillback":
                 ds = _pad(self._downstream_occ.get(agent, np.zeros(0, dtype=np.float32)), M)
                 ob = np.concatenate([ob, ds])
@@ -1489,20 +1529,22 @@ class SumoRewardCostWrapper(ParallelEnv):
         Marks the region of state space where a convoy split is
         imminent or active.  Label = regime detector, NOT decision mask.
 
+        Pure function of observation features:
+          - has_convoy[i], convoy_progress[i], convoy_seen_frac[i]
+
         1. **Reactive** (0 < progress < 1, unserved lane):
            Active split in progress.  NO can_switch gate — label must
            be 1 whenever cost is 1 so Split-RL routes gradients through
            the cost head during the entire cost-active regime.
 
-        2. **Anticipatory** (progress == 0, can_switch, count ≥ 0.33):
-           Convoy waiting on unserved lane and agent CAN switch.
-           can_switch is safe here because cost == 0 in this branch
-           (no 0 < progress < 1), so label=0 during lock creates no
-           cost-label mismatch.
+        2. **Anticipatory** (progress == 0, can_switch, seen_frac ≥ 0.33):
+           Convoy arriving on unserved lane and agent CAN switch.
+           Uses convoy_seen_frac (seen/total_size) directly from the
+           observation extension — no hidden metadata lookup.
+           can_switch is safe here because cost == 0 in this branch.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
-        convoy_count = self._convoy_count.get(agent_id)
         if has_convoy is None or convoy_progress is None:
             return 0
 
@@ -1526,11 +1568,15 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not can_switch:
             return 0
 
+        # Use obs-exposed convoy_seen_frac — pure function of observation
+        seen_frac = self._convoy_seen_frac.get(agent_id)
+        if seen_frac is None:
+            return 0
+
         for i in range(len(has_convoy)):
             if has_convoy[i] > 0 and i not in served_lanes:
-                if convoy_progress[i] == 0:
-                    if convoy_count is not None and convoy_count[i] >= 0.33:
-                        return 1
+                if convoy_progress[i] == 0 and seen_frac[i] >= 0.33:
+                    return 1
         return 0
 
     # ── Spillback cost/label ─────────────────────────────────────────────
@@ -2155,12 +2201,14 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Bus / convoy / premium injection setup
         if self._cost_fn in ("bus_priority", "convoy_priority", "premium_priority"):
             # Build phase→lane mapping (needed for label: "is lane served?")
-            if not self._phase_to_lanes:
-                self._classify_mainline_side()  # also builds phase_to_lanes
+            # Rebuild every episode: reset creates a fresh SUMO instance
+            self._classify_mainline_side()  # also builds phase_to_lanes
             self._discover_boundary_edges()
             self._precompute_conflict_routes()
             if self._cost_fn == "bus_priority":
                 self._precompute_bus_routes()
+            if self._cost_fn == "premium_priority":
+                self._precompute_premium_routes()
             self._bus_vtype_created = False
             self._convoy_vtype_created = False
             self._premium_vtype_created = False
@@ -2168,6 +2216,8 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._convoy_counter = 0
             self._premium_counter = 0
             self._active_convoys = {}  # reset convoy tracking
+            self._convoy_info = {}  # reset convoy metadata
+            self._convoy_lane_map = {}  # reset lane→convoy mapping
             self._active_bus_ids = set()
             self._active_premium_ids = set()
             # Track which vehicles have been seen in sim at least once.
@@ -2205,6 +2255,7 @@ class SumoRewardCostWrapper(ParallelEnv):
                     self._bus_count[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._has_convoy[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._convoy_count[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._convoy_seen_frac[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._convoy_progress[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._has_premium[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._premium_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
@@ -2218,8 +2269,8 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         # Spillback / road works setup
         if self._cost_fn == "spillback":
-            if not self._phase_to_lanes:
-                self._classify_mainline_side()  # also builds phase_to_lanes
+            # Rebuild every episode: reset creates a fresh SUMO instance
+            self._classify_mainline_side()  # also builds phase_to_lanes
             self._build_lane_downstream_mapping()
             self._discover_internal_edges()
             self._active_roadworks = []
@@ -2813,7 +2864,7 @@ def make_sumo_vec_env(
         If "throughput", replace sumo-rl reward with negative pressure.
         None keeps the original sumo-rl reward (e.g., diff-waiting-time).
     cost_fn : str
-        Cost function. See COST_FN_REGISTRY. Default "side_deficit".
+        Cost function. See COST_FN_REGISTRY. Default "convoy_priority".
     starvation_threshold : int
         For cost_fn="starvation": max halting vehicles per non-priority lane. Default 3.
     fairness_tau : float
@@ -2941,11 +2992,14 @@ def make_sumo_vec_env(
 
 
 class VecCategoricalPhase(VecMonitor.__bases__[0] if hasattr(VecMonitor, '__bases__') else object):
-    """VecEnv wrapper that replaces one-hot phase with a categorical string.
+    """VecEnv wrapper that replaces one-hot phase with an integer phase ID.
 
     Converts float32 obs of shape (n_envs, n_phases + 1 + 2*n_lanes) to
-    object obs of shape (n_envs, 1 + 1 + 2*n_lanes) where column 0 is a
-    categorical string "p0"..."p7" and the rest are float64.
+    float64 obs of shape (n_envs, 1 + 1 + 2*n_lanes) where column 0 is
+    an integer phase ID (0..n_phases-1) and the rest are float64.
+
+    The first column is marked as categorical via the is_categorical flag
+    for GBRL tree-splitting. All values are numeric — no object arrays.
 
     Must be placed AFTER SuperSuit (which requires float arrays) and BEFORE
     any GBRL-facing wrapper (VecCostMonitor, training loop).
@@ -2956,29 +3010,35 @@ class VecCategoricalPhase(VecMonitor.__bases__[0] if hasattr(VecMonitor, '__base
         self._n_phases = n_phases
         self.is_mixed = True
         self.is_categorical = True
+        # Index of the categorical feature (phase ID) in the output obs
+        self.categorical_indices = [0]
 
         # Proxy attributes from inner venv
         self.num_envs = venv.num_envs
-        self.observation_space = venv.observation_space
         self.action_space = venv.action_space
+
+        # Build correct observation space: n_phases one-hot cols → 1 integer col
+        inner_space = venv.observation_space
+        new_dim = inner_space.shape[0] - n_phases + 1
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(new_dim,), dtype=np.float64
+        )
         if hasattr(venv, 'reward_range'):
             self.reward_range = venv.reward_range
         if hasattr(venv, 'metadata'):
             self.metadata = venv.metadata
 
     def _convert_obs(self, obs: np.ndarray) -> np.ndarray:
-        """Convert float obs batch to mixed object array with categorical phase."""
+        """Convert float obs batch: one-hot phase → integer phase ID."""
         n_envs, obs_dim = obs.shape
         n_phases = self._n_phases
         new_dim = obs_dim - n_phases + 1  # replace n_phases cols with 1 col
-        mixed = np.empty((n_envs, new_dim), dtype=object)
-        # Phase: argmax of one-hot → categorical string
-        phase_ids = np.argmax(obs[:, :n_phases], axis=1)
-        for i in range(n_envs):
-            mixed[i, 0] = f"p{phase_ids[i]}"
+        out = np.empty((n_envs, new_dim), dtype=np.float64)
+        # Phase: argmax of one-hot → integer ID in column 0
+        out[:, 0] = np.argmax(obs[:, :n_phases], axis=1).astype(np.float64)
         # Remaining features: min_green + density + queue
-        mixed[:, 1:] = obs[:, n_phases:].astype(np.float64)
-        return mixed
+        out[:, 1:] = obs[:, n_phases:].astype(np.float64)
+        return out
 
     def reset(self, **kwargs):
         obs = self.venv.reset(**kwargs)
