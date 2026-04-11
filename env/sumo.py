@@ -269,6 +269,9 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Premium vehicle features
         self._has_premium: Dict[str, np.ndarray] = {}
         self._premium_wait: Dict[str, np.ndarray] = {}
+        # Route-level tracking: vid → {depart_time, expected_time}
+        # expected_time is free-flow travel time from origin to current position
+        self._premium_vehicle_info: Dict[str, Dict] = {}  # vid → {depart_time, route_edges}
 
         # Spillback / road works runtime state
         self._lane_to_downstream_edges: Dict[str, Dict[int, List[str]]] = {}  # agent → lane_idx → [out_edge, ...]
@@ -1158,9 +1161,15 @@ class SumoRewardCostWrapper(ParallelEnv):
                     sumo.route.add(route_id, route_edges)
                     for k in range(self._premium_count_per_injection):
                         prem_id = f"premium_{self._premium_counter}_{k}"
-                        depart = str(sim_time + k * self._premium_headway)
+                        depart_t = sim_time + k * self._premium_headway
+                        depart = str(depart_t)
                         sumo.vehicle.add(prem_id, route_id, typeID="premium_vehicle", depart=depart)
                         self._active_premium_ids.add(prem_id)
+                        # Record route-level info for delay tracking
+                        self._premium_vehicle_info[prem_id] = {
+                            "depart_time": depart_t,
+                            "route_edges": list(route_edges),
+                        }
                     self._premium_counter += 1
                 except Exception:
                     pass
@@ -1265,6 +1274,7 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         if need_premium:
             departed.clear()
+            sim_time = sumo.simulation.getTime()
             for vid in list(self._active_premium_ids):
                 if vid not in live_vehicles:
                     if vid in self._seen_premium_ids:
@@ -1272,15 +1282,33 @@ class SumoRewardCostWrapper(ParallelEnv):
                     continue
                 self._seen_premium_ids.add(vid)
                 lane = sumo.vehicle.getLaneID(vid)
-                vwait = sumo.vehicle.getWaitingTime(vid)
                 mapping = self._lane_to_agent.get(lane)
                 if mapping is None:
                     continue
                 agent_id, lane_idx = mapping
                 self._has_premium[agent_id][lane_idx] = 1.0
+                # Route-level delay: elapsed - free_flow_elapsed
+                # elapsed = time since depart
+                # free_flow approximation: distance_traveled / max_speed
+                # route_delay = max(0, elapsed - free_flow_time)
+                vinfo = self._premium_vehicle_info.get(vid)
+                if vinfo is not None:
+                    elapsed = sim_time - vinfo["depart_time"]
+                    try:
+                        dist = sumo.vehicle.getDistance(vid)
+                        max_spd = sumo.vehicle.getMaxSpeed(vid)
+                        free_flow_time = dist / max(max_spd, 1.0)
+                        route_delay = max(0.0, elapsed - free_flow_time)
+                    except Exception:
+                        route_delay = 0.0
+                else:
+                    route_delay = 0.0
                 self._premium_wait[agent_id][lane_idx] = max(
-                    self._premium_wait[agent_id][lane_idx], vwait)
+                    self._premium_wait[agent_id][lane_idx], route_delay)
             self._active_premium_ids -= departed
+            # Clean up info for departed vehicles
+            for vid in departed:
+                self._premium_vehicle_info.pop(vid, None)
 
         # ── Normalize and store ──
         if need_bus:
@@ -1459,18 +1487,18 @@ class SumoRewardCostWrapper(ParallelEnv):
         """Danger-zone label for convoy priority: g(s) → {0, 1}.
 
         Marks the region of state space where a convoy split is
-        imminent or active.  Two windows:
+        imminent or active.  Label = regime detector, NOT decision mask.
 
-        1. **Anticipatory** (progress == 0, can_switch, count ≥ τ):
-           Convoy is waiting on an unserved lane and the agent CAN
-           switch. Label fires BEFORE the split happens.
+        1. **Reactive** (0 < progress < 1, unserved lane):
+           Active split in progress.  NO can_switch gate — label must
+           be 1 whenever cost is 1 so Split-RL routes gradients through
+           the cost head during the entire cost-active regime.
 
-        2. **Reactive** (0 < progress < 1):
-           Active split in progress.
-
-        No pressure proxy — the value function learns which phases
-        matter.  The label just marks the danger region, like
-        minigrid's ``int(carrying_heavy and near_ice)``.
+        2. **Anticipatory** (progress == 0, can_switch, count ≥ 0.33):
+           Convoy waiting on unserved lane and agent CAN switch.
+           can_switch is safe here because cost == 0 in this branch
+           (no 0 < progress < 1), so label=0 during lock creates no
+           cost-label mismatch.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1485,21 +1513,23 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase = ts.green_phase
         phase_map = self._phase_to_lanes.get(agent_id, {})
         served_lanes = set(phase_map.get(phase, []))
-        can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
 
         for i in range(len(has_convoy)):
             if has_convoy[i] > 0 and i not in served_lanes:
-                # Window 2: active split (always fires)
+                # Reactive: active split — label tracks cost regime
+                # (no can_switch gate: cost fires without it, label must too)
                 if 0 < convoy_progress[i] < 1.0:
                     return 1
-                # Window 1: anticipatory — convoy waiting, agent can act
-                # convoy_count is normalized: raw_count / convoy_size_max.
-                # Threshold: at least 50% of platoon present — fires late
-                # enough that the cost head doesn't take over prematurely,
-                # but early enough to give Split-RL routing advantage.
-                if convoy_progress[i] == 0 and can_switch:
-                    raw_threshold = 0.5  # 50% of platoon (already normalised)
-                    if convoy_count is not None and convoy_count[i] >= raw_threshold:
+
+        # Anticipatory: can_switch required (cost==0 here, so no mismatch)
+        can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
+        if not can_switch:
+            return 0
+
+        for i in range(len(has_convoy)):
+            if has_convoy[i] > 0 and i not in served_lanes:
+                if convoy_progress[i] == 0:
+                    if convoy_count is not None and convoy_count[i] >= 0.33:
                         return 1
         return 0
 
@@ -1573,15 +1603,14 @@ class SumoRewardCostWrapper(ParallelEnv):
     # ── Premium priority cost/label ──────────────────────────────────────
 
     def _compute_premium_priority_cost(self, agent_id: str) -> float:
-        """Binary violation cost: 1 when a premium vehicle is still overdue.
+        """Binary violation cost: 1 when a premium vehicle's route delay exceeds budget.
 
-        cost = 1  if any premium has premium_wait >= 1.0 (normalised by T_cost)
+        cost = 1  if any premium has route_delay / T_cost >= 1.0
              = 0  otherwise
 
-        Phase-independent: cost stays active as long as the entity is
-        overdue, even if its lane is currently green.  The vehicle may
-        still be stuck in queue — switching to green is necessary but
-        not sufficient.
+        Route-level: tracks cumulative delay across the vehicle's entire
+        journey, not just local waiting at this intersection.  A premium
+        vehicle that was delayed upstream carries that delay forward.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -1592,11 +1621,15 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _premium_priority_label(self, agent_id: str) -> int:
         """Danger-zone label for premium priority: g(s) → {0, 1}.
 
+        Route-level delay semantics: premium_wait is now normalised
+        route_delay / T_cost, tracking how far behind schedule the
+        vehicle is across its entire journey.
+
         Two modes:
-          • **Reactive**: any premium already overdue (wait >= 1.0) →
-            label=1 immediately.  Keeps label aligned with cost.
-          • **Anticipatory**: premium approaching overdue on an unserved
-            lane with min_green satisfied.  Early routing advantage.
+          • **Reactive**: route delay >= T_cost (already over budget) →
+            label=1 immediately.  Aligns with cost.
+          • **Anticipatory**: route delay approaching budget on an
+            unserved lane with can_switch.  Early routing advantage.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -2143,6 +2176,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._seen_bus_ids = set()
             self._seen_convoy_vids = set()
             self._seen_premium_ids = set()
+            self._premium_vehicle_info = {}  # reset route-level tracking
             self._convoy_seen_by_agent = {}  # reset per-agent convoy history
             if self._is_clean_episode:
                 # Push injection past episode horizon → no events
