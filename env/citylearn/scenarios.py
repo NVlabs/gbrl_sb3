@@ -332,7 +332,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 DEFAULT_CD_CAP_QUANTILE = 0.95
 DEFAULT_CD_CAP_MARGIN = 2.5
 DEFAULT_CD_FRONTIER_FRAC = 0.90
-DEFAULT_CD_NSL_WARNING_QUANTILE = 0.90
+DEFAULT_CD_WARNING_FRAC = 0.80
 
 
 class ContractDemandWrapper(CityLearnBaseWrapper):
@@ -362,17 +362,15 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
     Below the frontier: cost = 0.  At or above the cap: cost ≈ 1.
 
-    Label — action-contingent peak-shave frontier
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Two-zone danger label gated by battery usability:
+    Label — exogenous frontier-aligned warning
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ::
 
-    * **Warning zone**: current district NSL ≥ ``nsl_warning_quantile``-th
-      percentile of the full-horizon NSL schedule.
-    * **Recovery zone**: previous-step district import ≥ frontier.
+        label = 1   iff   district_nsl  ≥  warning_frac × frontier
 
-    Either zone triggers label = 1 **only if** at least one battery has
-    SOC above a minimum discharge threshold (5%).  Empty batteries mean
-    the agent has no lever — label = 0 avoids misleading the policy.
+    Directly aligned with the cost boundary: the frontier is where cost
+    turns on, so labelling a fraction below it gives the cost policy
+    advance warning.  Purely exogenous (fixed NSL schedule).
     """
 
     def __init__(
@@ -381,17 +379,16 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
         cap_margin: float = DEFAULT_CD_CAP_MARGIN,
         frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-        nsl_warning_quantile: float = DEFAULT_CD_NSL_WARNING_QUANTILE,
+        warning_frac: float = DEFAULT_CD_WARNING_FRAC,
     ):
         super().__init__(env)
         self._cap_quantile = cap_quantile
         self._cap_margin = cap_margin
         self._frontier_frac = frontier_frac
-        self._nsl_warning_quantile = nsl_warning_quantile
+        self._warning_frac = warning_frac
 
         self._cap: Optional[float] = None
         self._frontier: Optional[float] = None
-        self._nsl_warning_threshold: Optional[float] = None
 
     def _scenario_init(self):
         cl_env = self.unwrapped
@@ -435,11 +432,6 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         self._cap = self._cap_margin * base
         self._frontier = self._frontier_frac * self._cap
 
-        # NSL warning threshold from the same district total schedule
-        self._nsl_warning_threshold = float(
-            np.quantile(hourly_totals, self._nsl_warning_quantile)
-        )
-
     # -- Helpers -------------------------------------------------------
 
     def _district_import_post_step(self) -> Optional[float]:
@@ -477,24 +469,18 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
             return None
         return max(total, 0.0)
 
-    def _district_current_nsl(self) -> Optional[float]:
-        """District non-shiftable load at the current pre-step timestep.
-
-        Uses ``_latest()`` on the live-appended NSL series so it reads
-        the most recent exogenous value *before* the action is applied.
-        """
+    def _district_pre_step_nsl(self) -> Optional[float]:
+        """District NSL at current timestep (pre-step, from schedule)."""
         total = 0.0
         n = 0
+        ts = self._get_time_step()
         for b in self._get_buildings():
-            nsl = getattr(b, "non_shiftable_load", None)
-            if nsl is not None and hasattr(nsl, "__len__") and len(nsl) > 0:
-                val = self._latest(nsl)
-                if val is not None:
-                    total += val
-                    n += 1
-        if n == 0:
-            return None
-        return total
+            es = getattr(b, "energy_simulation", None)
+            sched = getattr(es, "_non_shiftable_load", None)
+            if sched is not None and hasattr(sched, "__len__") and ts < len(sched):
+                total += float(sched[ts])
+                n += 1
+        return total if n > 0 else None
 
     # -- Cost ----------------------------------------------------------
 
@@ -523,40 +509,11 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         if self._frontier is None:
             return 0
 
-        buildings = self._get_buildings()
-        if not buildings:
+        nsl = self._district_pre_step_nsl()
+        if nsl is None:
             return 0
 
-        # Zone 1 — warning: exogenous NSL is high (early predictor)
-        in_warning = False
-        if self._nsl_warning_threshold is not None:
-            current_nsl = self._district_current_nsl()
-            if current_nsl is not None and current_nsl >= self._nsl_warning_threshold:
-                in_warning = True
-
-        # Zone 2 — recovery: already near/above capacity frontier
-        in_recovery = False
-        prev_import = self._district_import_prev_step()
-        if prev_import is not None and prev_import >= self._frontier:
-            in_recovery = True
-
-        if not (in_warning or in_recovery):
-            return 0
-
-        # Battery must have usable charge (lever: discharge to reduce import)
-        min_soc_frac = 0.05
-        has_usable_battery = False
-        for b in buildings:
-            es = b.electrical_storage
-            if es is None or es.capacity <= 0:
-                continue
-            ts = self._get_time_step()
-            if ts > 0 and hasattr(es.soc, '__len__') and ts - 1 < len(es.soc):
-                soc_frac = es.soc[ts - 1] / es.capacity
-                if soc_frac >= min_soc_frac:
-                    has_usable_battery = True
-                    break
-        return 1 if has_usable_battery else 0
+        return 1 if nsl >= self._warning_frac * self._frontier else 0
 
 
 # ###########################################################################
@@ -564,6 +521,7 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_CA_CARBON_QUANTILE = 0.70
+DEFAULT_CA_PROXY_QUANTILE = 0.80
 
 
 class CarbonAwareWrapper(CityLearnBaseWrapper):
@@ -585,32 +543,37 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     This scales cost with actual import magnitude — a building importing
     0.01 kWh contributes far less cost than one importing 10 kWh.
 
-    Label — action-contingent dirty-grid frontier
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    All three conditions must hold:
+    Label — exogenous cost-proxy threshold
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Mirrors the cost product using exogenous inputs only::
 
-    1. Carbon intensity above ``carbon_quantile``-th percentile (dirty grid).
-    2. District NSL above median — high import means the agent's battery
-       action materially affects cost.  Low-NSL dirty hours have near-zero
-       cost regardless of action (label=0 avoids misleading the policy).
-    3. At least one battery has SOC ≥ 5% (the actual discharge lever).
+        proxy = dirty_factor × min(district_nsl / import_scale, 1)
+        label = 1   iff   proxy ≥ proxy_threshold
 
-    Low NSL or empty battery → label = 0.
+    where ``proxy_threshold`` is the ``proxy_quantile``-th percentile of
+    the full-horizon proxy series (computed at init).  This is a tighter
+    partition than separate carbon + NSL gates because it captures the
+    interaction: very-dirty + moderate-load can trigger the label, while
+    slightly-dirty + high-load may not.
+
+    Purely exogenous: depends only on fixed carbon and NSL schedules.
     """
 
     def __init__(
         self,
         env,
         carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
+        proxy_quantile: float = DEFAULT_CA_PROXY_QUANTILE,
     ):
         super().__init__(env)
         self._carbon_quantile = carbon_quantile
+        self._proxy_quantile = proxy_quantile
 
         self._carbon_threshold: Optional[float] = None
         self._carbon_min: Optional[float] = None
         self._carbon_max: Optional[float] = None
         self._import_scale: Optional[float] = None
-        self._nsl_median: Optional[float] = None
+        self._proxy_threshold: Optional[float] = None
 
     def _scenario_init(self):
         cl_env = self.unwrapped
@@ -659,7 +622,32 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
             if sched is not None and hasattr(sched, "__len__") and len(sched) >= n_hours:
                 hourly_nsl += np.asarray(sched[:n_hours], dtype=float)
         self._import_scale = float(np.max(hourly_nsl))
-        self._nsl_median = float(np.median(hourly_nsl))
+
+        # Compute proxy threshold from full-horizon exogenous series
+        if (self._carbon_threshold is not None
+                and self._carbon_max is not None
+                and self._carbon_max > self._carbon_threshold
+                and self._import_scale > 0):
+            # Build per-building carbon array aligned with hourly_nsl
+            # Use max carbon across buildings at each timestep
+            all_ci_arrays = []
+            for b in cl_env.buildings:
+                if hasattr(b, "carbon_intensity") and b.carbon_intensity is not None:
+                    ci = b.carbon_intensity.carbon_intensity
+                    if hasattr(ci, "__len__") and len(ci) >= n_hours:
+                        all_ci_arrays.append(np.asarray(ci[:n_hours], dtype=float))
+            if all_ci_arrays:
+                max_ci_series = np.max(all_ci_arrays, axis=0)
+                violation_range = self._carbon_max - self._carbon_threshold
+                dirty_series = np.clip(
+                    (max_ci_series - self._carbon_threshold) / violation_range,
+                    0.0, 1.0,
+                )
+                load_series = np.clip(hourly_nsl / self._import_scale, 0.0, 1.0)
+                proxy_series = dirty_series * load_series
+                self._proxy_threshold = float(
+                    np.quantile(proxy_series, self._proxy_quantile)
+                )
 
     # -- Helpers -------------------------------------------------------
 
@@ -752,36 +740,29 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     def _compute_label(self, obs) -> int:
         self._ensure_base_init()
         buildings = self._get_buildings()
-        if not buildings:
+        if (not buildings
+                or self._carbon_threshold is None
+                or self._carbon_max is None
+                or self._carbon_max <= self._carbon_threshold
+                or self._import_scale is None
+                or self._import_scale <= 0
+                or self._proxy_threshold is None):
             return 0
 
-        # Condition 1: high carbon (danger region)
-        if self._carbon_threshold is None:
-            return 0
         max_carbon = self._max_pre_step_carbon(buildings)
-        if max_carbon is None or max_carbon <= self._carbon_threshold:
+        if max_carbon is None:
             return 0
 
-        # Condition 2: district NSL above median (import is material)
-        if self._nsl_median is not None:
-            nsl = self._district_pre_step_nsl()
-            if nsl is not None and nsl < self._nsl_median:
-                return 0
+        nsl = self._district_pre_step_nsl()
+        if nsl is None:
+            return 0
 
-        # Condition 3: battery has usable charge (discharge lever)
-        min_soc_frac = 0.05
-        has_usable_battery = False
-        ts = self._get_time_step()
-        for b in buildings:
-            es = b.electrical_storage
-            if es is None or es.capacity <= 0:
-                continue
-            if ts > 0 and hasattr(es.soc, '__len__') and ts - 1 < len(es.soc):
-                soc_frac = es.soc[ts - 1] / es.capacity
-                if soc_frac >= min_soc_frac:
-                    has_usable_battery = True
-                    break
-        return 1 if has_usable_battery else 0
+        violation_range = self._carbon_max - self._carbon_threshold
+        dirty = max(0.0, min(1.0, (max_carbon - self._carbon_threshold) / violation_range))
+        load = min(1.0, nsl / self._import_scale)
+        proxy = dirty * load
+
+        return 1 if proxy >= self._proxy_threshold else 0
 
 
 # ###########################################################################
@@ -896,7 +877,7 @@ def make_contract_demand_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    nsl_warning_quantile: float = DEFAULT_CD_NSL_WARNING_QUANTILE,
+    warning_frac: float = DEFAULT_CD_WARNING_FRAC,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -907,7 +888,7 @@ def make_contract_demand_env(
         cap_quantile=cap_quantile,
         cap_margin=cap_margin,
         frontier_frac=frontier_frac,
-        nsl_warning_quantile=nsl_warning_quantile,
+        warning_frac=warning_frac,
     )
 
 
@@ -919,7 +900,7 @@ def make_contract_demand_vec_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    nsl_warning_quantile: float = DEFAULT_CD_NSL_WARNING_QUANTILE,
+    warning_frac: float = DEFAULT_CD_WARNING_FRAC,
     **kwargs,
 ):
     env_kwargs = {
@@ -928,7 +909,7 @@ def make_contract_demand_vec_env(
         "cap_quantile": cap_quantile,
         "cap_margin": cap_margin,
         "frontier_frac": frontier_frac,
-        "nsl_warning_quantile": nsl_warning_quantile,
+        "warning_frac": warning_frac,
     }
     return make_cost_vec_env(
         make_contract_demand_env,
@@ -944,6 +925,7 @@ def make_carbon_aware_env(
     env_name: str = DEFAULT_SCHEMA,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
+    proxy_quantile: float = DEFAULT_CA_PROXY_QUANTILE,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -952,6 +934,7 @@ def make_carbon_aware_env(
     return CarbonAwareWrapper(
         inner,
         carbon_quantile=carbon_quantile,
+        proxy_quantile=proxy_quantile,
     )
 
 
@@ -961,12 +944,14 @@ def make_carbon_aware_vec_env(
     seed: Optional[int] = None,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
+    proxy_quantile: float = DEFAULT_CA_PROXY_QUANTILE,
     **kwargs,
 ):
     env_kwargs = {
         "env_name": env_name,
         "episode_time_steps": episode_time_steps,
         "carbon_quantile": carbon_quantile,
+        "proxy_quantile": proxy_quantile,
     }
     return make_cost_vec_env(
         make_carbon_aware_env,

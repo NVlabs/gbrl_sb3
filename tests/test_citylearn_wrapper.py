@@ -211,38 +211,29 @@ class TestContractDemandCost:
 
 class TestContractDemandLabel:
 
-    def test_label_requires_danger_zone_and_storage(self, demand_env):
-        """Label=1 requires either warning zone (high NSL) or recovery zone
-        (prev import ≥ frontier), plus electrical storage.
+    def test_label_frontier_aligned(self, demand_env):
+        """Label=1 iff district NSL ≥ warning_frac × frontier.
 
-        Label is computed pre-step; snapshot the same pre-step values.
+        Label is computed pre-step from the fixed NSL schedule.
         """
         env = demand_env
         obs, info = env.reset()
 
         for _ in range(200):
             # Snapshot pre-step state
-            pre_import = env._district_import_prev_step()
-            pre_nsl = env._district_current_nsl()
+            pre_nsl = env._district_pre_step_nsl()
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                in_warning = (
+                assert (
                     pre_nsl is not None
-                    and env._nsl_warning_threshold is not None
-                    and pre_nsl >= env._nsl_warning_threshold - 1e-6
-                )
-                in_recovery = (
-                    pre_import is not None
                     and env._frontier is not None
-                    and pre_import >= env._frontier - 1e-6
-                )
-                assert in_warning or in_recovery, (
-                    f"Label=1 but neither warning zone (nsl={pre_nsl}, "
-                    f"thresh={env._nsl_warning_threshold}) nor recovery zone "
-                    f"(import={pre_import}, frontier={env._frontier})"
+                    and pre_nsl >= env._warning_frac * env._frontier - 1e-6
+                ), (
+                    f"Label=1 but nsl={pre_nsl} < "
+                    f"warning_frac*frontier={env._warning_frac * env._frontier}"
                 )
 
             if term or trunc:
@@ -285,27 +276,32 @@ class TestCarbonAwareCost:
 
 class TestCarbonAwareLabel:
 
-    def test_label_requires_high_carbon_and_storage(self, carbon_env):
-        """Label=1 requires high carbon AND electrical storage.
+    def test_label_proxy_threshold(self, carbon_env):
+        """Label=1 iff exogenous proxy (dirty × load) ≥ proxy_threshold.
 
-        Label is computed pre-step using pre-step accessor for carbon.
+        Label is computed pre-step from carbon intensity and NSL schedule.
         """
         env = carbon_env
         obs, info = env.reset()
 
         for _ in range(200):
-            # Snapshot pre-step state (same accessor the label uses)
+            # Snapshot pre-step state (same accessors the label uses)
             buildings = env._get_buildings()
             pre_carbon = env._max_pre_step_carbon(buildings)
+            pre_nsl = env._district_pre_step_nsl()
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                assert pre_carbon is not None
-                assert pre_carbon > env._carbon_threshold - 1e-6, (
-                    f"Label=1 but pre-step carbon={pre_carbon:.4f} <= "
-                    f"threshold={env._carbon_threshold:.4f}"
+                assert pre_carbon is not None and pre_nsl is not None
+                vr = env._carbon_max - env._carbon_threshold
+                dirty = max(0.0, min(1.0, (pre_carbon - env._carbon_threshold) / vr))
+                load = min(1.0, pre_nsl / env._import_scale)
+                proxy = dirty * load
+                assert proxy >= env._proxy_threshold - 1e-6, (
+                    f"Label=1 but proxy={proxy:.4f} < "
+                    f"threshold={env._proxy_threshold:.4f}"
                 )
 
             if term or trunc:
