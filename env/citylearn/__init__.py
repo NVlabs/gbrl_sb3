@@ -8,15 +8,11 @@
 ##############################################################################
 """CityLearn environment wrappers for constrained RL experiments.
 
-Four CMDP scenarios are provided (all share the same price-weighted reward):
-
-A. **Cost vs Comfort** (``cost_vs_comfort``):
-   cost   = max thermal discomfort across buildings,
-   label  = violation or high-price + low-headroom frontier.
+Six CMDP scenarios are provided (all share the same price-weighted reward):
 
 B. **Arbitrage vs Buffer** (``arbitrage_vs_buffer``):
-   cost   = storage buffer depletion (SOC below safety threshold),
-   label  = high price + SOC near safety frontier + usable storage.
+   cost   = critical-battery depletion (min SOC below safety threshold),
+   label  = high price + tight reserve frontier + dischargeable storage.
 
 C. **Contract Demand** (``contract_demand``):
    cost   = soft penalty for district import near/above fixed cap,
@@ -25,6 +21,18 @@ C. **Contract Demand** (``contract_demand``):
 D. **Carbon Aware** (``carbon_aware``):
    cost   = dirty-factor × normalised district import magnitude,
    label  = high carbon + low price + usable storage.
+
+E. **Peak Ratchet** (``peak_ratchet``):
+   cost   = incremental peak penalty on new district import records,
+   label  = cheap price + potential import above evolving ratchet.
+
+F. **Demand Response** (``demand_response``):
+   cost   = SOC deficit during pre-announced grid events,
+   label  = phase-aware pre-event conflict (prep/hold/recovery).
+
+G. **Solar Ramp Reserve** (``solar_ramp_reserve``):
+   cost   = reserve deficit during post-sunset buffer windows,
+   label  = phase-aware sunset routing (prep/hold/recovery).
 
 All share ``CityLearnBaseWrapper`` (base.py) which provides price-weighted
 electricity-cost reward and raw building-state helpers.  All scenario
@@ -37,7 +45,9 @@ Pass ``--env_type citylearn`` and select the scenario via ``env_kwargs``:
     --env_kwargs '{"scenario": "arbitrage_vs_buffer"}'   # default
     --env_kwargs '{"scenario": "contract_demand"}'
     --env_kwargs '{"scenario": "carbon_aware"}'
-    --env_kwargs '{"scenario": "cost_vs_comfort"}'
+    --env_kwargs '{"scenario": "peak_ratchet"}'
+    --env_kwargs '{"scenario": "demand_response"}'
+    --env_kwargs '{"scenario": "solar_ramp_reserve"}'
 """
 
 from env.citylearn.base import (
@@ -46,42 +56,56 @@ from env.citylearn.base import (
     make_citylearn_inner_env,
 )
 from env.citylearn.scenarios import (
-    CostVsComfortWrapper,
     ArbitrageVsBufferWrapper,
     ContractDemandWrapper,
     CarbonAwareWrapper,
-    make_cost_vs_comfort_env,
-    make_cost_vs_comfort_vec_env,
+    PeakRatchetWrapper,
+    DemandResponseWrapper,
+    SolarRampReserveWrapper,
     make_arbitrage_vs_buffer_env,
     make_arbitrage_vs_buffer_vec_env,
     make_contract_demand_env,
     make_contract_demand_vec_env,
     make_carbon_aware_env,
     make_carbon_aware_vec_env,
+    make_peak_ratchet_env,
+    make_peak_ratchet_vec_env,
+    make_demand_response_env,
+    make_demand_response_vec_env,
+    make_solar_ramp_reserve_env,
+    make_solar_ramp_reserve_vec_env,
 )
 
 SCENARIO_VEC_FACTORIES = {
-    "cost_vs_comfort": make_cost_vs_comfort_vec_env,
     "arbitrage_vs_buffer": make_arbitrage_vs_buffer_vec_env,
     "contract_demand": make_contract_demand_vec_env,
     "carbon_aware": make_carbon_aware_vec_env,
+    "peak_ratchet": make_peak_ratchet_vec_env,
+    "demand_response": make_demand_response_vec_env,
+    "solar_ramp_reserve": make_solar_ramp_reserve_vec_env,
 }
 
 __all__ = [
     "CityLearnBaseWrapper",
-    "CostVsComfortWrapper",
     "ArbitrageVsBufferWrapper",
     "ContractDemandWrapper",
     "CarbonAwareWrapper",
+    "PeakRatchetWrapper",
+    "DemandResponseWrapper",
+    "SolarRampReserveWrapper",
     "DEFAULT_SCHEMA",
     "make_citylearn_inner_env",
-    "make_cost_vs_comfort_env",
-    "make_cost_vs_comfort_vec_env",
     "make_arbitrage_vs_buffer_env",
     "make_arbitrage_vs_buffer_vec_env",
     "make_contract_demand_env",
     "make_contract_demand_vec_env",
     "make_carbon_aware_env",
     "make_carbon_aware_vec_env",
+    "make_peak_ratchet_env",
+    "make_peak_ratchet_vec_env",
+    "make_demand_response_env",
+    "make_demand_response_vec_env",
+    "make_solar_ramp_reserve_env",
+    "make_solar_ramp_reserve_vec_env",
     "SCENARIO_VEC_FACTORIES",
 ]
