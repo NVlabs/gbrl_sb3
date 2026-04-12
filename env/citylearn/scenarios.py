@@ -332,7 +332,8 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 DEFAULT_CD_CAP_QUANTILE = 0.95
 DEFAULT_CD_CAP_MARGIN = 2.5
 DEFAULT_CD_FRONTIER_FRAC = 0.90
-DEFAULT_CD_WARNING_FRAC = 0.80
+DEFAULT_CD_PRICE_LOW_QUANTILE = 0.50
+DEFAULT_CD_CHARGE_HEADROOM_FRAC = 0.60
 
 
 class ContractDemandWrapper(CityLearnBaseWrapper):
@@ -362,15 +363,23 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
     Below the frontier: cost = 0.  At or above the cap: cost ≈ 1.
 
-    Label — exogenous frontier-aligned warning
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — cheap charging trap (conflict zone)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        label = 1   iff   district_nsl  ≥  warning_frac × frontier
+        total_charge_power = Σ_i  nominal_power_i
+        trap_threshold = frontier − charge_headroom_frac × total_charge_power
+        label = 1   iff   price ≤ price_low_threshold
+                          AND  district_nsl ≥ trap_threshold
 
-    Directly aligned with the cost boundary: the frontier is where cost
-    turns on, so labelling a fraction below it gives the cost policy
-    advance warning.  Purely exogenous (fixed NSL schedule).
+    The trap threshold is derived from the cost boundary (frontier) and
+    the actual controllable import (battery charge power).  At the
+    threshold, charging ``charge_headroom_frac`` of the fleet would push
+    district import to the frontier.  With the default (0.60), labelled
+    hours are those where more than 60% of fleet charging threatens the
+    cap — the agent cannot freely charge.  No upper cutoff: the highest-
+    load cheap hours have the strongest gradient conflict.  Purely
+    exogenous.
     """
 
     def __init__(
@@ -379,16 +388,20 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
         cap_margin: float = DEFAULT_CD_CAP_MARGIN,
         frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-        warning_frac: float = DEFAULT_CD_WARNING_FRAC,
+        price_low_quantile: float = DEFAULT_CD_PRICE_LOW_QUANTILE,
+        charge_headroom_frac: float = DEFAULT_CD_CHARGE_HEADROOM_FRAC,
     ):
         super().__init__(env)
         self._cap_quantile = cap_quantile
         self._cap_margin = cap_margin
         self._frontier_frac = frontier_frac
-        self._warning_frac = warning_frac
+        self._price_low_quantile = price_low_quantile
+        self._charge_headroom_frac = charge_headroom_frac
 
         self._cap: Optional[float] = None
         self._frontier: Optional[float] = None
+        self._price_low_threshold: Optional[float] = None
+        self._trap_threshold: Optional[float] = None
 
     def _scenario_init(self):
         cl_env = self.unwrapped
@@ -432,31 +445,41 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         self._cap = self._cap_margin * base
         self._frontier = self._frontier_frac * self._cap
 
+        # Trap threshold derived from frontier and actual battery charge power
+        total_charge_power = 0.0
+        for b in buildings:
+            es = b.electrical_storage
+            if (es is not None
+                    and hasattr(es, 'nominal_power')
+                    and es.nominal_power is not None):
+                total_charge_power += es.nominal_power
+        if total_charge_power > 0:
+            self._trap_threshold = max(
+                0.0,
+                self._frontier - self._charge_headroom_frac * total_charge_power,
+            )
+        else:
+            # Fallback: no battery info, use 50% of frontier
+            self._trap_threshold = 0.50 * self._frontier
+
+        # Price threshold for "cheap" gate
+        all_prices = []
+        for b in buildings:
+            if hasattr(b, "pricing") and b.pricing is not None:
+                ep = b.pricing.electricity_pricing
+                if hasattr(ep, "__len__") and len(ep) > 0:
+                    all_prices.extend(ep[:n_hours])
+        if all_prices:
+            self._price_low_threshold = float(
+                np.quantile(all_prices, self._price_low_quantile)
+            )
+
     # -- Helpers -------------------------------------------------------
 
     def _district_import_post_step(self) -> Optional[float]:
         """District positive import at current timestep (post-step).
 
         ``max(Σ_i NEC_i, 0)`` — negative (net export) is clipped to 0.
-        """
-        total = 0.0
-        n = 0
-        for b in self._get_buildings():
-            nec = self._at_timestep(b.net_electricity_consumption)
-            if nec is not None:
-                total += nec
-                n += 1
-        if n == 0:
-            return None
-        return max(total, 0.0)
-
-    def _district_import_prev_step(self) -> Optional[float]:
-        """District positive import from the previous committed step.
-
-        At pre-step time, ``time_step`` has NOT been incremented, so
-        ``_at_timestep`` reads ``series[ts-1]`` = the last committed
-        transition.  This is the most recent *observable* district
-        import — action-dependent but already committed.
         """
         total = 0.0
         n = 0
@@ -506,14 +529,21 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
     def _compute_label(self, obs) -> int:
         self._ensure_base_init()
-        if self._frontier is None:
+        if self._price_low_threshold is None or self._trap_threshold is None:
             return 0
 
+        # Price gate: only label when electricity is cheap
+        buildings = self._get_buildings()
+        price = self._max_pre_step_price(buildings)
+        if price is None or price > self._price_low_threshold:
+            return 0
+
+        # Trap: NSL already high enough that charging pushes toward cap
         nsl = self._district_pre_step_nsl()
         if nsl is None:
             return 0
 
-        return 1 if nsl >= self._warning_frac * self._frontier else 0
+        return 1 if nsl >= self._trap_threshold else 0
 
 
 # ###########################################################################
@@ -521,7 +551,8 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_CA_CARBON_QUANTILE = 0.70
-DEFAULT_CA_PROXY_QUANTILE = 0.80
+DEFAULT_CA_PRICE_LOW_QUANTILE = 0.50
+DEFAULT_CA_CONFLICT_QUANTILE = 0.80
 
 
 class CarbonAwareWrapper(CityLearnBaseWrapper):
@@ -543,37 +574,43 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     This scales cost with actual import magnitude — a building importing
     0.01 kWh contributes far less cost than one importing 10 kWh.
 
-    Label — exogenous cost-proxy threshold
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Mirrors the cost product using exogenous inputs only::
+    Label — dirty-load-cheap conflict proxy
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Adds a cheapness gate to the dirty×load proxy::
 
-        proxy = dirty_factor × min(district_nsl / import_scale, 1)
-        label = 1   iff   proxy ≥ proxy_threshold
+        price_low = quantile(max_price_series, price_low_quantile)
+        cheap = clamp((price_low − price) / (price_low − price_min), 0, 1)
+        conflict = dirty × load × cheap
+        label = 1   iff   conflict ≥ conflict_threshold
 
-    where ``proxy_threshold`` is the ``proxy_quantile``-th percentile of
-    the full-horizon proxy series (computed at init).  This is a tighter
-    partition than separate carbon + NSL gates because it captures the
-    interaction: very-dirty + moderate-load can trigger the label, while
-    slightly-dirty + high-load may not.
-
-    Purely exogenous: depends only on fixed carbon and NSL schedules.
+    where ``conflict_threshold`` is the ``conflict_quantile``-th percentile
+    of the *positive* entries in the full-horizon conflict series.  The
+    cheapness factor is 1 at price_min and 0 at or above price_low_threshold
+    — a hard gate, not a min-max score over the full range.  This filters
+    out hours above the cheap threshold entirely, isolating the genuine
+    conflict: cheap electricity tempts import, but the grid is dirty.
+    Purely exogenous.
     """
 
     def __init__(
         self,
         env,
         carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-        proxy_quantile: float = DEFAULT_CA_PROXY_QUANTILE,
+        price_low_quantile: float = DEFAULT_CA_PRICE_LOW_QUANTILE,
+        conflict_quantile: float = DEFAULT_CA_CONFLICT_QUANTILE,
     ):
         super().__init__(env)
         self._carbon_quantile = carbon_quantile
-        self._proxy_quantile = proxy_quantile
+        self._price_low_quantile = price_low_quantile
+        self._conflict_quantile = conflict_quantile
 
         self._carbon_threshold: Optional[float] = None
         self._carbon_min: Optional[float] = None
         self._carbon_max: Optional[float] = None
         self._import_scale: Optional[float] = None
-        self._proxy_threshold: Optional[float] = None
+        self._price_min: Optional[float] = None
+        self._price_low_threshold: Optional[float] = None
+        self._conflict_threshold: Optional[float] = None
 
     def _scenario_init(self):
         cl_env = self.unwrapped
@@ -623,11 +660,29 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
                 hourly_nsl += np.asarray(sched[:n_hours], dtype=float)
         self._import_scale = float(np.max(hourly_nsl))
 
-        # Compute proxy threshold from full-horizon exogenous series
+        # Collect price series for cheapness factor
+        all_prices = []
+        for b in cl_env.buildings:
+            if hasattr(b, "pricing") and b.pricing is not None:
+                ep = b.pricing.electricity_pricing
+                if hasattr(ep, "__len__") and len(ep) >= n_hours:
+                    all_prices.append(np.asarray(ep[:n_hours], dtype=float))
+        # Use max price across buildings at each timestep (same as label accessor)
+        if all_prices:
+            max_price_series = np.max(all_prices, axis=0)
+            self._price_min = float(np.min(max_price_series))
+            self._price_low_threshold = float(
+                np.quantile(max_price_series, self._price_low_quantile)
+            )
+
+        # Compute conflict threshold from full-horizon exogenous series
         if (self._carbon_threshold is not None
                 and self._carbon_max is not None
                 and self._carbon_max > self._carbon_threshold
-                and self._import_scale > 0):
+                and self._import_scale > 0
+                and self._price_min is not None
+                and self._price_low_threshold is not None
+                and self._price_low_threshold > self._price_min):
             # Build per-building carbon array aligned with hourly_nsl
             # Use max carbon across buildings at each timestep
             all_ci_arrays = []
@@ -644,10 +699,19 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
                     0.0, 1.0,
                 )
                 load_series = np.clip(hourly_nsl / self._import_scale, 0.0, 1.0)
-                proxy_series = dirty_series * load_series
-                self._proxy_threshold = float(
-                    np.quantile(proxy_series, self._proxy_quantile)
+                price_range = self._price_low_threshold - self._price_min
+                cheap_series = np.clip(
+                    (self._price_low_threshold - max_price_series) / price_range,
+                    0.0, 1.0,
                 )
+                conflict_series = dirty_series * load_series * cheap_series
+                # Threshold over positive values only — zero-conflict
+                # hours are not informative and dilute the threshold
+                positive_conflict = conflict_series[conflict_series > 0]
+                if len(positive_conflict) > 0:
+                    self._conflict_threshold = float(
+                        np.quantile(positive_conflict, self._conflict_quantile)
+                    )
 
     # -- Helpers -------------------------------------------------------
 
@@ -746,7 +810,10 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
                 or self._carbon_max <= self._carbon_threshold
                 or self._import_scale is None
                 or self._import_scale <= 0
-                or self._proxy_threshold is None):
+                or self._price_min is None
+                or self._price_low_threshold is None
+                or self._price_low_threshold <= self._price_min
+                or self._conflict_threshold is None):
             return 0
 
         max_carbon = self._max_pre_step_carbon(buildings)
@@ -757,12 +824,22 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         if nsl is None:
             return 0
 
+        price = self._max_pre_step_price(buildings)
+        if price is None:
+            return 0
+
+        # Hard price gate: above price_low_threshold, cheap=0 => conflict=0
+        if price >= self._price_low_threshold:
+            return 0
+
         violation_range = self._carbon_max - self._carbon_threshold
         dirty = max(0.0, min(1.0, (max_carbon - self._carbon_threshold) / violation_range))
         load = min(1.0, nsl / self._import_scale)
-        proxy = dirty * load
+        price_range = self._price_low_threshold - self._price_min
+        cheap = max(0.0, min(1.0, (self._price_low_threshold - price) / price_range))
+        conflict = dirty * load * cheap
 
-        return 1 if proxy >= self._proxy_threshold else 0
+        return 1 if conflict >= self._conflict_threshold else 0
 
 
 # ###########################################################################
@@ -877,7 +954,8 @@ def make_contract_demand_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    warning_frac: float = DEFAULT_CD_WARNING_FRAC,
+    price_low_quantile: float = DEFAULT_CD_PRICE_LOW_QUANTILE,
+    charge_headroom_frac: float = DEFAULT_CD_CHARGE_HEADROOM_FRAC,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -888,7 +966,8 @@ def make_contract_demand_env(
         cap_quantile=cap_quantile,
         cap_margin=cap_margin,
         frontier_frac=frontier_frac,
-        warning_frac=warning_frac,
+        price_low_quantile=price_low_quantile,
+        charge_headroom_frac=charge_headroom_frac,
     )
 
 
@@ -900,7 +979,8 @@ def make_contract_demand_vec_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    warning_frac: float = DEFAULT_CD_WARNING_FRAC,
+    price_low_quantile: float = DEFAULT_CD_PRICE_LOW_QUANTILE,
+    charge_headroom_frac: float = DEFAULT_CD_CHARGE_HEADROOM_FRAC,
     **kwargs,
 ):
     env_kwargs = {
@@ -909,7 +989,8 @@ def make_contract_demand_vec_env(
         "cap_quantile": cap_quantile,
         "cap_margin": cap_margin,
         "frontier_frac": frontier_frac,
-        "warning_frac": warning_frac,
+        "price_low_quantile": price_low_quantile,
+        "charge_headroom_frac": charge_headroom_frac,
     }
     return make_cost_vec_env(
         make_contract_demand_env,
@@ -925,7 +1006,8 @@ def make_carbon_aware_env(
     env_name: str = DEFAULT_SCHEMA,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-    proxy_quantile: float = DEFAULT_CA_PROXY_QUANTILE,
+    price_low_quantile: float = DEFAULT_CA_PRICE_LOW_QUANTILE,
+    conflict_quantile: float = DEFAULT_CA_CONFLICT_QUANTILE,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -934,7 +1016,8 @@ def make_carbon_aware_env(
     return CarbonAwareWrapper(
         inner,
         carbon_quantile=carbon_quantile,
-        proxy_quantile=proxy_quantile,
+        price_low_quantile=price_low_quantile,
+        conflict_quantile=conflict_quantile,
     )
 
 
@@ -944,14 +1027,16 @@ def make_carbon_aware_vec_env(
     seed: Optional[int] = None,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-    proxy_quantile: float = DEFAULT_CA_PROXY_QUANTILE,
+    price_low_quantile: float = DEFAULT_CA_PRICE_LOW_QUANTILE,
+    conflict_quantile: float = DEFAULT_CA_CONFLICT_QUANTILE,
     **kwargs,
 ):
     env_kwargs = {
         "env_name": env_name,
         "episode_time_steps": episode_time_steps,
         "carbon_quantile": carbon_quantile,
-        "proxy_quantile": proxy_quantile,
+        "price_low_quantile": price_low_quantile,
+        "conflict_quantile": conflict_quantile,
     }
     return make_cost_vec_env(
         make_carbon_aware_env,
