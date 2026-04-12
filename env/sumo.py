@@ -3114,6 +3114,10 @@ class VecCostMonitor(VecMonitor):
 
     def step_wait(self):
         obs, rewards, dones, infos = self.venv.step_wait()
+        # SuperSuit may return integer dones (0/1) instead of boolean.
+        # VecNormalize uses boolean indexing (returns[dones] = 0) which
+        # breaks with integer dones when num_envs=1 (index 1 out of bounds).
+        dones = np.asarray(dones, dtype=bool)
         self.episode_returns += rewards
         self.episode_lengths += 1
         for i in range(self.num_envs):
