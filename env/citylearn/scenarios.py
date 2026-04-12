@@ -332,7 +332,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 DEFAULT_CD_CAP_QUANTILE = 0.95
 DEFAULT_CD_CAP_MARGIN = 2.5
 DEFAULT_CD_FRONTIER_FRAC = 0.90
-DEFAULT_CD_PRICE_LOW_QUANTILE = 0.50
+DEFAULT_CD_PRICE_LOW_QUANTILE = 0.60
 DEFAULT_CD_CHARGE_HEADROOM_FRAC = 0.60
 
 
@@ -551,7 +551,7 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_CA_CARBON_QUANTILE = 0.70
-DEFAULT_CA_PRICE_LOW_QUANTILE = 0.50
+DEFAULT_CA_PRICE_LOW_QUANTILE = 0.60
 DEFAULT_CA_CONFLICT_QUANTILE = 0.80
 
 
