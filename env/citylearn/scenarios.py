@@ -362,20 +362,17 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
     Below the frontier: cost = 0.  At or above the cap: cost ≈ 1.
 
-    Label — near-cap danger region
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Two-zone danger label:
+    Label — action-contingent peak-shave frontier
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Two-zone danger label gated by battery usability:
 
     * **Warning zone**: current district NSL ≥ ``nsl_warning_quantile``-th
-      percentile of the full-horizon NSL schedule.  Exogenous, observable
-      before the action, and an early predictor of high district import.
+      percentile of the full-horizon NSL schedule.
     * **Recovery zone**: previous-step district import ≥ frontier.
-      The system is already near the cap — batteries should help reduce
-      import regardless of price.
 
-    Either zone triggers label = 1 if electrical storage exists.
-    Price is deliberately excluded — it is a reward signal, not a danger
-    signal.
+    Either zone triggers label = 1 **only if** at least one battery has
+    SOC above a minimum discharge threshold (5%).  Empty batteries mean
+    the agent has no lever — label = 0 avoids misleading the policy.
     """
 
     def __init__(
@@ -546,11 +543,20 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         if not (in_warning or in_recovery):
             return 0
 
-        # Storage exists (lever: reduce import)
-        has_storage = any(
-            b.electrical_storage is not None for b in buildings
-        )
-        return 1 if has_storage else 0
+        # Battery must have usable charge (lever: discharge to reduce import)
+        min_soc_frac = 0.05
+        has_usable_battery = False
+        for b in buildings:
+            es = b.electrical_storage
+            if es is None or es.capacity <= 0:
+                continue
+            ts = self._get_time_step()
+            if ts > 0 and hasattr(es.soc, '__len__') and ts - 1 < len(es.soc):
+                soc_frac = es.soc[ts - 1] / es.capacity
+                if soc_frac >= min_soc_frac:
+                    has_usable_battery = True
+                    break
+        return 1 if has_usable_battery else 0
 
 
 # ###########################################################################
@@ -571,22 +577,25 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         district_import = max(Σ_i NEC_i, 0)
         cost = dirty × clamp(district_import / import_scale, 0, 1)
 
-    where ``import_scale`` is the 95th percentile of historical district
-    NEC (computed from NSL at init as a policy-independent proxy).
+    where ``import_scale`` is the max of historical district NSL
+    (computed at init as a policy-independent proxy).  Using the max
+    prevents cost saturation — P95 was too low and clipped most dirty-hour
+    imports to 1.0, giving the agent zero gradient.
 
     This scales cost with actual import magnitude — a building importing
     0.01 kWh contributes far less cost than one importing 10 kWh.
 
-    Label — dirty-grid danger region
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — action-contingent dirty-grid frontier
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    All three conditions must hold:
+
     1. Carbon intensity above ``carbon_quantile``-th percentile (dirty grid).
-    2. Electrical storage exists (lever: shift load away from dirty hours).
+    2. District NSL above median — high import means the agent's battery
+       action materially affects cost.  Low-NSL dirty hours have near-zero
+       cost regardless of action (label=0 avoids misleading the policy).
+    3. At least one battery has SOC ≥ 5% (the actual discharge lever).
 
-    The label marks the danger region where cost is likely active, not
-    the reward-cost disagreement.  Price is deliberately excluded: it is
-    a reward signal, not a danger signal.
-
-    No storage → label = 0.
+    Low NSL or empty battery → label = 0.
     """
 
     def __init__(
@@ -601,6 +610,7 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         self._carbon_min: Optional[float] = None
         self._carbon_max: Optional[float] = None
         self._import_scale: Optional[float] = None
+        self._nsl_median: Optional[float] = None
 
     def _scenario_init(self):
         cl_env = self.unwrapped
@@ -648,7 +658,8 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
             sched = getattr(es, "_non_shiftable_load", None)
             if sched is not None and hasattr(sched, "__len__") and len(sched) >= n_hours:
                 hourly_nsl += np.asarray(sched[:n_hours], dtype=float)
-        self._import_scale = float(np.quantile(hourly_nsl, 0.95))
+        self._import_scale = float(np.max(hourly_nsl))
+        self._nsl_median = float(np.median(hourly_nsl))
 
     # -- Helpers -------------------------------------------------------
 
@@ -725,6 +736,19 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
+    def _district_pre_step_nsl(self) -> Optional[float]:
+        """District NSL at current timestep (pre-step, from schedule)."""
+        total = 0.0
+        n = 0
+        ts = self._get_time_step()
+        for b in self._get_buildings():
+            es = getattr(b, "energy_simulation", None)
+            sched = getattr(es, "_non_shiftable_load", None)
+            if sched is not None and hasattr(sched, "__len__") and ts < len(sched):
+                total += float(sched[ts])
+                n += 1
+        return total if n > 0 else None
+
     def _compute_label(self, obs) -> int:
         self._ensure_base_init()
         buildings = self._get_buildings()
@@ -738,11 +762,26 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         if max_carbon is None or max_carbon <= self._carbon_threshold:
             return 0
 
-        # Condition 2: electrical storage exists
-        has_storage = any(
-            b.electrical_storage is not None for b in buildings
-        )
-        return 1 if has_storage else 0
+        # Condition 2: district NSL above median (import is material)
+        if self._nsl_median is not None:
+            nsl = self._district_pre_step_nsl()
+            if nsl is not None and nsl < self._nsl_median:
+                return 0
+
+        # Condition 3: battery has usable charge (discharge lever)
+        min_soc_frac = 0.05
+        has_usable_battery = False
+        ts = self._get_time_step()
+        for b in buildings:
+            es = b.electrical_storage
+            if es is None or es.capacity <= 0:
+                continue
+            if ts > 0 and hasattr(es.soc, '__len__') and ts - 1 < len(es.soc):
+                soc_frac = es.soc[ts - 1] / es.capacity
+                if soc_frac >= min_soc_frac:
+                    has_usable_battery = True
+                    break
+        return 1 if has_usable_battery else 0
 
 
 # ###########################################################################
