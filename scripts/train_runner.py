@@ -873,6 +873,14 @@ if __name__ == "__main__":
                           file=sys.stderr, flush=True)
                     traceback.print_exc(file=sys.stderr)
                     raise
+                finally:
+                    # Clean up any leftover TraCI connections so the next
+                    # trial in this agent process can start fresh.
+                    try:
+                        import traci
+                        traci.close()
+                    except Exception:
+                        pass
 
             wandb.agent(sweep_id, function=_sweep_train, count=None)
 
