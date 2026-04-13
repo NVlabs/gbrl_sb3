@@ -63,7 +63,6 @@ COST_FN_REGISTRY: Dict[str, str] = {
     "side_queue": "Per-agent: max queue ratio on side-street lanes — purely observation-based, no hidden state",
     "bus_priority": "Per-agent: 1 if any bus local wait >= T_cost — binary violation, label fires at T_warn (anticipatory), fixed-corridor injection, obs-extended",
     "convoy_priority": "Per-agent: 1 if convoy is actively being split (0 < progress < 1) on unserved lane — binary violation, label fires anticipatorily (regime-based, no decision-mask), obs-extended",
-    "spillback": "Per-agent: 1 if any served lane has downstream_occ > T_occ — binary violation, obs-extended",
     "premium_priority": "Per-agent: 1 if premium vehicle route_delay >= T_cost — binary violation, route-level delay tracking, label fires at T_warn (anticipatory), obs-extended",
 }
 
@@ -88,12 +87,9 @@ class SumoRewardCostWrapper(ParallelEnv):
       - "premium_priority": binary cost when premium vehicle waits past T_cost.
       - "convoy_priority":  binary cost when convoy is actively split.
       - "bus_priority":     binary cost when bus waits past T_cost.
-      - "spillback":        binary cost when downstream occupancy > T_occ.
 
-    Labels are minimal danger-region markers (not reward proxies):
-      - entity on unserved lane + can_switch + wait > T_warn  (bus/premium)
-      - entity waiting + can_switch + count ≥ τ OR active split  (convoy)
-      - downstream_occ > T_warn + can_switch  (spillback)
+    Labels are state-partition ownership rules (not reward proxies):
+      - entity on unserved lane + can_switch + urgency + queue asymmetry  (bus/premium/convoy)
 
     Event generation is exogenous: static conflict routes precomputed at
     reset from network topology (side-street approaches), selected via
@@ -157,12 +153,6 @@ class SumoRewardCostWrapper(ParallelEnv):
         premium_warn_threshold: float = 3.0,
         premium_count_per_injection: int = 1,
         premium_headway: float = 2.0,
-        # Spillback / road works parameters
-        roadwork_interval_mean: float = 180.0,
-        roadwork_duration_mean: float = 900.0,
-        roadwork_speed: float = 0.05,
-        spillback_occ_threshold: float = 0.30,
-        spillback_warn_threshold: float = 0.18,
         # Scenario event probability (0.0 = events every episode, 0.25 = 25% clean)
         clean_episode_prob: float = 0.0,
     ):
@@ -217,13 +207,6 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._premium_count_per_injection = premium_count_per_injection
         self._premium_headway = premium_headway
 
-        # Spillback / road works parameters
-        self._roadwork_interval_mean = roadwork_interval_mean
-        self._roadwork_duration_mean = roadwork_duration_mean
-        self._roadwork_speed = roadwork_speed            # near-zero speed on blocked edge
-        self._spillback_occ_threshold = spillback_occ_threshold  # T_occ for cost
-        self._spillback_warn_threshold = spillback_warn_threshold  # T_warn for label (< T_occ)
-
         # Clean episode probability (shared across all event-based scenarios)
         self._clean_episode_prob = clean_episode_prob
         self._is_clean_episode = False  # set at each reset()
@@ -274,16 +257,6 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Route-level tracking: vid → {depart_time, expected_time}
         # expected_time is free-flow travel time from origin to current position
         self._premium_vehicle_info: Dict[str, Dict] = {}  # vid → {depart_time, route_edges}
-
-        # Spillback / road works runtime state
-        self._lane_to_downstream_edges: Dict[str, Dict[int, List[str]]] = {}  # agent → lane_idx → [out_edge, ...]
-        self._downstream_occ: Dict[str, np.ndarray] = {}  # per-agent per-lane downstream occupancy
-        self._active_roadworks: List[Dict] = []  # [{edge, original_speed, clear_time}, ...]
-        self._internal_edges: List[str] = []  # candidate edges for road works
-        self._next_roadwork_time: float = 0.0
-        self._roadwork_counter: int = 0
-        # Reverse lookup: lane_name → (agent_id, lane_index) — built once at reset
-        self._lane_to_agent: Dict[str, Tuple[str, int]] = {}
 
         # Debug mode: when True, extra keys are added to info dict each step
         self._debug: bool = False
@@ -359,7 +332,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Use max_n_lanes across ALL agents for uniform obs extension size.
         self._obs_extension_dim = 0
         self._raw_max_obs_dim = self._max_obs_dim  # pre-extension dim for padding
-        if self._cost_fn in ("bus_priority", "convoy_priority", "spillback", "premium_priority"):
+        if self._cost_fn in ("bus_priority", "convoy_priority", "premium_priority"):
             max_n_lanes = max(
                 (raw_obs_spaces[a].shape[0] - self._agent_n_actions[a] - 1) // 2
                 for a in self.possible_agents
@@ -369,8 +342,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._obs_extension_dim = 3 * max_n_lanes  # has_bus + bus_count + bus_wait
             elif self._cost_fn == "convoy_priority":
                 self._obs_extension_dim = 3 * max_n_lanes  # has_convoy + convoy_seen_frac + convoy_progress
-            elif self._cost_fn == "spillback":
-                self._obs_extension_dim = 1 * max_n_lanes  # downstream_occ
             elif self._cost_fn == "premium_priority":
                 self._obs_extension_dim = 2 * max_n_lanes  # has_premium + premium_wait
             self._max_obs_dim += self._obs_extension_dim
@@ -1389,7 +1360,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         pass
 
     def _extend_obs(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Append bus/convoy/premium/spillback features to observation vectors.
+        """Append bus/convoy/premium features to observation vectors.
 
         Per-agent arrays are zero-padded to ``_ext_max_n_lanes`` so that
         all agents produce the same extension size, even on non-uniform networks.
@@ -1419,9 +1390,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                 sf = _pad(self._convoy_seen_frac.get(agent, np.zeros(0, dtype=np.float32)), M)
                 cp = _pad(self._convoy_progress.get(agent, np.zeros(0, dtype=np.float32)), M)
                 ob = np.concatenate([ob, hc, sf, cp])
-            elif self._cost_fn == "spillback":
-                ds = _pad(self._downstream_occ.get(agent, np.zeros(0, dtype=np.float32)), M)
-                ob = np.concatenate([ob, ds])
             elif self._cost_fn == "premium_priority":
                 hp = _pad(self._has_premium.get(agent, np.zeros(0, dtype=np.float32)), M)
                 pw = _pad(self._premium_wait.get(agent, np.zeros(0, dtype=np.float32)), M)
@@ -1450,16 +1418,26 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)) else 0.0
 
     def _bus_priority_label(self, agent_id: str) -> int:
-        """Danger-zone label for bus priority: g(s) → {0, 1}.
+        """State-partition label for bus priority: g(s) → {0, 1}.
 
-        Two modes:
-          • **Reactive**: any bus already overdue (bus_wait >= 1.0) → label=1
-            immediately.  This keeps the label aligned with cost so
-            Split-RL routes gradients through the cost head while
-            cost is active.
-          • **Anticipatory**: bus approaching overdue (warn < wait < 1.0)
-            on an unserved lane with min_green satisfied.  Fires
-            BEFORE cost, giving Split-RL an early routing advantage.
+        Determines which objective OWNS gradient updates in this state.
+        label=1 → cost objective owns → tree routes cost gradients here.
+        label=0 → reward objective owns → tree routes reward gradients here.
+
+        Fires when ALL of:
+          1. A bus is waiting on an unserved (red) lane,
+          2. The agent CAN switch (min_green satisfied),
+          3. The bus wait exceeds warning threshold (urgency),
+          4. The served approach has higher queue pressure (conflict).
+
+        Condition 4 is the conflict: reward wants to stay on the busy
+        served lane, cost wants to switch to serve the bus.  Without
+        queue asymmetry there is no conflict — reward and cost agree.
+
+        No lower agency gate beyond can_switch: once the bus is urgent
+        AND there's queue asymmetry, cost owns the state whether the
+        bus is approaching overdue or already overdue.  The cost
+        gradient is nonzero and the conflict is real.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
@@ -1468,28 +1446,36 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not np.any(has_bus > 0):
             return 0
 
-        # Reactive: already overdue — label must be on while cost is on
-        if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)):
-            return 1
-
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0
 
-        # Anticipatory: min_green satisfied (agent can actually switch)
+        # Must be able to switch — no decision point otherwise
         if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
             return 0
 
         phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        phase_map = self._phase_to_lanes.get(agent_id, {})
+        served_lanes = set(phase_map.get(phase, []))
 
-        # Normalised warn threshold (bus_wait is already / cost_threshold)
+        # Queue pressure on served lanes
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
+        served_pressure = max(
+            (lane_queues[j] if j < len(lane_queues) else 0
+             for j in served_lanes),
+            default=0,
+        )
+
+        # Normalised warn threshold
         warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
 
         for i in range(len(has_bus)):
             if has_bus[i] > 0 and i not in served_lanes:
                 if bus_wait[i] > warn_norm:
-                    return 1
+                    # Conflict: served lane is busier → reward says stay
+                    unserved_pressure = lane_queues[i] if i < len(lane_queues) else 0
+                    if served_pressure > unserved_pressure:
+                        return 1
         return 0
 
     # ── Convoy priority cost/label ───────────────────────────────────────
@@ -1524,24 +1510,27 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 0.0
 
     def _convoy_priority_label(self, agent_id: str) -> int:
-        """Danger-zone label for convoy priority: g(s) → {0, 1}.
+        """State-partition label for convoy priority: g(s) → {0, 1}.
 
-        Marks the region of state space where a convoy split is
-        imminent or active.  Label = regime detector, NOT decision mask.
+        Determines which objective OWNS gradient updates in this state.
+        label=1 → cost objective owns → tree routes cost gradients here.
+        label=0 → reward objective owns → tree routes reward gradients here.
 
-        Pure function of observation features:
-          - has_convoy[i], convoy_progress[i], convoy_seen_frac[i]
+        Fires when ALL of:
+          1. A convoy is on an unserved (red) lane,
+          2. The agent CAN switch (min_green satisfied),
+          3. Either:
+             a. Active split (0 < progress < 1) — cost is active or
+                imminent, switching NOW saves remaining vehicles.
+             b. Pre-split (progress == 0, seen_frac >= 0.33) — convoy
+                arriving, proactive green prevents the split entirely.
+          4. The served approach has higher queue pressure than the
+             convoy's lane (disagreement).
 
-        1. **Reactive** (0 < progress < 1, unserved lane):
-           Active split in progress.  NO can_switch gate — label must
-           be 1 whenever cost is 1 so Split-RL routes gradients through
-           the cost head during the entire cost-active regime.
-
-        2. **Anticipatory** (progress == 0, can_switch, seen_frac ≥ 0.33):
-           Convoy arriving on unserved lane and agent CAN switch.
-           Uses convoy_seen_frac (seen/total_size) directly from the
-           observation extension — no hidden metadata lookup.
-           can_switch is safe here because cost == 0 in this branch.
+        Condition 4 is the conflict test: reward prefers staying on the
+        busier served lane (throughput), cost wants to switch to serve
+        the convoy.  Without this asymmetry reward and cost agree —
+        the convoy lane is already the most attractive, so label=0.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1552,31 +1541,36 @@ class SumoRewardCostWrapper(ParallelEnv):
         if ts is None:
             return 0
 
-        phase = ts.green_phase
-        phase_map = self._phase_to_lanes.get(agent_id, {})
-        served_lanes = set(phase_map.get(phase, []))
-
-        for i in range(len(has_convoy)):
-            if has_convoy[i] > 0 and i not in served_lanes:
-                # Reactive: active split — label tracks cost regime
-                # (no can_switch gate: cost fires without it, label must too)
-                if 0 < convoy_progress[i] < 1.0:
-                    return 1
-
-        # Anticipatory: can_switch required (cost==0 here, so no mismatch)
+        # Must be able to switch — no decision point otherwise
         can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
         if not can_switch:
             return 0
 
-        # Use obs-exposed convoy_seen_frac — pure function of observation
+        phase = ts.green_phase
+        phase_map = self._phase_to_lanes.get(agent_id, {})
+        served_lanes = set(phase_map.get(phase, []))
+
+        # Queue pressure on served lanes (reward attractiveness)
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
+        served_pressure = max(
+            (lane_queues[j] if j < len(lane_queues) else 0
+             for j in served_lanes),
+            default=0,
+        )
+
         seen_frac = self._convoy_seen_frac.get(agent_id)
-        if seen_frac is None:
-            return 0
 
         for i in range(len(has_convoy)):
             if has_convoy[i] > 0 and i not in served_lanes:
-                if convoy_progress[i] == 0 and seen_frac[i] >= 0.33:
-                    return 1
+                prog = convoy_progress[i]
+                is_urgent = (0 < prog < 1.0) or (
+                    prog == 0 and seen_frac is not None and seen_frac[i] >= 0.33
+                )
+                if is_urgent:
+                    # Conflict: served lane is busier → reward says stay
+                    convoy_pressure = lane_queues[i] if i < len(lane_queues) else 0
+                    if served_pressure > convoy_pressure:
+                        return 1
         return 0
 
     # ── Spillback cost/label ─────────────────────────────────────────────
@@ -1665,17 +1659,23 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str) -> int:
-        """Danger-zone label for premium priority: g(s) → {0, 1}.
+        """State-partition label for premium priority: g(s) → {0, 1}.
 
-        Route-level delay semantics: premium_wait is now normalised
-        route_delay / T_cost, tracking how far behind schedule the
-        vehicle is across its entire journey.
+        Determines which objective OWNS gradient updates in this state.
+        label=1 → cost objective owns → tree routes cost gradients here.
+        label=0 → reward objective owns → tree routes reward gradients here.
 
-        Two modes:
-          • **Reactive**: route delay >= T_cost (already over budget) →
-            label=1 immediately.  Aligns with cost.
-          • **Anticipatory**: route delay approaching budget on an
-            unserved lane with can_switch.  Early routing advantage.
+        Fires when ALL of:
+          1. A premium vehicle is on an unserved (red) lane,
+          2. The agent CAN switch (min_green satisfied),
+          3. The premium delay exceeds warning threshold (urgency),
+          4. The premium's lane has lower queue pressure than served
+             (conflict — reward sees no reason to switch).
+
+        Condition 4 is the value-asymmetry conflict: the premium is
+        physically identical to a regular car, but contractually
+        prioritized.  The reward sees a low-pressure lane and stays
+        on the busy served lane.  The cost demands switching.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -1684,28 +1684,36 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not np.any(has_premium > 0):
             return 0
 
-        # Reactive: already overdue — label must be on while cost is on
-        if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)):
-            return 1
-
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0
 
-        # Anticipatory: min_green satisfied (agent can actually switch)
+        # Must be able to switch — no decision point otherwise
         if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
             return 0
 
         phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        phase_map = self._phase_to_lanes.get(agent_id, {})
+        served_lanes = set(phase_map.get(phase, []))
 
-        # Normalised warn threshold (premium_wait is already / cost_threshold)
+        # Queue pressure on served lanes
+        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
+        served_pressure = max(
+            (lane_queues[j] if j < len(lane_queues) else 0
+             for j in served_lanes),
+            default=0,
+        )
+
+        # Normalised warn threshold
         warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
 
         for i in range(len(has_premium)):
             if has_premium[i] > 0 and i not in served_lanes:
                 if premium_wait[i] > warn_norm:
-                    return 1
+                    # Conflict: premium's lane is quieter → reward says stay
+                    unserved_pressure = lane_queues[i] if i < len(lane_queues) else 0
+                    if served_pressure > unserved_pressure:
+                        return 1
         return 0
 
     def _update_service_tracking(self, agent_id: str):
