@@ -1239,17 +1239,16 @@ class SumoRewardCostWrapper(ParallelEnv):
         Fires when ALL of:
           1. A bus is waiting on an unserved (red) lane,
           2. The agent CAN switch (min_green satisfied),
-          3. The bus wait exceeds warning threshold (urgency),
-          4. The served approach has higher queue pressure (conflict).
+          3. The bus normalised wait >= 0.6 (urgency — stricter than
+             the raw warn_threshold to keep label=1 rare),
+          4. The served approach has meaningfully higher queue pressure
+             (margin 0.10 on [0,1] queue ratios — real conflict only).
 
-        Condition 4 is the conflict: reward wants to stay on the busy
-        served lane, cost wants to switch to serve the bus.  Without
-        queue asymmetry there is no conflict — reward and cost agree.
-
-        No lower agency gate beyond can_switch: once the bus is urgent
-        AND there's queue asymmetry, cost owns the state whether the
-        bus is approaching overdue or already overdue.  The cost
-        gradient is nonzero and the conflict is real.
+        The stricter urgency threshold (0.6 vs old warn_norm ≈ 0.4)
+        and the disagreement margin together ensure label=1 fires only
+        in genuinely urgent, conflicted states.  This leaves most
+        states for reward learning while still protecting the cost
+        rescue window.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
@@ -1270,7 +1269,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase_map = self._phase_to_lanes.get(agent_id, {})
         served_lanes = set(phase_map.get(phase, []))
 
-        # Queue pressure on served lanes
+        # Queue pressure on served lanes (values in [0, 1])
         lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
         served_pressure = max(
             (lane_queues[j] if j < len(lane_queues) else 0
@@ -1278,15 +1277,16 @@ class SumoRewardCostWrapper(ParallelEnv):
             default=0,
         )
 
-        # Normalised warn threshold
-        warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
+        # Stricter urgency: 60% of cost threshold, not the raw warn_threshold
+        urgency_threshold = 0.6
 
         for i in range(len(has_bus)):
             if has_bus[i] > 0 and i not in served_lanes:
-                if bus_wait[i] > warn_norm:
-                    # Conflict: served lane is busier → reward says stay
+                if bus_wait[i] >= urgency_threshold:
+                    # Conflict: served lane is meaningfully busier → reward says stay.
+                    # Margin of 0.10 on [0,1] queue ratios filters borderline ties.
                     unserved_pressure = lane_queues[i] if i < len(lane_queues) else 0
-                    if served_pressure > unserved_pressure:
+                    if served_pressure > unserved_pressure + 0.10:
                         return 1
         return 0
 
@@ -1328,21 +1328,26 @@ class SumoRewardCostWrapper(ParallelEnv):
         label=1 → cost objective owns → tree routes cost gradients here.
         label=0 → reward objective owns → tree routes reward gradients here.
 
-        Fires when ALL of:
-          1. A convoy is on an unserved (red) lane,
-          2. The agent CAN switch (min_green satisfied),
-          3. Either:
-             a. Active split (0 < progress < 1) — cost is active or
-                imminent, switching NOW saves remaining vehicles.
-             b. Pre-split (progress == 0, seen_frac >= 0.33) — convoy
-                arriving, proactive green prevents the split entirely.
-          4. The served approach has higher queue pressure than the
-             convoy's lane (disagreement).
+        Three branches:
 
-        Condition 4 is the conflict test: reward prefers staying on the
-        busier served lane (throughput), cost wants to switch to serve
-        the convoy.  Without this asymmetry reward and cost agree —
-        the convoy lane is already the most attractive, so label=0.
+        A. Active split, unserved (0 < progress < 1, convoy lane red):
+           label=1 unconditionally.  Convoy is being split and stuck
+           at red — rescue state.  No queue asymmetry needed because
+           the 10-12 convoy vehicles make their lane the busiest.
+
+        B. Hold-green (0 < progress < 1, convoy lane green, can_switch):
+           label=1 unconditionally.  Convoy is partially passed and
+           currently being served.  Reward wants to switch to the
+           busier opposing direction; cost needs to hold green until
+           the platoon clears.  This is the key state for single-vhvh
+           convoy where the agent switches away too early.
+
+        C. Pre-split (progress == 0, seen_frac >= 0.50): label=1 only
+           if served lane is meaningfully busier (margin 0.10).  This
+           is the anticipatory branch — convoy arriving but not yet
+           split.  The asymmetry gate + higher seen_frac threshold
+           keep this branch tight to avoid over-labelling in
+           multi-agent grids.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1362,7 +1367,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         phase_map = self._phase_to_lanes.get(agent_id, {})
         served_lanes = set(phase_map.get(phase, []))
 
-        # Queue pressure on served lanes (reward attractiveness)
+        # Queue pressure on served lanes (values in [0, 1])
         lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
         served_pressure = max(
             (lane_queues[j] if j < len(lane_queues) else 0
@@ -1373,15 +1378,22 @@ class SumoRewardCostWrapper(ParallelEnv):
         seen_frac = self._convoy_seen_frac.get(agent_id)
 
         for i in range(len(has_convoy)):
-            if has_convoy[i] > 0 and i not in served_lanes:
-                prog = convoy_progress[i]
-                is_urgent = (0 < prog < 1.0) or (
-                    prog == 0 and seen_frac is not None and seen_frac[i] >= 0.33
-                )
-                if is_urgent:
-                    # Conflict: served lane is busier → reward says stay
+            if has_convoy[i] <= 0:
+                continue
+            prog = convoy_progress[i]
+
+            # Branch A & B: active split — cost owns regardless of
+            # whether the convoy lane is served (hold-green) or
+            # unserved (rescue).
+            if 0 < prog < 1.0:
+                return 1
+
+            # Branch C: pre-split — only on unserved lanes with
+            # tighter gate to limit label=1 in multi-agent grids.
+            if i not in served_lanes:
+                if prog == 0 and seen_frac is not None and seen_frac[i] >= 0.50:
                     convoy_pressure = lane_queues[i] if i < len(lane_queues) else 0
-                    if served_pressure > convoy_pressure:
+                    if served_pressure > convoy_pressure + 0.10:
                         return 1
         return 0
 
@@ -1455,9 +1467,10 @@ class SumoRewardCostWrapper(ParallelEnv):
         for i in range(len(has_premium)):
             if has_premium[i] > 0 and i not in served_lanes:
                 if premium_wait[i] > warn_norm:
-                    # Conflict: premium's lane is quieter → reward says stay
+                    # Conflict: premium's lane is quieter → reward says stay.
+                    # Margin of 0.10 on [0,1] queue ratios filters borderline ties.
                     unserved_pressure = lane_queues[i] if i < len(lane_queues) else 0
-                    if served_pressure > unserved_pressure:
+                    if served_pressure > unserved_pressure + 0.10:
                         return 1
         return 0
 
