@@ -572,204 +572,6 @@ class SumoRewardCostWrapper(ParallelEnv):
             side_idx = self._side_lane_indices[agent_id]
             self._steps_since_served[agent_id] = {li: 0 for li in side_idx}
 
-    # ── Lane → downstream edge mapping (for spillback) ───────────────
-
-    def _build_lane_downstream_mapping(self):
-        """Build mapping: agent → lane_idx → list of downstream edge IDs.
-
-        Uses getControlledLinks which returns (in_lane, out_lane, via_lane)
-        per connection. The out_lane's parent edge is the downstream edge
-        that vehicles from in_lane travel to.
-        """
-        sumo = self._get_traci()
-        if sumo is None:
-            return
-
-        self._lane_to_downstream_edges.clear()
-
-        for agent_id in self.possible_agents:
-            ts = self._get_traffic_signal(agent_id)
-            if ts is None:
-                continue
-
-            connections = sumo.trafficlight.getControlledLinks(agent_id)
-            lane_downstream: Dict[int, set] = {i: set() for i in range(len(ts.lanes))}
-
-            for conn_group in connections:
-                for (in_lane, out_lane, _via) in conn_group:
-                    if in_lane in ts.lanes:
-                        lane_idx = ts.lanes.index(in_lane)
-                        # out_lane format: "edgeID_laneIndex" → extract edge
-                        out_edge = '_'.join(out_lane.split('_')[:-1])
-                        if out_edge and not out_edge.startswith(':'):
-                            lane_downstream[lane_idx].add(out_edge)
-
-            self._lane_to_downstream_edges[agent_id] = {
-                k: list(v) for k, v in lane_downstream.items()
-            }
-
-    def _discover_internal_edges(self):
-        """Find internal (non-boundary) edges suitable for road works.
-
-        Road works should be placed on edges between two intersections,
-        not on boundary edges where vehicles enter/exit the network.
-        Only considers edges that appear as downstream targets for at
-        least one controlled lane (so blocking them has cost impact).
-
-        Edges are ranked by downstream support count (how many
-        agent-lane pairs reference them) so that _inject_roadwork
-        preferentially blocks high-impact edges.
-        """
-        sumo = self._get_traci()
-        if sumo is None:
-            return
-
-        # Collect all downstream edges and count how many lane→edge
-        # references each one has (higher = more impactful to block)
-        from collections import Counter
-        edge_support = Counter()
-        downstream_set = set()
-        for agent_mapping in self._lane_to_downstream_edges.values():
-            for edges in agent_mapping.values():
-                downstream_set.update(edges)
-                for e in edges:
-                    edge_support[e] += 1
-
-        # Internal = downstream edges that are NOT boundary edges
-        all_edges = sumo.edge.getIDList()
-        normal_edges = [e for e in all_edges if not e.startswith(':')]
-
-        node_edge_count = Counter()
-        for e in normal_edges:
-            node_edge_count[sumo.edge.getFromJunction(e)] += 1
-            node_edge_count[sumo.edge.getToJunction(e)] += 1
-        boundary_nodes = {n for n, c in node_edge_count.items() if c <= 2}
-
-        internal = [
-            e for e in downstream_set
-            if (sumo.edge.getFromJunction(e) not in boundary_nodes
-                and sumo.edge.getToJunction(e) not in boundary_nodes)
-        ]
-        # Fallback: if network is too small, use all downstream edges
-        if len(internal) < 2:
-            internal = list(downstream_set)
-
-        # Sort by support count descending — most-referenced edges first
-        self._internal_edges = sorted(
-            internal, key=lambda e: edge_support[e], reverse=True
-        )
-
-    # ── Road works injection / clearing (for spillback) ──────────────
-
-    def _inject_roadwork(self, sim_time: float):
-        """Possibly inject a new road works event (reduce edge speed)."""
-        if sim_time < self._next_roadwork_time:
-            return
-        if not self._internal_edges:
-            return
-
-        sumo = self._get_traci()
-        if sumo is None:
-            return
-
-        rng = self._scenario_rng
-
-        # Pick from top-ranked internal edges not already blocked.
-        # _internal_edges is sorted by support count (descending), so
-        # we prefer high-impact edges.  Pick from the top half with
-        # higher probability to keep some variety across episodes.
-        blocked_edges = {rw["edge"] for rw in self._active_roadworks}
-        candidates = [e for e in self._internal_edges if e not in blocked_edges]
-        if not candidates:
-            # All internal edges blocked, skip
-            self._next_roadwork_time = sim_time + 60.0
-            return
-
-        # Weighted selection: top edges get higher weight
-        n = len(candidates)
-        weights = np.array([max(1, n - i) for i in range(n)], dtype=float)
-        weights /= weights.sum()
-        edge = candidates[rng.choice(n, p=weights)]
-
-        # Save original speed (read from first lane) and reduce to near-zero
-        try:
-            lanes = sumo.edge.getLaneNumber(edge)
-            first_lane = f"{edge}_0"
-            original_speed = sumo.lane.getMaxSpeed(first_lane)
-            sumo.edge.setMaxSpeed(edge, self._roadwork_speed)
-        except Exception:
-            self._next_roadwork_time = sim_time + 60.0
-            return
-
-        # Random duration: mean ± 40% jitter
-        duration = self._roadwork_duration_mean * (0.6 + 0.8 * rng.random())
-        clear_time = sim_time + duration
-
-        self._active_roadworks.append({
-            "edge": edge,
-            "original_speed": original_speed,
-            "clear_time": clear_time,
-        })
-        self._roadwork_counter += 1
-
-        # Schedule next road work
-        interval = self._roadwork_interval_mean * (0.6 + 0.8 * rng.random())
-        self._next_roadwork_time = sim_time + interval
-
-    def _clear_roadworks(self, sim_time: float):
-        """Clear expired road works, restoring original edge speeds."""
-        sumo = self._get_traci()
-        if sumo is None:
-            return
-
-        still_active = []
-        for rw in self._active_roadworks:
-            if sim_time >= rw["clear_time"]:
-                try:
-                    sumo.edge.setMaxSpeed(rw["edge"], rw["original_speed"])
-                except Exception:
-                    pass
-            else:
-                still_active.append(rw)
-        self._active_roadworks = still_active
-
-    # ── Downstream occupancy computation (for spillback) ─────────────
-
-    def _compute_downstream_occupancy(self):
-        """Compute max downstream edge occupancy per incoming lane per agent.
-
-        For each agent's incoming lane, looks up which downstream edges
-        that lane feeds into, queries their occupancy via TraCI, and
-        stores the max across all downstream edges for that lane.
-        """
-        sumo = self._get_traci()
-        if sumo is None:
-            return
-
-        for agent_id in self.possible_agents:
-            ts = self._get_traffic_signal(agent_id)
-            if ts is None:
-                continue
-
-            n_lanes = len(ts.lanes)
-            ds_occ = np.zeros(n_lanes, dtype=np.float32)
-            lane_map = self._lane_to_downstream_edges.get(agent_id, {})
-
-            for i in range(n_lanes):
-                edges = lane_map.get(i, [])
-                if not edges:
-                    continue
-                max_occ = 0.0
-                for edge in edges:
-                    try:
-                        occ = sumo.edge.getLastStepOccupancy(edge)
-                        max_occ = max(max_occ, occ / 100.0 if occ > 1.0 else occ)
-                    except Exception:
-                        continue
-                ds_occ[i] = max_occ
-
-            self._downstream_occ[agent_id] = ds_occ
-
     # ── Bus / Convoy vehicle injection ─────────────────────────────────
 
     def _discover_boundary_edges(self):
@@ -834,9 +636,13 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         import os as _os
         _stderr_fd = _os.dup(2)
-        _devnull = _os.open(_os.devnull, _os.O_WRONLY)
-        _os.dup2(_devnull, 2)
-        _os.close(_devnull)
+        try:
+            _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+            _os.dup2(_devnull, 2)
+            _os.close(_devnull)
+            _suppress = True
+        except OSError:
+            _suppress = False
 
         result = None
         for origin in origins[:8]:
@@ -853,7 +659,8 @@ class SumoRewardCostWrapper(ParallelEnv):
             if result is not None:
                 break
 
-        _os.dup2(_stderr_fd, 2)
+        if _suppress:
+            _os.dup2(_stderr_fd, 2)
         _os.close(_stderr_fd)
         return result
 
@@ -899,9 +706,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         # warnings for unreachable pairs, which we handle gracefully.
         import os as _os
         _stderr_fd = _os.dup(2)
-        _devnull = _os.open(_os.devnull, _os.O_WRONLY)
-        _os.dup2(_devnull, 2)
-        _os.close(_devnull)
+        try:
+            _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+            _os.dup2(_devnull, 2)
+            _os.close(_devnull)
+            _suppress = True
+        except OSError:
+            _suppress = False
 
         candidates = []
         seen = set()
@@ -925,7 +736,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                     continue
 
         # Restore stderr
-        _os.dup2(_stderr_fd, 2)
+        if _suppress:
+            _os.dup2(_stderr_fd, 2)
         _os.close(_stderr_fd)
 
         # Sort by side-edge fraction (descending), keep top routes
@@ -1573,73 +1385,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                         return 1
         return 0
 
-    # ── Spillback cost/label ─────────────────────────────────────────────
-
-    def _compute_spillback_cost(self, agent_id: str) -> float:
-        """Binary violation cost: 1 when serving into a blocked downstream.
-
-        cost = 1  if any served lane has downstream_occ > T_occ
-             = 0  otherwise
-
-        Binary (0/1). Fires when the agent is actively sending
-        vehicles into a congested downstream direction.
-        """
-        ds_occ = self._downstream_occ.get(agent_id)
-        if ds_occ is None:
-            return 0.0
-
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0.0
-        phase = ts.green_phase
-        served_lanes = self._phase_to_lanes.get(agent_id, {}).get(phase, [])
-        if not served_lanes:
-            return 0.0
-
-        for i in served_lanes:
-            if i < len(ds_occ) and ds_occ[i] > self._spillback_occ_threshold:
-                return 1.0
-        return 0.0
-
-    def _spillback_label(self, agent_id: str) -> int:
-        """Danger-zone label for spillback: g(s) → {0, 1}.
-
-        Fires at a LOWER occupancy threshold than cost, creating the
-        same anticipatory gap as bus/convoy/premium labels.
-
-          label fires at: downstream_occ > T_warn AND can_switch
-          cost  fires at: downstream_occ > T_occ   (violation, T_occ > T_warn)
-
-        can_switch = current phase serves a lane whose downstream is
-        congested.  This gates the label so it only fires when the agent
-        is at a genuine decision point (can switch away from the
-        congested direction).
-
-        Pure function of observation state: phase one-hot (in obs) and
-        downstream_occ features (in obs extension). No action dependence.
-        """
-        ds_occ = self._downstream_occ.get(agent_id)
-        if ds_occ is None:
-            return 0
-
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-        phase = ts.green_phase
-        served_lanes = self._phase_to_lanes.get(agent_id, {}).get(phase, [])
-
-        # can_switch: phase has been active long enough to actually change
-        can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
-        if not can_switch:
-            return 0
-
-        # Current phase serves a lane with high downstream occ →
-        # agent is at a decision point where switching away matters
-        for i in served_lanes:
-            if i < len(ds_occ) and ds_occ[i] > self._spillback_warn_threshold:
-                return 1
-        return 0
-
     # ── Premium priority cost/label ──────────────────────────────────────
 
     def _compute_premium_priority_cost(self, agent_id: str) -> float:
@@ -2178,7 +1923,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         # ── Episode-level RNG for all scenario randomness ──
         # Seeded from the episode seed (reproducible) or episode counter
         # (deterministic but varying). Used for injection timing, route
-        # selection, roadwork placement, and clean-episode coin flip.
+        # selection, and clean-episode coin flip.
         self._episode_count += 1
         ep_seed = seed if seed is not None else self._episode_count
         self._scenario_rng = np.random.RandomState(ep_seed % (2**31))
@@ -2274,26 +2019,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                 if ts is not None:
                     for i, lane in enumerate(ts.lanes):
                         self._lane_to_agent[lane] = (agent_id, i)
-
-        # Spillback / road works setup
-        if self._cost_fn == "spillback":
-            # Rebuild every episode: reset creates a fresh SUMO instance
-            self._classify_mainline_side()  # also builds phase_to_lanes
-            self._build_lane_downstream_mapping()
-            self._discover_internal_edges()
-            self._active_roadworks = []
-            self._roadwork_counter = 0
-            if self._is_clean_episode:
-                self._next_roadwork_time = 1e9  # no road works this episode
-            else:
-                self._next_roadwork_time = self._roadwork_interval_mean * 0.3
-            self._extend_obs_spaces()
-            # Init per-agent downstream occupancy arrays
-            for agent_id in self.possible_agents:
-                ts = self._get_traffic_signal(agent_id)
-                if ts is not None:
-                    n_lanes = len(ts.lanes)
-                    self._downstream_occ[agent_id] = np.zeros(n_lanes, dtype=np.float32)
 
         # Reset episode accumulators
         self._episode_costs = {agent: 0.0 for agent in self.possible_agents}
@@ -2394,14 +2119,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._inject_vehicles(sim_time)
                 self._detect_special_vehicles()
 
-        if self._cost_fn == "spillback":
-            sumo = self._get_traci()
-            if sumo is not None:
-                sim_time = sumo.simulation.getTime()
-                self._clear_roadworks(sim_time)
-                self._inject_roadwork(sim_time)
-                self._compute_downstream_occupancy()
-
         # For emergency cost_fn, compute once (global)
         emergency_cost = None
         if self._cost_fn == "emergency":
@@ -2462,8 +2179,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                 cost = self._compute_bus_priority_cost(agent)
             elif self._cost_fn == "convoy_priority":
                 cost = self._compute_convoy_priority_cost(agent)
-            elif self._cost_fn == "spillback":
-                cost = self._compute_spillback_cost(agent)
             elif self._cost_fn == "premium_priority":
                 cost = self._compute_premium_priority_cost(agent)
             else:
@@ -2497,8 +2212,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                 label = self._bus_priority_label(agent)
             elif self._cost_fn == "convoy_priority":
                 label = self._convoy_priority_label(agent)
-            elif self._cost_fn == "spillback":
-                label = self._spillback_label(agent)
             elif self._cost_fn == "premium_priority":
                 label = self._premium_priority_label(agent)
             else:
@@ -2550,9 +2263,6 @@ class SumoRewardCostWrapper(ParallelEnv):
                     pw = self._premium_wait.get(agent, np.zeros(0))
                     info["dbg_has_premium"] = int(np.any(hp > 0))
                     info["dbg_premium_wait_max"] = float(pw.max()) if len(pw) > 0 else 0.0
-                elif self._cost_fn == "spillback":
-                    ds = self._downstream_occ.get(agent, np.zeros(0))
-                    info["dbg_downstream_occ_max"] = float(ds.max()) if len(ds) > 0 else 0.0
 
             self._debug_step_counter += 1
 
@@ -2731,8 +2441,8 @@ SUMO_CONFIGS = {
         "n_agents": 21,
     },
     # --- Single intersection (1 agent, asymmetric traffic) ---
-    # Reward = pressure (#out - #in).  External costs (convoy, bus, premium,
-    # spillback) inject special vehicles on side-street (low-demand) approaches
+    # Reward = pressure (#out - #in).  External costs (convoy, bus, premium)
+    # inject special vehicles on side-street (low-demand) approaches
     # via precomputed conflict routes.  Serving them to reduce cost pulls green
     # away from the mainline and worsens pressure.
     #
@@ -2838,11 +2548,6 @@ def make_sumo_vec_env(
     premium_warn_threshold: float = 3.0,
     premium_count_per_injection: int = 1,
     premium_headway: float = 2.0,
-    roadwork_interval_mean: float = 180.0,
-    roadwork_duration_mean: float = 900.0,
-    roadwork_speed: float = 0.05,
-    spillback_occ_threshold: float = 0.30,
-    spillback_warn_threshold: float = 0.18,
     clean_episode_prob: float = 0.0,
     use_gui: bool = False,
     debug: bool = False,
@@ -2959,11 +2664,6 @@ def make_sumo_vec_env(
         premium_warn_threshold=premium_warn_threshold,
         premium_count_per_injection=premium_count_per_injection,
         premium_headway=premium_headway,
-        roadwork_interval_mean=roadwork_interval_mean,
-        roadwork_duration_mean=roadwork_duration_mean,
-        roadwork_speed=roadwork_speed,
-        spillback_occ_threshold=spillback_occ_threshold,
-        spillback_warn_threshold=spillback_warn_threshold,
         clean_episode_prob=clean_episode_prob,
     )
 

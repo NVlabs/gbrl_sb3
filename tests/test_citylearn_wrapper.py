@@ -89,10 +89,35 @@ class TestTimestepIndexing:
 # Arbitrage vs Buffer — cost & label
 # -----------------------------------------------------------------------
 
+class TestArbitrageObs:
+
+    def test_obs_augmented(self, arb_env):
+        """Observation should have 55 dims (54 + steps-until-peak)."""
+        env = arb_env
+        obs, info = env.reset()
+        assert obs.shape == (55,), f"Expected (55,), got {obs.shape}"
+
+        obs, _, _, _, _ = env.step(env.action_space.sample())
+        assert obs.shape == (55,), f"Expected (55,), got {obs.shape}"
+
+    def test_obs_feature_clamped(self, arb_env):
+        """Augmented steps-until-peak must stay in [0, 1]."""
+        env = arb_env
+        obs, info = env.reset()
+
+        for _ in range(200):
+            obs, _, term, trunc, _ = env.step(env.action_space.sample())
+            assert 0.0 <= obs[-1] <= 1.0, (
+                f"Steps-until-peak feature {obs[-1]} outside [0,1]"
+            )
+            if term or trunc:
+                obs, info = env.reset()
+
+
 class TestArbitrageCost:
 
     def test_cost_matches_soc(self, arb_env):
-        """Buffer depletion cost should fire iff critical SOC < safety level."""
+        """Buffer depletion cost should fire iff mean SOC < safety level."""
         env = arb_env
         obs, info = env.reset()
         safety = env._soc_safety_level
@@ -101,20 +126,20 @@ class TestArbitrageCost:
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
-            critical_soc = env._critical_electrical_soc()
+            mean_soc = env._mean_electrical_soc()
             cost = info["cost"]
 
-            if critical_soc is None:
+            if mean_soc is None:
                 assert cost == 0.0
-            elif critical_soc >= safety:
+            elif mean_soc >= safety:
                 assert cost == 0.0, (
-                    f"Cost should be 0 when critical_soc={critical_soc:.4f} >= "
+                    f"Cost should be 0 when mean_soc={mean_soc:.4f} >= "
                     f"safety={safety}, got {cost:.4f}"
                 )
             else:
-                expected = min(1.0, (safety - critical_soc) / safety)
+                expected = min(1.0, (safety - mean_soc) / safety)
                 assert abs(cost - expected) < 1e-6, (
-                    f"Cost mismatch: critical_soc={critical_soc:.4f} "
+                    f"Cost mismatch: mean_soc={mean_soc:.4f} "
                     f"expected={expected:.4f} got={cost:.4f}"
                 )
 
@@ -124,43 +149,61 @@ class TestArbitrageCost:
 
 class TestArbitrageLabel:
 
-    def test_label_requires_conflict_frontier(self, arb_env):
-        """Label=1 requires all three conditions:
-        - critical SOC ≤ safety + band (tight reserve)
-        - price > high_price_threshold (discharge temptation)
-        - some battery is dischargeable
-
-        Label is computed pre-step, so we snapshot SOC and price before
-        stepping and check the returned label against that snapshot.
+    def test_label_phase_aware(self, arb_env):
+        """Label=1 in three phases:
+        1. Prep window + low SOC
+        2. Prep window + high price + adequate SOC
+        3. In-peak + low SOC
         """
         env = arb_env
         obs, info = env.reset()
-        frontier_upper = env._soc_safety_level + env._soc_frontier_band
 
-        for _ in range(200):
-            # Snapshot pre-step state (what the label was computed from)
-            pre_critical_soc = env._critical_electrical_soc()
-            pre_price = env._max_pre_step_price(env._get_buildings())
+        for _ in range(300):
+            ts = env._get_time_step()
+            pre_soc = env._mean_electrical_soc()
+            buildings = env._get_buildings()
+            pre_price = env._max_pre_step_price(buildings)
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                assert pre_critical_soc is not None
-                assert pre_critical_soc <= frontier_upper + 1e-6, (
-                    f"Label=1 but pre-step critical_soc={pre_critical_soc:.4f} "
-                    f"> frontier_upper={frontier_upper:.4f}"
+                in_prep = ts in env._prep_timesteps
+                in_peak = ts in env._peak_timesteps
+                low_soc = (
+                    pre_soc is not None
+                    and pre_soc < env._soc_safety_level
                 )
-                # Must have high price
-                assert pre_price is not None
-                assert env._price_threshold is not None
-                assert pre_price > env._price_threshold - 1e-6, (
-                    f"Label=1 but pre-step price={pre_price:.6f} "
-                    f"<= threshold={env._price_threshold:.6f}"
+                high_price = (
+                    pre_price is not None
+                    and env._high_price_threshold is not None
+                    and pre_price > env._high_price_threshold - 1e-6
+                )
+
+                phase1 = in_prep and low_soc
+                phase2 = in_prep and not low_soc and high_price
+                phase3 = in_peak and low_soc
+                assert phase1 or phase2 or phase3, (
+                    f"Label=1 but no phase matched: ts={ts}, "
+                    f"in_prep={in_prep}, in_peak={in_peak}, "
+                    f"soc={pre_soc}, price={pre_price}"
                 )
 
             if term or trunc:
                 obs, info = env.reset()
+
+    def test_peak_detection(self, arb_env):
+        """Verify that peak and prep windows were detected."""
+        env = arb_env
+        env.reset()
+        env.step(env.action_space.sample())
+        assert len(env._peak_timesteps) > 0, "No peak timesteps detected"
+        assert len(env._prep_timesteps) > 0, "No prep timesteps detected"
+        assert len(env._peak_starts) > 0, "No peak starts detected"
+        overlap = env._prep_timesteps & env._peak_timesteps
+        assert len(overlap) == 0, (
+            f"Prep and peak windows overlap at {sorted(overlap)[:5]}"
+        )
 
 
 # -----------------------------------------------------------------------
@@ -212,20 +255,45 @@ class TestContractDemandCost:
                 obs, info = env.reset()
 
 
-class TestContractDemandLabel:
+class TestContractDemandObs:
 
-    def test_label_cheap_charging_trap(self, demand_env):
-        """Label=1 iff price <= price_low_threshold AND
-        district_nsl >= trap_threshold.
+    def test_obs_augmented(self, demand_env):
+        """Observation should have 55 dims (54 + steps-until-congestion)."""
+        env = demand_env
+        obs, info = env.reset()
+        assert obs.shape == (55,), f"Expected (55,), got {obs.shape}"
 
-        Label is computed pre-step from the fixed NSL/price schedules.
-        """
+        obs, _, _, _, _ = env.step(env.action_space.sample())
+        assert obs.shape == (55,), f"Expected (55,), got {obs.shape}"
+
+    def test_obs_feature_clamped(self, demand_env):
+        """Augmented steps-until-congestion must stay in [0, 1]."""
         env = demand_env
         obs, info = env.reset()
 
         for _ in range(200):
-            # Snapshot pre-step state
-            pre_nsl = env._district_pre_step_nsl()
+            obs, _, term, trunc, _ = env.step(env.action_space.sample())
+            assert 0.0 <= obs[-1] <= 1.0, (
+                f"Steps-until-congestion feature {obs[-1]} outside [0,1]"
+            )
+            if term or trunc:
+                obs, info = env.reset()
+
+
+class TestContractDemandLabel:
+
+    def test_label_phase_aware(self, demand_env):
+        """Label=1 in three phases:
+        1. Prep window + low SOC
+        2. Prep window + high price + adequate SOC
+        3. In-congestion + low SOC
+        """
+        env = demand_env
+        obs, info = env.reset()
+
+        for _ in range(300):
+            ts = env._get_time_step()
+            pre_soc = env._mean_electrical_soc()
             buildings = env._get_buildings()
             pre_price = env._max_pre_step_price(buildings)
 
@@ -233,23 +301,42 @@ class TestContractDemandLabel:
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                assert (
-                    pre_nsl is not None
-                    and pre_price is not None
-                    and env._trap_threshold is not None
-                    and env._price_low_threshold is not None
-                ), "Label=1 but missing pre-step state"
-                assert pre_price <= env._price_low_threshold + 1e-6, (
-                    f"Label=1 but price={pre_price} > "
-                    f"threshold={env._price_low_threshold}"
+                in_prep = ts in env._prep_timesteps
+                in_congestion = ts in env._congestion_timesteps
+                low_soc = (
+                    pre_soc is not None
+                    and pre_soc < env._soc_target
                 )
-                assert pre_nsl >= env._trap_threshold - 1e-6, (
-                    f"Label=1 but nsl={pre_nsl} < "
-                    f"trap_threshold={env._trap_threshold}"
+                high_price = (
+                    pre_price is not None
+                    and env._high_price_threshold is not None
+                    and pre_price > env._high_price_threshold - 1e-6
+                )
+
+                phase1 = in_prep and low_soc
+                phase2 = in_prep and not low_soc and high_price
+                phase3 = in_congestion and low_soc
+                assert phase1 or phase2 or phase3, (
+                    f"Label=1 but no phase matched: ts={ts}, "
+                    f"in_prep={in_prep}, in_congestion={in_congestion}, "
+                    f"soc={pre_soc}, price={pre_price}"
                 )
 
             if term or trunc:
                 obs, info = env.reset()
+
+    def test_congestion_detection(self, demand_env):
+        """Verify that congestion and prep windows were detected."""
+        env = demand_env
+        env.reset()
+        env.step(env.action_space.sample())
+        assert len(env._congestion_timesteps) > 0, "No congestion timesteps detected"
+        assert len(env._prep_timesteps) > 0, "No prep timesteps detected"
+        assert len(env._congestion_starts) > 0, "No congestion starts detected"
+        overlap = env._prep_timesteps & env._congestion_timesteps
+        assert len(overlap) == 0, (
+            f"Prep and congestion windows overlap at {sorted(overlap)[:5]}"
+        )
 
 
 # -----------------------------------------------------------------------
@@ -286,47 +373,88 @@ class TestCarbonAwareCost:
                 obs, info = env.reset()
 
 
-class TestCarbonAwareLabel:
+class TestCarbonAwareObs:
 
-    def test_label_conflict_threshold(self, carbon_env):
-        """Label=1 iff dirty × load × cheap ≥ conflict_threshold.
+    def test_obs_augmented(self, carbon_env):
+        """Observation should have 55 dims (54 + steps-until-dirty)."""
+        env = carbon_env
+        obs, info = env.reset()
+        assert obs.shape == (55,), f"Expected (55,), got {obs.shape}"
 
-        Cheapness uses price_low_threshold as hard gate.
-        Label is computed pre-step from carbon intensity, NSL, and price.
-        """
+        obs, _, _, _, _ = env.step(env.action_space.sample())
+        assert obs.shape == (55,), f"Expected (55,), got {obs.shape}"
+
+    def test_obs_feature_clamped(self, carbon_env):
+        """Augmented steps-until-dirty must stay in [0, 1]."""
         env = carbon_env
         obs, info = env.reset()
 
         for _ in range(200):
-            # Snapshot pre-step state (same accessors the label uses)
+            obs, _, term, trunc, _ = env.step(env.action_space.sample())
+            assert 0.0 <= obs[-1] <= 1.0, (
+                f"Steps-until-dirty feature {obs[-1]} outside [0,1]"
+            )
+            if term or trunc:
+                obs, info = env.reset()
+
+
+class TestCarbonAwareLabel:
+
+    def test_label_phase_aware(self, carbon_env):
+        """Label=1 in three phases:
+        1. Prep window + low SOC
+        2. Prep window + high price + adequate SOC
+        3. In-dirty + low SOC
+        """
+        env = carbon_env
+        obs, info = env.reset()
+
+        for _ in range(300):
+            ts = env._get_time_step()
+            pre_soc = env._mean_electrical_soc()
             buildings = env._get_buildings()
-            pre_carbon = env._max_pre_step_carbon(buildings)
-            pre_nsl = env._district_pre_step_nsl()
             pre_price = env._max_pre_step_price(buildings)
 
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
 
             if info["safety_label"] == 1:
-                assert pre_carbon is not None and pre_nsl is not None and pre_price is not None
-                # Price must be below threshold (hard gate)
-                assert pre_price < env._price_low_threshold + 1e-6, (
-                    f"Label=1 but price={pre_price} >= "
-                    f"price_low_threshold={env._price_low_threshold}"
+                in_prep = ts in env._prep_timesteps
+                in_dirty = ts in env._dirty_timesteps
+                low_soc = (
+                    pre_soc is not None
+                    and pre_soc < env._soc_target
                 )
-                vr = env._carbon_max - env._carbon_threshold
-                dirty = max(0.0, min(1.0, (pre_carbon - env._carbon_threshold) / vr))
-                load = min(1.0, pre_nsl / env._import_scale)
-                pr = env._price_low_threshold - env._price_min
-                cheap = max(0.0, min(1.0, (env._price_low_threshold - pre_price) / pr))
-                conflict = dirty * load * cheap
-                assert conflict >= env._conflict_threshold - 1e-6, (
-                    f"Label=1 but conflict={conflict:.4f} < "
-                    f"threshold={env._conflict_threshold:.4f}"
+                high_price = (
+                    pre_price is not None
+                    and env._high_price_threshold is not None
+                    and pre_price > env._high_price_threshold - 1e-6
+                )
+
+                phase1 = in_prep and low_soc
+                phase2 = in_prep and not low_soc and high_price
+                phase3 = in_dirty and low_soc
+                assert phase1 or phase2 or phase3, (
+                    f"Label=1 but no phase matched: ts={ts}, "
+                    f"in_prep={in_prep}, in_dirty={in_dirty}, "
+                    f"soc={pre_soc}, price={pre_price}"
                 )
 
             if term or trunc:
                 obs, info = env.reset()
+
+    def test_dirty_detection(self, carbon_env):
+        """Verify that dirty-grid and prep windows were detected."""
+        env = carbon_env
+        env.reset()
+        env.step(env.action_space.sample())
+        assert len(env._dirty_timesteps) > 0, "No dirty timesteps detected"
+        assert len(env._prep_timesteps) > 0, "No prep timesteps detected"
+        assert len(env._dirty_starts) > 0, "No dirty starts detected"
+        overlap = env._prep_timesteps & env._dirty_timesteps
+        assert len(overlap) == 0, (
+            f"Prep and dirty windows overlap at {sorted(overlap)[:5]}"
+        )
 
 
 # -----------------------------------------------------------------------
