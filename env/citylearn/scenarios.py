@@ -40,134 +40,232 @@ from utils.helpers import make_cost_vec_env
 # Scenario B — Arbitrage vs Buffer
 # ###########################################################################
 
-DEFAULT_AVB_PRICE_QUANTILE = 0.85
-DEFAULT_AVB_SOC_USABLE_THRESH = 0.15
 DEFAULT_AVB_SOC_SAFETY_LEVEL = 0.30
-DEFAULT_AVB_SOC_FRONTIER_BAND = 0.10
+DEFAULT_AVB_PEAK_PRICE_QUANTILE = 0.90
+DEFAULT_AVB_PREP_HOURS = 6
+DEFAULT_AVB_HIGH_PRICE_QUANTILE = 0.60
 
 
 class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     """CMDP: minimise electricity cost subject to buffer-resilience constraint.
 
-    Cost — critical-battery depletion
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Uses *critical SOC* (min across buildings) instead of mean SOC.
-    One depleted battery is exactly where the reserve problem is real;
-    mean SOC hides that bottleneck.
+    Event-driven design around **peak-price periods** detected from the
+    electricity pricing schedule.  During on-peak hours the reward wants
+    to discharge (sell expensive) while the cost wants to hold reserves.
 
-        cost  =  clamp((safety − critical_soc) / safety,  0,  1)
+    Event detection (at init)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~
+    Peak-price periods are contiguous runs of hours where price exceeds
+    the ``peak_price_quantile``-th percentile.  A prep window of
+    ``prep_hours`` precedes each peak period.
 
-    Label — conflict-only frontier (label=1 → cost, label=0 → reward)
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Label fires only where reward and cost objectives *disagree*:
+    Observation augmentation
+    ~~~~~~~~~~~~~~~~~~~~~~~~
+    Appends one feature: normalised steps until the next peak event
+    (``steps_until / episode_length``).  1.0 = far away, 0.0 = imminent
+    or currently in peak.
 
-        label = 1   iff   critical_soc ≤ safety + band
-                          AND price > high_price_threshold
-                          AND some battery is dischargeable
+    Cost — battery depletion
+    ~~~~~~~~~~~~~~~~~~~~~~~~~
+    ::
 
-    Low-SOC recovery at low price → label=0 (reward and cost both want
-    to charge, no conflict).  Only high-price + tight-reserve states
-    where reward wants to discharge but cost wants to hold go to label=1.
+        cost = clamp((safety − mean_soc) / safety, 0, 1)
 
-    No storage → label = 0.
+    Label — phase-aware peak-price routing
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Three phases trigger label=1:
+
+    1. **Prep + low SOC**: reserves below safety during prep window.
+       Cost branch must charge aggressively before the peak arrives.
+    2. **Prep + high price + adequate SOC**: reserves at target but
+       expensive electricity tempts early discharge.  Cost branch holds.
+    3. **In-peak + low SOC**: peak has started with insufficient reserves.
+       Cost branch must hold / recover.
+
+    **Why Split-RL wins**: CUP's fixed λ over-conserves far from peaks
+    (suppressing profitable off-peak arbitrage) and under-conserves near
+    peaks.  Split-RL routes only peak-adjacent states to the cost policy.
     """
 
     def __init__(
         self,
         env,
-        price_quantile: float = DEFAULT_AVB_PRICE_QUANTILE,
-        soc_usable_thresh: float = DEFAULT_AVB_SOC_USABLE_THRESH,
         soc_safety_level: float = DEFAULT_AVB_SOC_SAFETY_LEVEL,
-        soc_frontier_band: float = DEFAULT_AVB_SOC_FRONTIER_BAND,
+        peak_price_quantile: float = DEFAULT_AVB_PEAK_PRICE_QUANTILE,
+        prep_hours: int = DEFAULT_AVB_PREP_HOURS,
+        high_price_quantile: float = DEFAULT_AVB_HIGH_PRICE_QUANTILE,
     ):
         super().__init__(env)
-        self._price_quantile = price_quantile
-        self._soc_usable_thresh = soc_usable_thresh
         self._soc_safety_level = soc_safety_level
-        self._soc_frontier_band = soc_frontier_band
-        self._price_threshold: Optional[float] = None
+        self._peak_price_quantile = peak_price_quantile
+        self._prep_hours = prep_hours
+        self._high_price_quantile = high_price_quantile
+
+        self._high_price_threshold: Optional[float] = None
+        self._episode_length: int = 720
+        self._peak_timesteps: set = set()
+        self._prep_timesteps: set = set()
+        self._peak_starts: list = []
+
+        # Extend observation space by 1 (normalised steps-until-peak)
+        low = np.append(self.observation_space.low, np.float32(0.0))
+        high = np.append(self.observation_space.high, np.float32(1.0))
+        self.observation_space = gym.spaces.Box(
+            low=low, high=high, dtype=self.observation_space.dtype,
+        )
 
     def _scenario_init(self):
         cl_env = self.unwrapped
         if not (hasattr(cl_env, "buildings") and cl_env.buildings):
             return
-        all_prices = []
-        for b in cl_env.buildings:
+        buildings = cl_env.buildings
+
+        # Build max-price series across buildings
+        n_hours = None
+        price_arrays = []
+        for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
                 ep = b.pricing.electricity_pricing
                 if hasattr(ep, "__len__") and len(ep) > 0:
-                    all_prices.extend(ep)
-        if all_prices:
-            self._price_threshold = float(
-                np.quantile(all_prices, self._price_quantile)
-            )
+                    n_hours = len(ep) if n_hours is None else min(n_hours, len(ep))
+                    price_arrays.append(np.asarray(ep[:n_hours] if n_hours else ep, dtype=float))
+        if not price_arrays or n_hours is None or n_hours == 0:
+            return
+        self._episode_length = n_hours
+        max_price_series = np.max(price_arrays, axis=0)
+
+        # Peak-price threshold
+        peak_threshold = float(np.quantile(max_price_series, self._peak_price_quantile))
+
+        # High-price threshold (for prep+hold label)
+        self._high_price_threshold = float(
+            np.quantile(max_price_series, self._high_price_quantile)
+        )
+
+        # Detect peak-price periods as contiguous runs above threshold
+        is_peak = max_price_series > peak_threshold
+        in_run = False
+        run_start = 0
+        peak_runs = []  # list of (start, end) tuples
+        for t in range(n_hours):
+            if is_peak[t] and not in_run:
+                run_start = t
+                in_run = True
+            elif not is_peak[t] and in_run:
+                peak_runs.append((run_start, t))
+                in_run = False
+        if in_run:
+            peak_runs.append((run_start, n_hours))
+
+        # Build peak and prep timestep sets
+        for start, end in peak_runs:
+            for h in range(start, end):
+                self._peak_timesteps.add(h)
+            self._peak_starts.append(start)
+            prep_start = max(0, start - self._prep_hours)
+            for h in range(prep_start, start):
+                # Don't mark prep hours that overlap with a previous peak
+                if h not in self._peak_timesteps:
+                    self._prep_timesteps.add(h)
+        self._peak_starts.sort()
 
     # -- Helpers -------------------------------------------------------
 
-    def _critical_electrical_soc(self) -> Optional[float]:
-        """Min electrical-storage SOC across buildings (critical battery).
-
-        Uses ``_at_timestep`` (reads ``soc[ts-1]``).  Correct for both
-        post-step (cost) and pre-step (label) because SOC arrays are
-        written during each step; the last-written value is at ``ts-1``.
-        """
+    def _mean_electrical_soc(self) -> Optional[float]:
+        """Mean electrical-storage SOC across buildings (post-step)."""
         soc_values = []
         for b in self._get_buildings():
             if b.electrical_storage is not None:
                 soc = self._at_timestep(b.electrical_storage.soc)
                 if soc is not None:
                     soc_values.append(soc)
-        return float(np.min(soc_values)) if soc_values else None
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _mean_electrical_soc_pre_step(self) -> Optional[float]:
+        """Mean electrical-storage SOC aligned with current observation (pre-step)."""
+        soc_values = []
+        for b in self._get_buildings():
+            if b.electrical_storage is not None:
+                soc = self._at_pre_step(b.electrical_storage.soc)
+                if soc is not None:
+                    soc_values.append(soc)
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _steps_until_next_peak(self, ts: int) -> int:
+        """Steps from *ts* to the start of the next peak period."""
+        if ts in self._peak_timesteps:
+            return 0
+        for ps in self._peak_starts:
+            if ts < ps:
+                return ps - ts
+        return self._episode_length
+
+    def _augment_obs(self, obs):
+        ts = self._get_time_step()
+        steps = self._steps_until_next_peak(ts)
+        norm = np.float32(
+            min(1.0, steps / self._episode_length)
+            if self._episode_length > 0 else 1.0
+        )
+        return np.append(obs, norm)
 
     # -- Cost ----------------------------------------------------------
 
     def _compute_cost(self, obs) -> float:
-        """Critical-battery depletion cost ∈ [0, 1]."""
+        """Battery depletion cost ∈ [0, 1]."""
         self._ensure_base_init()
-        critical_soc = self._critical_electrical_soc()
-        if critical_soc is None:
+        mean_soc = self._mean_electrical_soc()
+        if mean_soc is None:
             return 0.0
-        if critical_soc >= self._soc_safety_level:
+        if mean_soc >= self._soc_safety_level:
             return 0.0
         return float(min(
             1.0,
-            (self._soc_safety_level - critical_soc) / self._soc_safety_level,
+            (self._soc_safety_level - mean_soc) / self._soc_safety_level,
         ))
 
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
+        """Phase-aware label for peak-price reserve events.
+
+        1. Prep + low SOC → label=1 (charge aggressively before peak).
+        2. Prep + high price + adequate SOC → label=1 (hold reserves).
+        3. In-peak + low SOC → label=1 (reserve conflict).
+        """
         self._ensure_base_init()
-        buildings = self._get_buildings()
-        if not buildings:
+        ts = self._get_time_step()  # pre-step
+
+        # Phase 1 & 2: Preparation window
+        if ts in self._prep_timesteps:
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._soc_safety_level:
+                return 1
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1
             return 0
 
-        critical_soc = self._critical_electrical_soc()
-        if critical_soc is None:
-            return 0
+        # Phase 3: In-peak — conflict between discharge (reward) and hold (cost)
+        if ts in self._peak_timesteps:
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._soc_safety_level:
+                return 1
 
-        # Require dischargeable battery — the conflict is about whether
-        # to discharge (reward) or hold (cost).
-        has_dischargeable = False
-        for b in buildings:
-            if b.electrical_storage is not None:
-                soc = self._at_timestep(b.electrical_storage.soc)
-                if soc is not None and soc > self._soc_usable_thresh:
-                    has_dischargeable = True
-                    break
-        if not has_dischargeable:
-            return 0
+        return 0
 
-        # Price gate: conflict only exists when price tempts discharge.
-        if self._price_threshold is None:
-            return 0
-        max_price = self._max_pre_step_price(buildings)
-        if max_price is None or max_price <= self._price_threshold:
-            return 0
+    # -- Gymnasium API overrides (obs augmentation) --------------------
 
-        # Tight-reserve frontier: critical SOC near or below safety.
-        frontier_upper = self._soc_safety_level + self._soc_frontier_band
-        return 1 if critical_soc <= frontier_upper else 0
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        self._ensure_base_init()
+        return self._augment_obs(obs), info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        return self._augment_obs(obs), reward, terminated, truncated, info
 
 
 # ###########################################################################
@@ -177,60 +275,64 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 DEFAULT_CD_CAP_QUANTILE = 0.95
 DEFAULT_CD_CAP_MARGIN = 2.5
 DEFAULT_CD_FRONTIER_FRAC = 0.90
-DEFAULT_CD_PRICE_LOW_QUANTILE = 0.60
-DEFAULT_CD_CHARGE_HEADROOM_FRAC = 0.60
-DEFAULT_CD_SOC_CHARGE_THRESHOLD = 0.80
+DEFAULT_CD_NSL_EVENT_QUANTILE = 0.80
+DEFAULT_CD_SOC_TARGET = 0.50
+DEFAULT_CD_PREP_HOURS = 6
+DEFAULT_CD_HIGH_PRICE_QUANTILE = 0.60
 
 
 class ContractDemandWrapper(CityLearnBaseWrapper):
     """CMDP: minimise electricity cost subject to district import cap.
 
-    A district has a fixed import capacity derived from exogenous load
-    statistics.  The reward still wants cheap electricity (arbitrage);
-    the cost penalises operating near or above the import cap.
+    Event-driven design around **congestion periods** detected from the
+    non-shiftable-load (NSL) schedule.  During high-demand hours the
+    district grid is stressed; battery charging adds to import and
+    threatens the contracted capacity limit.
 
-    Cap computation (at init)
+    Event detection (at init)
     ~~~~~~~~~~~~~~~~~~~~~~~~~
+    Congestion events are contiguous runs of hours where district NSL
+    exceeds the ``nsl_event_quantile``-th percentile.  A prep window of
+    ``prep_hours`` precedes each congestion event.
+
+    Observation augmentation
+    ~~~~~~~~~~~~~~~~~~~~~~~~
+    Appends one feature: normalised steps until the next congestion event
+    (``steps_until / episode_length``).  1.0 = far away, 0.0 = imminent
+    or currently in congestion.
+
+    Cap / frontier (at init, for cost)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
         district_nsl[t] = Σ_i  non_shiftable_load_i[t]
         cap = cap_margin × quantile(district_nsl, cap_quantile)
         frontier = frontier_frac × cap
 
-    The cap is **stationary**: computed once from the exogenous load
-    profile, never updated.
-
-    Cost — soft capacity-stress penalty
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Cost — soft capacity-stress penalty (unchanged)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
         district_import = max(Σ_i NEC_i, 0)
         cost = clamp((district_import − frontier) / (cap − frontier), 0, 1)
 
-    Below the frontier: cost = 0.  At or above the cap: cost ≈ 1.
+    Label — phase-aware congestion routing
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Three phases trigger label=1:
 
-    Label — cheap charging trap with SOC gate (conflict zone)
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    ::
+    1. **Prep + low SOC**: reserves below target during prep window.
+       Cost branch must charge aggressively before congestion starts
+       (during congestion, charging adds to import → cap breach).
+    2. **Prep + high price**: expensive electricity tempts discharge
+       before a congestion event.  Cost branch must hold reserves.
+    3. **In-congestion + low SOC**: congestion is happening and batteries
+       are depleted.  Cost branch must conserve or discharge to offset
+       district import.
 
-        total_charge_power = Σ_i  nominal_power_i
-        trap_threshold = frontier − charge_headroom_frac × total_charge_power
-        label = 1   iff   price ≤ price_low_threshold
-                          AND  district_nsl ≥ trap_threshold
-                          AND  mean_soc < soc_charge_threshold
-
-    The trap threshold is derived from the cost boundary (frontier) and
-    the actual controllable import (battery charge power).  At the
-    threshold, charging ``charge_headroom_frac`` of the fleet would push
-    district import to the frontier.  With the default (0.60), labelled
-    hours are those where more than 60% of fleet charging threatens the
-    cap — the agent cannot freely charge.
-
-    SOC gate: if batteries are nearly full (mean_soc ≥ threshold), the
-    agent won't charge much and the conflict disappears → label=0.
-    This creates a feedback loop: as the agent learns to pre-charge
-    during safe hours, it arrives at trap hours with full batteries,
-    label density drops, and the reward policy regains control.
+    **Why Split-RL wins**: CUP's fixed λ over-conserves during off-peak
+    hours (suppressing profitable arbitrage) and under-conserves before
+    congestion.  Split-RL routes only congestion-adjacent states to the
+    cost policy.
     """
 
     def __init__(
@@ -239,22 +341,34 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
         cap_margin: float = DEFAULT_CD_CAP_MARGIN,
         frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-        price_low_quantile: float = DEFAULT_CD_PRICE_LOW_QUANTILE,
-        charge_headroom_frac: float = DEFAULT_CD_CHARGE_HEADROOM_FRAC,
-        soc_charge_threshold: float = DEFAULT_CD_SOC_CHARGE_THRESHOLD,
+        nsl_event_quantile: float = DEFAULT_CD_NSL_EVENT_QUANTILE,
+        soc_target: float = DEFAULT_CD_SOC_TARGET,
+        prep_hours: int = DEFAULT_CD_PREP_HOURS,
+        high_price_quantile: float = DEFAULT_CD_HIGH_PRICE_QUANTILE,
     ):
         super().__init__(env)
         self._cap_quantile = cap_quantile
         self._cap_margin = cap_margin
         self._frontier_frac = frontier_frac
-        self._price_low_quantile = price_low_quantile
-        self._charge_headroom_frac = charge_headroom_frac
-        self._soc_charge_threshold = soc_charge_threshold
+        self._nsl_event_quantile = nsl_event_quantile
+        self._soc_target = soc_target
+        self._prep_hours = prep_hours
+        self._high_price_quantile = high_price_quantile
 
         self._cap: Optional[float] = None
         self._frontier: Optional[float] = None
-        self._price_low_threshold: Optional[float] = None
-        self._trap_threshold: Optional[float] = None
+        self._high_price_threshold: Optional[float] = None
+        self._episode_length: int = 720
+        self._congestion_timesteps: set = set()
+        self._prep_timesteps: set = set()
+        self._congestion_starts: list = []
+
+        # Extend observation space by 1 (normalised steps-until-congestion)
+        low = np.append(self.observation_space.low, np.float32(0.0))
+        high = np.append(self.observation_space.high, np.float32(1.0))
+        self.observation_space = gym.spaces.Box(
+            low=low, high=high, dtype=self.observation_space.dtype,
+        )
 
     def _scenario_init(self):
         cl_env = self.unwrapped
@@ -263,10 +377,7 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
         buildings = cl_env.buildings
 
-        # Compute district NSL from full exogenous schedule and derive cap.
-        # Note: b.non_shiftable_load is live-appended (grows each step),
-        # but b.energy_simulation._non_shiftable_load holds the full
-        # pre-allocated horizon loaded from CSV at init.
+        # ---- Read full-horizon NSL schedule ----
         n_hours = None
         n_readable = 0
         for b in buildings:
@@ -294,28 +405,41 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
             nsl_full = getattr(es, "_non_shiftable_load", None)
             if nsl_full is not None and hasattr(nsl_full, '__len__') and len(nsl_full) >= n_hours:
                 hourly_totals += np.array(nsl_full[:n_hours], dtype=float)
+
+        self._episode_length = n_hours
+
+        # ---- Cap and frontier for cost ----
         base = float(np.quantile(hourly_totals, self._cap_quantile))
         self._cap = self._cap_margin * base
         self._frontier = self._frontier_frac * self._cap
 
-        # Trap threshold derived from frontier and actual battery charge power
-        total_charge_power = 0.0
-        for b in buildings:
-            es = b.electrical_storage
-            if (es is not None
-                    and hasattr(es, 'nominal_power')
-                    and es.nominal_power is not None):
-                total_charge_power += es.nominal_power
-        if total_charge_power > 0:
-            self._trap_threshold = max(
-                0.0,
-                self._frontier - self._charge_headroom_frac * total_charge_power,
-            )
-        else:
-            # Fallback: no battery info, use 50% of frontier
-            self._trap_threshold = 0.50 * self._frontier
+        # ---- Detect congestion events from NSL schedule ----
+        nsl_threshold = float(np.quantile(hourly_totals, self._nsl_event_quantile))
+        is_congested = hourly_totals > nsl_threshold
+        in_run = False
+        run_start = 0
+        congestion_runs = []
+        for t in range(n_hours):
+            if is_congested[t] and not in_run:
+                run_start = t
+                in_run = True
+            elif not is_congested[t] and in_run:
+                congestion_runs.append((run_start, t))
+                in_run = False
+        if in_run:
+            congestion_runs.append((run_start, n_hours))
 
-        # Price threshold for "cheap" gate
+        for start, end in congestion_runs:
+            for h in range(start, end):
+                self._congestion_timesteps.add(h)
+            self._congestion_starts.append(start)
+            prep_start = max(0, start - self._prep_hours)
+            for h in range(prep_start, start):
+                if h not in self._congestion_timesteps:
+                    self._prep_timesteps.add(h)
+        self._congestion_starts.sort()
+
+        # ---- High-price threshold for prep label ----
         all_prices = []
         for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
@@ -323,8 +447,8 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
                 if hasattr(ep, "__len__") and len(ep) > 0:
                     all_prices.extend(ep[:n_hours])
         if all_prices:
-            self._price_low_threshold = float(
-                np.quantile(all_prices, self._price_low_quantile)
+            self._high_price_threshold = float(
+                np.quantile(all_prices, self._high_price_quantile)
             )
 
     # -- Helpers -------------------------------------------------------
@@ -345,18 +469,43 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
             return None
         return max(total, 0.0)
 
-    def _district_pre_step_nsl(self) -> Optional[float]:
-        """District NSL at current timestep (pre-step, from schedule)."""
-        total = 0.0
-        n = 0
-        ts = self._get_time_step()
+    def _mean_electrical_soc(self) -> Optional[float]:
+        """Mean electrical-storage SOC across buildings (post-step)."""
+        soc_values = []
         for b in self._get_buildings():
-            es = getattr(b, "energy_simulation", None)
-            sched = getattr(es, "_non_shiftable_load", None)
-            if sched is not None and hasattr(sched, "__len__") and ts < len(sched):
-                total += float(sched[ts])
-                n += 1
-        return total if n > 0 else None
+            if b.electrical_storage is not None:
+                soc = self._at_timestep(b.electrical_storage.soc)
+                if soc is not None:
+                    soc_values.append(soc)
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _mean_electrical_soc_pre_step(self) -> Optional[float]:
+        """Mean electrical-storage SOC aligned with current observation (pre-step)."""
+        soc_values = []
+        for b in self._get_buildings():
+            if b.electrical_storage is not None:
+                soc = self._at_pre_step(b.electrical_storage.soc)
+                if soc is not None:
+                    soc_values.append(soc)
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _steps_until_next_congestion(self, ts: int) -> int:
+        """Steps from *ts* to the start of the next congestion period."""
+        if ts in self._congestion_timesteps:
+            return 0
+        for cs in self._congestion_starts:
+            if ts < cs:
+                return cs - ts
+        return self._episode_length
+
+    def _augment_obs(self, obs):
+        ts = self._get_time_step()
+        steps = self._steps_until_next_congestion(ts)
+        norm = np.float32(
+            min(1.0, steps / self._episode_length)
+            if self._episode_length > 0 else 1.0
+        )
+        return np.append(obs, norm)
 
     # -- Cost ----------------------------------------------------------
 
@@ -378,45 +527,48 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         excess = (district_import - self._frontier) / (self._cap - self._frontier)
         return float(min(1.0, excess))
 
-    # -- SOC helper ----------------------------------------------------
-
-    def _mean_electrical_soc(self) -> Optional[float]:
-        """Mean electrical-storage SOC across buildings."""
-        soc_values = []
-        for b in self._get_buildings():
-            if b.electrical_storage is not None:
-                soc = self._at_timestep(b.electrical_storage.soc)
-                if soc is not None:
-                    soc_values.append(soc)
-        return float(np.mean(soc_values)) if soc_values else None
-
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
+        """Phase-aware label for congestion events.
+
+        1. Prep + low SOC → label=1 (charge before congestion).
+        2. Prep + high price → label=1 (hold reserves, resist discharge).
+        3. In-congestion + low SOC → label=1 (depleted during congestion).
+        """
         self._ensure_base_init()
-        if self._price_low_threshold is None or self._trap_threshold is None:
+        ts = self._get_time_step()  # pre-step
+
+        # Phase 1 & 2: Preparation window
+        if ts in self._prep_timesteps:
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._soc_target:
+                return 1
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1
             return 0
 
-        # Price gate: only label when electricity is cheap
-        buildings = self._get_buildings()
-        price = self._max_pre_step_price(buildings)
-        if price is None or price > self._price_low_threshold:
-            return 0
+        # Phase 3: In-congestion — depleted reserves
+        if ts in self._congestion_timesteps:
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._soc_target:
+                return 1
 
-        # Trap: NSL already high enough that charging pushes toward cap
-        nsl = self._district_pre_step_nsl()
-        if nsl is None:
-            return 0
-        if nsl < self._trap_threshold:
-            return 0
+        return 0
 
-        # SOC gate: conflict only exists when batteries have room to charge.
-        # If batteries are nearly full, agent won't charge much → no
-        # additional import → no threat to cap → no conflict.
-        mean_soc = self._mean_electrical_soc()
-        if mean_soc is None:
-            return 0
-        return 1 if mean_soc < self._soc_charge_threshold else 0
+    # -- Gymnasium API overrides (obs augmentation) --------------------
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        self._ensure_base_init()
+        return self._augment_obs(obs), info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        return self._augment_obs(obs), reward, terminated, truncated, info
 
 
 # ###########################################################################
@@ -424,177 +576,182 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_CA_CARBON_QUANTILE = 0.70
-DEFAULT_CA_PRICE_LOW_QUANTILE = 0.60
-DEFAULT_CA_CONFLICT_QUANTILE = 0.80
-DEFAULT_CA_SOC_CHARGE_THRESHOLD = 0.80
+DEFAULT_CA_CARBON_EVENT_QUANTILE = 0.80
+DEFAULT_CA_SOC_TARGET = 0.50
+DEFAULT_CA_PREP_HOURS = 6
+DEFAULT_CA_HIGH_PRICE_QUANTILE = 0.60
 
 
 class CarbonAwareWrapper(CityLearnBaseWrapper):
     """CMDP: minimise electricity cost subject to carbon constraint.
 
-    Cost — dirty-grid import penalty (magnitude-weighted)
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Event-driven design around **dirty-grid periods** detected from the
+    carbon intensity schedule.  During high-carbon hours the reward still
+    wants cheap electricity (which may be dirty grid power); the cost
+    penalises importing when the grid is dirty.
+
+    Event detection (at init)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~
+    Dirty-grid events are contiguous runs of hours where (max) carbon
+    intensity exceeds the ``carbon_event_quantile``-th percentile.
+    A prep window of ``prep_hours`` precedes each dirty event.
+
+    Observation augmentation
+    ~~~~~~~~~~~~~~~~~~~~~~~~
+    Appends one feature: normalised steps until the next dirty-grid event
+    (``steps_until / episode_length``).  1.0 = far away, 0.0 = imminent
+    or currently in a dirty event.
+
+    Cost — dirty-grid import penalty (unchanged)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
         dirty = clamp((carbon − threshold) / (carbon_max − threshold), 0, 1)
         district_import = max(Σ_i NEC_i, 0)
         cost = dirty × clamp(district_import / import_scale, 0, 1)
 
-    where ``import_scale`` is the max of historical district NSL
-    (computed at init as a policy-independent proxy).  Using the max
-    prevents cost saturation — P95 was too low and clipped most dirty-hour
-    imports to 1.0, giving the agent zero gradient.
+    Label — phase-aware dirty-grid routing
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Three phases trigger label=1:
 
-    This scales cost with actual import magnitude — a building importing
-    0.01 kWh contributes far less cost than one importing 10 kWh.
+    1. **Prep + low SOC**: reserves below target during prep window.
+       Cost branch must charge aggressively while the grid is still clean
+       (during dirty periods, importing to charge = carbon penalty).
+    2. **Prep + high price**: expensive electricity tempts discharge
+       before a dirty-grid event.  Cost branch must hold reserves.
+    3. **In-dirty + low SOC**: dirty grid is active and batteries are
+       depleted — no clean reserves to discharge.  Cost branch must
+       conserve.
 
-    Label — dirty-load-cheap conflict with SOC gate
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Adds a cheapness gate to the dirty×load proxy::
-
-        price_low = quantile(max_price_series, price_low_quantile)
-        cheap = clamp((price_low − price) / (price_low − price_min), 0, 1)
-        conflict = dirty × load × cheap
-        label = 1   iff   conflict ≥ conflict_threshold
-                          AND mean_soc < soc_charge_threshold
-
-    where ``conflict_threshold`` is the ``conflict_quantile``-th percentile
-    of the *positive* entries in the full-horizon conflict series.  The
-    cheapness factor is 1 at price_min and 0 at or above price_low_threshold
-    — a hard gate, not a min-max score over the full range.  This filters
-    out hours above the cheap threshold entirely, isolating the genuine
-    conflict: cheap electricity tempts import, but the grid is dirty.
-
-    SOC gate: if batteries are nearly full (mean_soc ≥ threshold), the
-    agent won't import much additional power (no charging) and the
-    conflict disappears → label=0.  This creates a feedback loop: as
-    the agent learns to charge during clean hours, it arrives at dirty
-    cheap hours with full batteries, label density drops, and the
-    reward policy regains control.
+    **Why Split-RL wins**: CUP's fixed λ over-conserves during clean-grid
+    hours and under-conserves before dirty-grid events.  Split-RL routes
+    only dirty-event-adjacent states to the cost policy.
     """
 
     def __init__(
         self,
         env,
         carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-        price_low_quantile: float = DEFAULT_CA_PRICE_LOW_QUANTILE,
-        conflict_quantile: float = DEFAULT_CA_CONFLICT_QUANTILE,
-        soc_charge_threshold: float = DEFAULT_CA_SOC_CHARGE_THRESHOLD,
+        carbon_event_quantile: float = DEFAULT_CA_CARBON_EVENT_QUANTILE,
+        soc_target: float = DEFAULT_CA_SOC_TARGET,
+        prep_hours: int = DEFAULT_CA_PREP_HOURS,
+        high_price_quantile: float = DEFAULT_CA_HIGH_PRICE_QUANTILE,
     ):
         super().__init__(env)
         self._carbon_quantile = carbon_quantile
-        self._price_low_quantile = price_low_quantile
-        self._conflict_quantile = conflict_quantile
-        self._soc_charge_threshold = soc_charge_threshold
+        self._carbon_event_quantile = carbon_event_quantile
+        self._soc_target = soc_target
+        self._prep_hours = prep_hours
+        self._high_price_quantile = high_price_quantile
 
         self._carbon_threshold: Optional[float] = None
-        self._carbon_min: Optional[float] = None
         self._carbon_max: Optional[float] = None
         self._import_scale: Optional[float] = None
-        self._price_min: Optional[float] = None
-        self._price_low_threshold: Optional[float] = None
-        self._conflict_threshold: Optional[float] = None
+        self._high_price_threshold: Optional[float] = None
+        self._episode_length: int = 720
+        self._dirty_timesteps: set = set()
+        self._prep_timesteps: set = set()
+        self._dirty_starts: list = []
+
+        # Extend observation space by 1 (normalised steps-until-dirty)
+        low = np.append(self.observation_space.low, np.float32(0.0))
+        high = np.append(self.observation_space.high, np.float32(1.0))
+        self.observation_space = gym.spaces.Box(
+            low=low, high=high, dtype=self.observation_space.dtype,
+        )
 
     def _scenario_init(self):
         cl_env = self.unwrapped
         if not (hasattr(cl_env, "buildings") and cl_env.buildings):
             return
+        buildings = cl_env.buildings
 
-        all_carbon = []
-        for b in cl_env.buildings:
+        # ---- Carbon intensity schedules ----
+        n_hours = None
+        ci_arrays = []
+        for b in buildings:
             if hasattr(b, "carbon_intensity") and b.carbon_intensity is not None:
                 ci = b.carbon_intensity.carbon_intensity
                 if hasattr(ci, "__len__") and len(ci) > 0:
-                    all_carbon.extend(ci)
-        if all_carbon:
-            self._carbon_threshold = float(
-                np.quantile(all_carbon, self._carbon_quantile)
-            )
-            self._carbon_min = float(np.min(all_carbon))
-            self._carbon_max = float(np.max(all_carbon))
+                    n_hours = len(ci) if n_hours is None else min(n_hours, len(ci))
+                    ci_arrays.append(np.asarray(ci[:n_hours] if n_hours else ci, dtype=float))
+        if not ci_arrays or n_hours is None or n_hours == 0:
+            return
 
-        # Import scale from full-horizon non-shiftable load schedule
-        n_hours = None
+        max_ci_series = np.max(ci_arrays, axis=0)
+
+        # Cost thresholds
+        self._carbon_threshold = float(np.quantile(max_ci_series, self._carbon_quantile))
+        self._carbon_max = float(np.max(max_ci_series))
+
+        # ---- Import scale from NSL schedule ----
         n_readable = 0
-        for b in cl_env.buildings:
+        nsl_n_hours = None
+        for b in buildings:
             es = getattr(b, "energy_simulation", None)
             sched = getattr(es, "_non_shiftable_load", None)
             if sched is not None and hasattr(sched, "__len__") and len(sched) > 0:
-                n_hours = len(sched) if n_hours is None else min(n_hours, len(sched))
+                nsl_n_hours = len(sched) if nsl_n_hours is None else min(nsl_n_hours, len(sched))
                 n_readable += 1
-        if n_hours is None or n_hours == 0:
+        if nsl_n_hours is None or nsl_n_hours == 0:
             raise RuntimeError(
                 "CarbonAwareWrapper: could not read full-horizon "
                 "non_shiftable_load schedule from any building's "
                 "energy_simulation. The scenario cannot compute "
                 "import_scale and will be non-functional."
             )
-        if n_readable != len(cl_env.buildings):
+        if n_readable != len(buildings):
             raise RuntimeError(
-                f"CarbonAwareWrapper: only {n_readable}/{len(cl_env.buildings)} "
+                f"CarbonAwareWrapper: only {n_readable}/{len(buildings)} "
                 "buildings have a readable non_shiftable_load schedule. "
                 "import_scale would be computed from a subset — refusing to continue."
             )
-        hourly_nsl = np.zeros(n_hours)
-        for b in cl_env.buildings:
+        hourly_nsl = np.zeros(nsl_n_hours)
+        for b in buildings:
             es = getattr(b, "energy_simulation", None)
             sched = getattr(es, "_non_shiftable_load", None)
-            if sched is not None and hasattr(sched, "__len__") and len(sched) >= n_hours:
-                hourly_nsl += np.asarray(sched[:n_hours], dtype=float)
+            if sched is not None and hasattr(sched, "__len__") and len(sched) >= nsl_n_hours:
+                hourly_nsl += np.asarray(sched[:nsl_n_hours], dtype=float)
         self._import_scale = float(np.max(hourly_nsl))
+        self._episode_length = n_hours
 
-        # Collect price series for cheapness factor
+        # ---- Detect dirty-grid events from carbon schedule ----
+        event_threshold = float(np.quantile(max_ci_series, self._carbon_event_quantile))
+        is_dirty = max_ci_series > event_threshold
+        in_run = False
+        run_start = 0
+        dirty_runs = []
+        for t in range(n_hours):
+            if is_dirty[t] and not in_run:
+                run_start = t
+                in_run = True
+            elif not is_dirty[t] and in_run:
+                dirty_runs.append((run_start, t))
+                in_run = False
+        if in_run:
+            dirty_runs.append((run_start, n_hours))
+
+        for start, end in dirty_runs:
+            for h in range(start, end):
+                self._dirty_timesteps.add(h)
+            self._dirty_starts.append(start)
+            prep_start = max(0, start - self._prep_hours)
+            for h in range(prep_start, start):
+                if h not in self._dirty_timesteps:
+                    self._prep_timesteps.add(h)
+        self._dirty_starts.sort()
+
+        # ---- High-price threshold for prep label ----
         all_prices = []
-        for b in cl_env.buildings:
+        for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
                 ep = b.pricing.electricity_pricing
-                if hasattr(ep, "__len__") and len(ep) >= n_hours:
-                    all_prices.append(np.asarray(ep[:n_hours], dtype=float))
-        # Use max price across buildings at each timestep (same as label accessor)
+                if hasattr(ep, "__len__") and len(ep) > 0:
+                    all_prices.extend(ep[:n_hours])
         if all_prices:
-            max_price_series = np.max(all_prices, axis=0)
-            self._price_min = float(np.min(max_price_series))
-            self._price_low_threshold = float(
-                np.quantile(max_price_series, self._price_low_quantile)
+            self._high_price_threshold = float(
+                np.quantile(all_prices, self._high_price_quantile)
             )
-
-        # Compute conflict threshold from full-horizon exogenous series
-        if (self._carbon_threshold is not None
-                and self._carbon_max is not None
-                and self._carbon_max > self._carbon_threshold
-                and self._import_scale > 0
-                and self._price_min is not None
-                and self._price_low_threshold is not None
-                and self._price_low_threshold > self._price_min):
-            # Build per-building carbon array aligned with hourly_nsl
-            # Use max carbon across buildings at each timestep
-            all_ci_arrays = []
-            for b in cl_env.buildings:
-                if hasattr(b, "carbon_intensity") and b.carbon_intensity is not None:
-                    ci = b.carbon_intensity.carbon_intensity
-                    if hasattr(ci, "__len__") and len(ci) >= n_hours:
-                        all_ci_arrays.append(np.asarray(ci[:n_hours], dtype=float))
-            if all_ci_arrays:
-                max_ci_series = np.max(all_ci_arrays, axis=0)
-                violation_range = self._carbon_max - self._carbon_threshold
-                dirty_series = np.clip(
-                    (max_ci_series - self._carbon_threshold) / violation_range,
-                    0.0, 1.0,
-                )
-                load_series = np.clip(hourly_nsl / self._import_scale, 0.0, 1.0)
-                price_range = self._price_low_threshold - self._price_min
-                cheap_series = np.clip(
-                    (self._price_low_threshold - max_price_series) / price_range,
-                    0.0, 1.0,
-                )
-                conflict_series = dirty_series * load_series * cheap_series
-                # Threshold over positive values only — zero-conflict
-                # hours are not informative and dilute the threshold
-                positive_conflict = conflict_series[conflict_series > 0]
-                if len(positive_conflict) > 0:
-                    self._conflict_threshold = float(
-                        np.quantile(positive_conflict, self._conflict_quantile)
-                    )
 
     # -- Helpers -------------------------------------------------------
 
@@ -605,13 +762,6 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
             return None
         return self._at_timestep(building.carbon_intensity.carbon_intensity)
 
-    def _pre_step_carbon_intensity(self, building) -> Optional[float]:
-        """Carbon intensity — pre-step accessor (for label)."""
-        if not (hasattr(building, "carbon_intensity")
-                and building.carbon_intensity is not None):
-            return None
-        return self._at_pre_step(building.carbon_intensity.carbon_intensity)
-
     def _max_current_carbon(self, buildings) -> Optional[float]:
         """Max carbon intensity — post-step (for cost)."""
         max_ci = None
@@ -621,14 +771,43 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
                 max_ci = ci
         return max_ci
 
-    def _max_pre_step_carbon(self, buildings) -> Optional[float]:
-        """Max carbon intensity — pre-step (for label)."""
-        max_ci = None
-        for b in buildings:
-            ci = self._pre_step_carbon_intensity(b)
-            if ci is not None and (max_ci is None or ci > max_ci):
-                max_ci = ci
-        return max_ci
+    def _mean_electrical_soc(self) -> Optional[float]:
+        """Mean electrical-storage SOC across buildings (post-step)."""
+        soc_values = []
+        for b in self._get_buildings():
+            if b.electrical_storage is not None:
+                soc = self._at_timestep(b.electrical_storage.soc)
+                if soc is not None:
+                    soc_values.append(soc)
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _mean_electrical_soc_pre_step(self) -> Optional[float]:
+        """Mean electrical-storage SOC aligned with current observation (pre-step)."""
+        soc_values = []
+        for b in self._get_buildings():
+            if b.electrical_storage is not None:
+                soc = self._at_pre_step(b.electrical_storage.soc)
+                if soc is not None:
+                    soc_values.append(soc)
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _steps_until_next_dirty(self, ts: int) -> int:
+        """Steps from *ts* to the start of the next dirty-grid period."""
+        if ts in self._dirty_timesteps:
+            return 0
+        for ds in self._dirty_starts:
+            if ts < ds:
+                return ds - ts
+        return self._episode_length
+
+    def _augment_obs(self, obs):
+        ts = self._get_time_step()
+        steps = self._steps_until_next_dirty(ts)
+        norm = np.float32(
+            min(1.0, steps / self._episode_length)
+            if self._episode_length > 0 else 1.0
+        )
+        return np.append(obs, norm)
 
     # -- Cost ----------------------------------------------------------
 
@@ -644,7 +823,6 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
                 or self._import_scale <= 0):
             return 0.0
 
-        # Dirty factor from max carbon intensity across buildings
         max_ci = self._max_current_carbon(buildings)
         if max_ci is None or max_ci <= self._carbon_threshold:
             return 0.0
@@ -652,7 +830,6 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         violation_range = self._carbon_max - self._carbon_threshold
         dirty = min(1.0, (max_ci - self._carbon_threshold) / violation_range)
 
-        # District positive import magnitude
         total_nec = 0.0
         n = 0
         for b in buildings:
@@ -671,78 +848,46 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
-    def _district_pre_step_nsl(self) -> Optional[float]:
-        """District NSL at current timestep (pre-step, from schedule)."""
-        total = 0.0
-        n = 0
-        ts = self._get_time_step()
-        for b in self._get_buildings():
-            es = getattr(b, "energy_simulation", None)
-            sched = getattr(es, "_non_shiftable_load", None)
-            if sched is not None and hasattr(sched, "__len__") and ts < len(sched):
-                total += float(sched[ts])
-                n += 1
-        return total if n > 0 else None
-
     def _compute_label(self, obs) -> int:
+        """Phase-aware label for dirty-grid events.
+
+        1. Prep + low SOC → label=1 (charge while grid is clean).
+        2. Prep + high price → label=1 (hold reserves, resist discharge).
+        3. In-dirty + low SOC → label=1 (depleted during dirty grid).
+        """
         self._ensure_base_init()
-        buildings = self._get_buildings()
-        if (not buildings
-                or self._carbon_threshold is None
-                or self._carbon_max is None
-                or self._carbon_max <= self._carbon_threshold
-                or self._import_scale is None
-                or self._import_scale <= 0
-                or self._price_min is None
-                or self._price_low_threshold is None
-                or self._price_low_threshold <= self._price_min
-                or self._conflict_threshold is None):
+        ts = self._get_time_step()  # pre-step
+
+        # Phase 1 & 2: Preparation window
+        if ts in self._prep_timesteps:
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._soc_target:
+                return 1
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1
             return 0
 
-        max_carbon = self._max_pre_step_carbon(buildings)
-        if max_carbon is None:
-            return 0
+        # Phase 3: In-dirty — depleted reserves
+        if ts in self._dirty_timesteps:
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._soc_target:
+                return 1
 
-        nsl = self._district_pre_step_nsl()
-        if nsl is None:
-            return 0
+        return 0
 
-        price = self._max_pre_step_price(buildings)
-        if price is None:
-            return 0
+    # -- Gymnasium API overrides (obs augmentation) --------------------
 
-        # Hard price gate: above price_low_threshold, cheap=0 => conflict=0
-        if price >= self._price_low_threshold:
-            return 0
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        self._ensure_base_init()
+        return self._augment_obs(obs), info
 
-        violation_range = self._carbon_max - self._carbon_threshold
-        dirty = max(0.0, min(1.0, (max_carbon - self._carbon_threshold) / violation_range))
-        load = min(1.0, nsl / self._import_scale)
-        price_range = self._price_low_threshold - self._price_min
-        cheap = max(0.0, min(1.0, (self._price_low_threshold - price) / price_range))
-        conflict = dirty * load * cheap
-        if conflict < self._conflict_threshold:
-            return 0
-
-        # SOC gate: conflict only exists when batteries have room to charge.
-        # If batteries are nearly full, agent won't import extra → no
-        # carbon-heavy charging → no conflict.
-        mean_soc = self._mean_electrical_soc()
-        if mean_soc is None:
-            return 0
-        return 1 if mean_soc < self._soc_charge_threshold else 0
-
-    # -- SOC helper ----------------------------------------------------
-
-    def _mean_electrical_soc(self) -> Optional[float]:
-        """Mean electrical-storage SOC across buildings."""
-        soc_values = []
-        for b in self._get_buildings():
-            if b.electrical_storage is not None:
-                soc = self._at_timestep(b.electrical_storage.soc)
-                if soc is not None:
-                    soc_values.append(soc)
-        return float(np.mean(soc_values)) if soc_values else None
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        return self._augment_obs(obs), reward, terminated, truncated, info
 
 
 # ###########################################################################
@@ -754,10 +899,10 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
 def make_arbitrage_vs_buffer_env(
     env_name: str = DEFAULT_SCHEMA,
     episode_time_steps: Optional[int] = None,
-    price_quantile: float = DEFAULT_AVB_PRICE_QUANTILE,
-    soc_usable_thresh: float = DEFAULT_AVB_SOC_USABLE_THRESH,
     soc_safety_level: float = DEFAULT_AVB_SOC_SAFETY_LEVEL,
-    soc_frontier_band: float = DEFAULT_AVB_SOC_FRONTIER_BAND,
+    peak_price_quantile: float = DEFAULT_AVB_PEAK_PRICE_QUANTILE,
+    prep_hours: int = DEFAULT_AVB_PREP_HOURS,
+    high_price_quantile: float = DEFAULT_AVB_HIGH_PRICE_QUANTILE,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -765,10 +910,10 @@ def make_arbitrage_vs_buffer_env(
     )
     return ArbitrageVsBufferWrapper(
         inner,
-        price_quantile=price_quantile,
-        soc_usable_thresh=soc_usable_thresh,
         soc_safety_level=soc_safety_level,
-        soc_frontier_band=soc_frontier_band,
+        peak_price_quantile=peak_price_quantile,
+        prep_hours=prep_hours,
+        high_price_quantile=high_price_quantile,
     )
 
 
@@ -777,19 +922,19 @@ def make_arbitrage_vs_buffer_vec_env(
     n_envs: int = 1,
     seed: Optional[int] = None,
     episode_time_steps: Optional[int] = None,
-    price_quantile: float = DEFAULT_AVB_PRICE_QUANTILE,
-    soc_usable_thresh: float = DEFAULT_AVB_SOC_USABLE_THRESH,
     soc_safety_level: float = DEFAULT_AVB_SOC_SAFETY_LEVEL,
-    soc_frontier_band: float = DEFAULT_AVB_SOC_FRONTIER_BAND,
+    peak_price_quantile: float = DEFAULT_AVB_PEAK_PRICE_QUANTILE,
+    prep_hours: int = DEFAULT_AVB_PREP_HOURS,
+    high_price_quantile: float = DEFAULT_AVB_HIGH_PRICE_QUANTILE,
     **kwargs,
 ):
     env_kwargs = {
         "env_name": env_name,
         "episode_time_steps": episode_time_steps,
-        "price_quantile": price_quantile,
-        "soc_usable_thresh": soc_usable_thresh,
         "soc_safety_level": soc_safety_level,
-        "soc_frontier_band": soc_frontier_band,
+        "peak_price_quantile": peak_price_quantile,
+        "prep_hours": prep_hours,
+        "high_price_quantile": high_price_quantile,
     }
     return make_cost_vec_env(
         make_arbitrage_vs_buffer_env,
@@ -807,8 +952,10 @@ def make_contract_demand_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    price_low_quantile: float = DEFAULT_CD_PRICE_LOW_QUANTILE,
-    charge_headroom_frac: float = DEFAULT_CD_CHARGE_HEADROOM_FRAC,
+    nsl_event_quantile: float = DEFAULT_CD_NSL_EVENT_QUANTILE,
+    soc_target: float = DEFAULT_CD_SOC_TARGET,
+    prep_hours: int = DEFAULT_CD_PREP_HOURS,
+    high_price_quantile: float = DEFAULT_CD_HIGH_PRICE_QUANTILE,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -819,8 +966,10 @@ def make_contract_demand_env(
         cap_quantile=cap_quantile,
         cap_margin=cap_margin,
         frontier_frac=frontier_frac,
-        price_low_quantile=price_low_quantile,
-        charge_headroom_frac=charge_headroom_frac,
+        nsl_event_quantile=nsl_event_quantile,
+        soc_target=soc_target,
+        prep_hours=prep_hours,
+        high_price_quantile=high_price_quantile,
     )
 
 
@@ -832,8 +981,10 @@ def make_contract_demand_vec_env(
     cap_quantile: float = DEFAULT_CD_CAP_QUANTILE,
     cap_margin: float = DEFAULT_CD_CAP_MARGIN,
     frontier_frac: float = DEFAULT_CD_FRONTIER_FRAC,
-    price_low_quantile: float = DEFAULT_CD_PRICE_LOW_QUANTILE,
-    charge_headroom_frac: float = DEFAULT_CD_CHARGE_HEADROOM_FRAC,
+    nsl_event_quantile: float = DEFAULT_CD_NSL_EVENT_QUANTILE,
+    soc_target: float = DEFAULT_CD_SOC_TARGET,
+    prep_hours: int = DEFAULT_CD_PREP_HOURS,
+    high_price_quantile: float = DEFAULT_CD_HIGH_PRICE_QUANTILE,
     **kwargs,
 ):
     env_kwargs = {
@@ -842,8 +993,10 @@ def make_contract_demand_vec_env(
         "cap_quantile": cap_quantile,
         "cap_margin": cap_margin,
         "frontier_frac": frontier_frac,
-        "price_low_quantile": price_low_quantile,
-        "charge_headroom_frac": charge_headroom_frac,
+        "nsl_event_quantile": nsl_event_quantile,
+        "soc_target": soc_target,
+        "prep_hours": prep_hours,
+        "high_price_quantile": high_price_quantile,
     }
     return make_cost_vec_env(
         make_contract_demand_env,
@@ -859,8 +1012,10 @@ def make_carbon_aware_env(
     env_name: str = DEFAULT_SCHEMA,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-    price_low_quantile: float = DEFAULT_CA_PRICE_LOW_QUANTILE,
-    conflict_quantile: float = DEFAULT_CA_CONFLICT_QUANTILE,
+    carbon_event_quantile: float = DEFAULT_CA_CARBON_EVENT_QUANTILE,
+    soc_target: float = DEFAULT_CA_SOC_TARGET,
+    prep_hours: int = DEFAULT_CA_PREP_HOURS,
+    high_price_quantile: float = DEFAULT_CA_HIGH_PRICE_QUANTILE,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -869,8 +1024,10 @@ def make_carbon_aware_env(
     return CarbonAwareWrapper(
         inner,
         carbon_quantile=carbon_quantile,
-        price_low_quantile=price_low_quantile,
-        conflict_quantile=conflict_quantile,
+        carbon_event_quantile=carbon_event_quantile,
+        soc_target=soc_target,
+        prep_hours=prep_hours,
+        high_price_quantile=high_price_quantile,
     )
 
 
@@ -880,16 +1037,20 @@ def make_carbon_aware_vec_env(
     seed: Optional[int] = None,
     episode_time_steps: Optional[int] = None,
     carbon_quantile: float = DEFAULT_CA_CARBON_QUANTILE,
-    price_low_quantile: float = DEFAULT_CA_PRICE_LOW_QUANTILE,
-    conflict_quantile: float = DEFAULT_CA_CONFLICT_QUANTILE,
+    carbon_event_quantile: float = DEFAULT_CA_CARBON_EVENT_QUANTILE,
+    soc_target: float = DEFAULT_CA_SOC_TARGET,
+    prep_hours: int = DEFAULT_CA_PREP_HOURS,
+    high_price_quantile: float = DEFAULT_CA_HIGH_PRICE_QUANTILE,
     **kwargs,
 ):
     env_kwargs = {
         "env_name": env_name,
         "episode_time_steps": episode_time_steps,
         "carbon_quantile": carbon_quantile,
-        "price_low_quantile": price_low_quantile,
-        "conflict_quantile": conflict_quantile,
+        "carbon_event_quantile": carbon_event_quantile,
+        "soc_target": soc_target,
+        "prep_hours": prep_hours,
+        "high_price_quantile": high_price_quantile,
     }
     return make_cost_vec_env(
         make_carbon_aware_env,
@@ -1253,10 +1414,21 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
         return self._episode_length  # no more events
 
     def _mean_electrical_soc(self) -> Optional[float]:
+        """Mean electrical-storage SOC (post-step)."""
         soc_values = []
         for b in self._get_buildings():
             if b.electrical_storage is not None:
                 soc = self._at_timestep(b.electrical_storage.soc)
+                if soc is not None:
+                    soc_values.append(soc)
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _mean_electrical_soc_pre_step(self) -> Optional[float]:
+        """Mean electrical-storage SOC aligned with current observation (pre-step)."""
+        soc_values = []
+        for b in self._get_buildings():
+            if b.electrical_storage is not None:
+                soc = self._at_pre_step(b.electrical_storage.soc)
                 if soc is not None:
                     soc_values.append(soc)
         return float(np.mean(soc_values)) if soc_values else None
@@ -1308,7 +1480,7 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 
         # Phase 1 & 2: Preparation window — cost branch owns reserves
         if 0 < steps_until <= self._prep_window:
-            mean_soc = self._mean_electrical_soc()
+            mean_soc = self._mean_electrical_soc_pre_step()
             # Low SOC: must charge aggressively regardless of price
             if mean_soc is not None and mean_soc < self._soc_target:
                 return 1
@@ -1322,7 +1494,7 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 
         # Phase 3: In-event recovery — cost branch manages SOC deficit
         if steps_until == 0:
-            mean_soc = self._mean_electrical_soc()
+            mean_soc = self._mean_electrical_soc_pre_step()
             if mean_soc is not None and mean_soc < self._soc_target:
                 return 1
 
@@ -1506,10 +1678,21 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
         return self._episode_length  # no more buffers
 
     def _mean_electrical_soc(self) -> Optional[float]:
+        """Mean electrical-storage SOC (post-step)."""
         soc_values = []
         for b in self._get_buildings():
             if b.electrical_storage is not None:
                 soc = self._at_timestep(b.electrical_storage.soc)
+                if soc is not None:
+                    soc_values.append(soc)
+        return float(np.mean(soc_values)) if soc_values else None
+
+    def _mean_electrical_soc_pre_step(self) -> Optional[float]:
+        """Mean electrical-storage SOC aligned with current observation (pre-step)."""
+        soc_values = []
+        for b in self._get_buildings():
+            if b.electrical_storage is not None:
+                soc = self._at_pre_step(b.electrical_storage.soc)
                 if soc is not None:
                     soc_values.append(soc)
         return float(np.mean(soc_values)) if soc_values else None
@@ -1553,7 +1736,7 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
 
         # Phase 1 & 2: Pre-sunset preparation
         if ts in self._prep_timesteps:
-            mean_soc = self._mean_electrical_soc()
+            mean_soc = self._mean_electrical_soc_pre_step()
             # Low SOC: must charge aggressively
             if mean_soc is not None and mean_soc < self._soc_reserve:
                 return 1
@@ -1567,7 +1750,7 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
 
         # Phase 3: In-buffer recovery
         if ts in self._buffer_timesteps:
-            mean_soc = self._mean_electrical_soc()
+            mean_soc = self._mean_electrical_soc_pre_step()
             if mean_soc is not None and mean_soc < self._soc_reserve:
                 return 1
 
