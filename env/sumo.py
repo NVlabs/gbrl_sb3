@@ -1913,9 +1913,19 @@ class SumoRewardCostWrapper(ParallelEnv):
         try:
             obs, infos = self._env.reset(seed=seed, options=options)
         except Exception:
-            # Kill any lingering SUMO process and retry
+            # Kill any lingering SUMO process and TraCI state so the
+            # next reset() doesn't trip over a stale connection.
             try:
                 self._env.close()
+            except Exception:
+                pass
+            # Force-clear TraCI's global connection registry so that
+            # sumo_rl's next reset() → __init__() → traci.start()
+            # doesn't hit "Connection 'default' is already active."
+            try:
+                import traci
+                if hasattr(traci, '_connections'):
+                    traci._connections.pop("default", None)
             except Exception:
                 pass
             obs, infos = self._env.reset(seed=seed, options=options)
@@ -2512,21 +2522,50 @@ def make_sumo_raw_env(
     """
     import sumo_rl
 
-    env = sumo_rl.parallel_env(
-        net_file=net_file,
-        route_file=route_file,
-        num_seconds=num_seconds,
-        delta_time=delta_time,
-        yellow_time=yellow_time,
-        min_green=min_green,
-        max_green=max_green,
-        reward_fn=reward_fn,
-        sumo_seed=sumo_seed,
-        use_gui=use_gui,
-        add_system_info=add_system_info,
-        add_per_agent_info=add_per_agent_info,
-    )
-    return env
+    # Retry env construction — libsumo can fail transiently with
+    # "A network was not yet constructed" if a previous trial left
+    # stale state in the process.
+    last_err = None
+    for _attempt in range(3):
+        try:
+            env = sumo_rl.parallel_env(
+                net_file=net_file,
+                route_file=route_file,
+                num_seconds=num_seconds,
+                delta_time=delta_time,
+                yellow_time=yellow_time,
+                min_green=min_green,
+                max_green=max_green,
+                reward_fn=reward_fn,
+                sumo_seed=sumo_seed,
+                use_gui=use_gui,
+                add_system_info=add_system_info,
+                add_per_agent_info=add_per_agent_info,
+            )
+            return env
+        except Exception as e:
+            last_err = e
+            import warnings, time
+            warnings.warn(f"make_sumo_raw_env attempt {_attempt+1}/3 failed: {e}")
+            # Force-clear any stale TraCI / libsumo state
+            try:
+                import traci
+                traci.close()
+            except Exception:
+                pass
+            try:
+                import traci
+                if hasattr(traci, '_connections'):
+                    traci._connections.pop("default", None)
+            except Exception:
+                pass
+            try:
+                import libsumo
+                libsumo.close()
+            except Exception:
+                pass
+            time.sleep(1)
+    raise last_err  # all retries exhausted
 
 
 def make_sumo_vec_env(

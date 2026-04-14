@@ -874,11 +874,22 @@ if __name__ == "__main__":
                     traceback.print_exc(file=sys.stderr)
                     raise
                 finally:
-                    # Clean up any leftover TraCI connections so the next
-                    # trial in this agent process can start fresh.
+                    # Clean up any leftover TraCI/libsumo connections so the
+                    # next trial in this agent process can start fresh.
                     try:
                         import traci
                         traci.close()
+                    except Exception:
+                        pass
+                    try:
+                        import traci
+                        if hasattr(traci, '_connections'):
+                            traci._connections.pop("default", None)
+                    except Exception:
+                        pass
+                    try:
+                        import libsumo
+                        libsumo.close()
                     except Exception:
                         pass
 
@@ -973,6 +984,24 @@ if __name__ == "__main__":
                         traceback.print_exc(file=sys.stderr)
                         _err[0] = e
                         raise
+                    finally:
+                        # Clean up leftover TraCI/libsumo state
+                        try:
+                            import traci
+                            traci.close()
+                        except Exception:
+                            pass
+                        try:
+                            import traci
+                            if hasattr(traci, '_connections'):
+                                traci._connections.pop("default", None)
+                        except Exception:
+                            pass
+                        try:
+                            import libsumo
+                            libsumo.close()
+                        except Exception:
+                            pass
 
                 wandb.agent(sweep_id, function=_sweep_train, count=1)
 
