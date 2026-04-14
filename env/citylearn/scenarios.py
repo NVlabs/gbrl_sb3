@@ -43,7 +43,8 @@ from utils.helpers import make_cost_vec_env
 DEFAULT_AVB_SOC_SAFETY_LEVEL = 0.30
 DEFAULT_AVB_PEAK_PRICE_QUANTILE = 0.92
 DEFAULT_AVB_PREP_HOURS = 6
-DEFAULT_AVB_HIGH_PRICE_QUANTILE = 0.60
+DEFAULT_AVB_HIGH_PRICE_QUANTILE = 0.75
+DEFAULT_AVB_EMERGENCY_SOC = 0.20
 
 
 class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
@@ -76,15 +77,18 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 
     Label — hard-routing state partition
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes event-adjacent states to the cost branch for both
-    prevention and recovery:
+    label=1 routes only in-peak states to the cost branch:
 
-    1. **Prep / in-peak + low SOC** (recovery): reserves depleted near
-       a peak event — cost branch owns corrective charging / holding.
-    2. **Prep / in-peak + adequate SOC + high price** (frontier): reserves
-       OK but sell temptation threatens depletion — cost branch holds.
+    1. **In-peak + high price** (frontier): sell temptation during
+       peak — cost branch holds reserves.  The high-price threshold
+       is Q(0.75) of *peak-hour* prices (not global), so it is
+       discriminative within peak periods.
+    2. **In-peak + emergency low SOC** (backstop): reserves critically
+       depleted during peak — cost branch owns corrective control.
 
-    Off-event states are label=0: reward branch owns freely.
+    Prep-window labels and mild-SOC recovery are removed to keep
+    label density low and stable (~3-4%).  Off-peak states are
+    always label=0: reward branch owns freely.
     """
 
     def __init__(
@@ -94,10 +98,12 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         peak_price_quantile: float = DEFAULT_AVB_PEAK_PRICE_QUANTILE,
         prep_hours: int = DEFAULT_AVB_PREP_HOURS,
         high_price_quantile: float = DEFAULT_AVB_HIGH_PRICE_QUANTILE,
+        emergency_soc: float = DEFAULT_AVB_EMERGENCY_SOC,
     ):
         super().__init__(env)
         self._soc_safety_level = soc_safety_level
         self._peak_price_quantile = peak_price_quantile
+        self._emergency_soc = emergency_soc
         self._prep_hours = prep_hours
         self._high_price_quantile = high_price_quantile
 
@@ -139,11 +145,6 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         # Peak-price threshold
         peak_threshold = float(np.quantile(max_price_series, self._peak_price_quantile))
 
-        # High-price threshold (for prep+hold label)
-        self._high_price_threshold = float(
-            np.quantile(max_price_series, self._high_price_quantile)
-        )
-
         # Detect peak-price periods as contiguous runs at or above threshold.
         # Using >= is robust to discrete pricing where the quantile can land
         # exactly on the top tier (> would yield zero peaks in that case).
@@ -172,6 +173,18 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
                 if h not in self._peak_timesteps:
                     self._prep_timesteps.add(h)
         self._peak_starts.sort()
+
+        # High-price threshold from *peak-hour* prices only.
+        # Global Q(0.75) is trivially exceeded by peak hours (which are
+        # Q(0.92)+), collapsing "in_peak + high_price" to just "in_peak".
+        # Computing from the peak-hour sub-distribution makes the frontier
+        # discriminative within peak periods.
+        peak_indices = sorted(self._peak_timesteps)
+        if peak_indices:
+            peak_prices = max_price_series[peak_indices]
+            self._high_price_threshold = float(
+                np.quantile(peak_prices, self._high_price_quantile)
+            )
 
     # -- Helpers -------------------------------------------------------
 
@@ -231,28 +244,28 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns peak-adjacent states.
+        """Hard-routing label: cost branch owns in-peak states only.
 
-        Recovery: prep/peak + low SOC → cost branch charges/preserves.
-        Frontier: prep/peak + adequate SOC + high price → cost branch holds.
+        Frontier: in-peak + high price → cost branch holds.
+        Emergency: in-peak + critically low SOC → cost branch recovers.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        if ts not in self._prep_timesteps and ts not in self._peak_timesteps:
+        if ts not in self._peak_timesteps:
             return 0
 
-        # Recovery: low SOC near event — cost branch owns
-        mean_soc = self._mean_electrical_soc_pre_step()
-        if mean_soc is not None and mean_soc < self._soc_safety_level:
-            return 1
-
-        # Frontier: adequate SOC + high price — sell temptation
+        # Frontier: high price sell temptation during peak
         if self._high_price_threshold is not None:
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
             if price is not None and price > self._high_price_threshold:
                 return 1
+
+        # Emergency backstop: critically low SOC during peak
+        mean_soc = self._mean_electrical_soc_pre_step()
+        if mean_soc is not None and mean_soc < self._emergency_soc:
+            return 1
 
         return 0
 
@@ -279,7 +292,7 @@ DEFAULT_CD_NSL_EVENT_QUANTILE = 0.80
 DEFAULT_CD_SOC_TARGET = 0.50
 DEFAULT_CD_PREP_HOURS = 6
 DEFAULT_CD_HIGH_PRICE_QUANTILE = 0.60
-DEFAULT_CD_LOW_PRICE_QUANTILE = 0.40
+DEFAULT_CD_LOW_PRICE_QUANTILE = 0.25
 
 
 class ContractDemandWrapper(CityLearnBaseWrapper):
@@ -319,21 +332,17 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
     Label — hard-routing state partition
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes congestion-adjacent states to the cost branch:
+    label=1 routes only in-congestion + low-price states to the cost
+    branch:
 
-    1. **Prep + low SOC** (recovery): reserves depleted before congestion —
-       cost branch owns aggressive charging.
-    2. **Prep + high price** (frontier): sell temptation before congestion —
-       cost branch holds reserves.
-    3. **In-congestion + low SOC** (recovery): reserves depleted during
-       congestion — cost branch manages corrective control.
-    4. **In-congestion + low price** (frontier): genuinely cheap electricity
-       (below low-price threshold) tempts charging/importing — but import
-       during congestion pushes toward the capacity cap.  Cost branch
-       suppresses import.  Mid-price states during congestion are label=0:
-       neither sell temptation nor strong charge temptation.
+    1. **In-congestion + low price** (frontier): genuinely cheap
+       electricity tempts charging/importing — but import during
+       congestion pushes toward the capacity cap.  Cost branch
+       suppresses import.
 
-    Off-event states are label=0: reward branch owns.
+    All prep-window labels and SOC-based recovery labels are removed
+    to keep label density low and stable (~5%).  Off-congestion states
+    are always label=0: reward branch owns.
     """
 
     def __init__(
@@ -538,39 +547,22 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns congestion-adjacent states.
+        """Hard-routing label: cost branch owns in-congestion + low price.
 
-        Recovery: prep/congestion + low SOC → cost branch charges/conserves.
-        Frontier: prep + high price → cost branch holds reserves.
         Frontier: in-congestion + low price → cost branch suppresses import.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # Preparation window
-        if ts in self._prep_timesteps:
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._soc_target:
-                return 1
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
+        if ts not in self._congestion_timesteps:
             return 0
 
-        # In-congestion
-        if ts in self._congestion_timesteps:
-            # Recovery: low SOC during congestion
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._soc_target:
+        # Frontier: low price during congestion tempts charging → import stress
+        if self._low_price_threshold is not None:
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if price is not None and price <= self._low_price_threshold:
                 return 1
-            # Frontier: genuinely low price tempts charging → increases import
-            if self._low_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price <= self._low_price_threshold:
-                    return 1
 
         return 0
 
@@ -595,7 +587,7 @@ DEFAULT_CA_CARBON_EVENT_QUANTILE = 0.80
 DEFAULT_CA_SOC_TARGET = 0.50
 DEFAULT_CA_PREP_HOURS = 6
 DEFAULT_CA_HIGH_PRICE_QUANTILE = 0.60
-DEFAULT_CA_LOW_PRICE_QUANTILE = 0.40
+DEFAULT_CA_LOW_PRICE_QUANTILE = 0.25
 
 
 class CarbonAwareWrapper(CityLearnBaseWrapper):
@@ -628,19 +620,15 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
 
     Label — hard-routing state partition
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes dirty-grid-adjacent states to the cost branch:
+    label=1 routes only in-dirty + low-price states to the cost branch:
 
-    1. **Prep + low SOC** (recovery): reserves depleted before dirty grid —
-       cost branch charges while grid is still clean.
-    2. **Prep + high price** (frontier): sell temptation before dirty grid —
-       cost branch holds reserves.
-    3. **In-dirty + low SOC** (recovery): reserves depleted during dirty
-       grid — cost branch conserves to avoid dirty imports.
-    4. **In-dirty + low price** (frontier): cheap electricity tempts
+    1. **In-dirty + low price** (frontier): cheap electricity tempts
        charging/importing — but import during dirty grid incurs carbon
        penalty.  Cost branch suppresses dirty import.
 
-    Off-event states are label=0: reward branch owns.
+    All prep-window labels and SOC-based recovery labels are removed
+    to keep label density low and stable (~5%).  Off-dirty states are
+    always label=0: reward branch owns.
     """
 
     def __init__(
@@ -873,39 +861,22 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns dirty-grid-adjacent states.
+        """Hard-routing label: cost branch owns in-dirty + low price.
 
-        Recovery: prep/dirty + low SOC → cost branch charges/conserves.
-        Frontier: prep + high price → cost branch holds reserves.
         Frontier: in-dirty + low price → cost branch suppresses dirty import.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # Preparation window
-        if ts in self._prep_timesteps:
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._soc_target:
-                return 1
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
+        if ts not in self._dirty_timesteps:
             return 0
 
-        # In-dirty
-        if ts in self._dirty_timesteps:
-            # Recovery: low SOC during dirty grid
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._soc_target:
+        # Frontier: low price during dirty grid tempts charging → dirty import
+        if self._low_price_threshold is not None:
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if price is not None and price <= self._low_price_threshold:
                 return 1
-            # Frontier: genuinely low price tempts charging → dirty import
-            if self._low_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price <= self._low_price_threshold:
-                    return 1
 
         return 0
 
@@ -934,6 +905,7 @@ def make_arbitrage_vs_buffer_env(
     peak_price_quantile: float = DEFAULT_AVB_PEAK_PRICE_QUANTILE,
     prep_hours: int = DEFAULT_AVB_PREP_HOURS,
     high_price_quantile: float = DEFAULT_AVB_HIGH_PRICE_QUANTILE,
+    emergency_soc: float = DEFAULT_AVB_EMERGENCY_SOC,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -945,6 +917,7 @@ def make_arbitrage_vs_buffer_env(
         peak_price_quantile=peak_price_quantile,
         prep_hours=prep_hours,
         high_price_quantile=high_price_quantile,
+        emergency_soc=emergency_soc,
     )
 
 
@@ -957,6 +930,7 @@ def make_arbitrage_vs_buffer_vec_env(
     peak_price_quantile: float = DEFAULT_AVB_PEAK_PRICE_QUANTILE,
     prep_hours: int = DEFAULT_AVB_PREP_HOURS,
     high_price_quantile: float = DEFAULT_AVB_HIGH_PRICE_QUANTILE,
+    emergency_soc: float = DEFAULT_AVB_EMERGENCY_SOC,
     **kwargs,
 ):
     env_kwargs = {
@@ -966,6 +940,7 @@ def make_arbitrage_vs_buffer_vec_env(
         "peak_price_quantile": peak_price_quantile,
         "prep_hours": prep_hours,
         "high_price_quantile": high_price_quantile,
+        "emergency_soc": emergency_soc,
     }
     return make_cost_vec_env(
         make_arbitrage_vs_buffer_env,
@@ -1105,8 +1080,9 @@ def make_carbon_aware_vec_env(
 
 DEFAULT_PR_PEAK_TARGET_QUANTILE = 0.75
 DEFAULT_PR_PEAK_CAP_MARGIN = 1.5
-DEFAULT_PR_PRICE_LOW_QUANTILE = 0.60
+DEFAULT_PR_PRICE_LOW_QUANTILE = 0.35
 DEFAULT_PR_CHARGE_HEADROOM_FRAC = 0.50
+DEFAULT_PR_RATCHET_MARGIN = 1.15
 
 
 class PeakRatchetWrapper(CityLearnBaseWrapper):
@@ -1166,12 +1142,14 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
         peak_cap_margin: float = DEFAULT_PR_PEAK_CAP_MARGIN,
         price_low_quantile: float = DEFAULT_PR_PRICE_LOW_QUANTILE,
         charge_headroom_frac: float = DEFAULT_PR_CHARGE_HEADROOM_FRAC,
+        ratchet_margin: float = DEFAULT_PR_RATCHET_MARGIN,
     ):
         super().__init__(env)
         self._peak_target_quantile = peak_target_quantile
         self._peak_cap_margin = peak_cap_margin
         self._price_low_quantile = price_low_quantile
         self._charge_headroom_frac = charge_headroom_frac
+        self._ratchet_margin = ratchet_margin
 
         self._peak_target: Optional[float] = None
         self._peak_cap: Optional[float] = None
@@ -1208,16 +1186,18 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
                     and es.nominal_power is not None):
                 self._total_charge_power += es.nominal_power
 
-        # Price threshold
-        all_prices = []
+        # Price threshold — per-timestep max across buildings
+        # (matches _max_pre_step_price used at decision time)
+        raw_price_arrays = []
         for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
                 ep = b.pricing.electricity_pricing
                 if hasattr(ep, "__len__") and len(ep) > 0:
-                    all_prices.extend(ep[:n_hours])
-        if all_prices:
+                    raw_price_arrays.append(np.asarray(ep[:n_hours], dtype=float))
+        if raw_price_arrays:
+            max_price_series = np.max(raw_price_arrays, axis=0)
             self._price_low_threshold = float(
-                np.quantile(all_prices, self._price_low_quantile)
+                np.quantile(max_price_series, self._price_low_quantile)
             )
 
     @staticmethod
@@ -1312,8 +1292,9 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
             return 0
 
         # Would charging push import above the current ratchet level?
+        # Apply margin so only clear threats are routed to cost branch.
         potential = nsl + self._charge_headroom_frac * self._total_charge_power
-        threshold = max(self._running_peak, self._peak_target)
+        threshold = self._ratchet_margin * max(self._running_peak, self._peak_target)
         return 1 if potential > threshold else 0
 
     # -- Gymnasium API overrides (obs augmentation + ratchet reset) -----
@@ -1336,8 +1317,9 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
 DEFAULT_DR_EVENT_STARTS: Tuple[int, ...] = (168, 360, 528)
 DEFAULT_DR_EVENT_DURATION = 12
 DEFAULT_DR_SOC_TARGET = 0.80
-DEFAULT_DR_PREP_WINDOW = 24
-DEFAULT_DR_HIGH_PRICE_QUANTILE = 0.60
+DEFAULT_DR_PREP_WINDOW = 3
+DEFAULT_DR_HIGH_PRICE_QUANTILE = 0.75
+DEFAULT_DR_EMERGENCY_SOC = 0.40
 
 
 class DemandResponseWrapper(CityLearnBaseWrapper):
@@ -1368,15 +1350,14 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     label=1 routes event-adjacent states to the cost branch:
 
-    1. **Prep + low SOC** (recovery): reserves depleted before event —
-       cost branch owns aggressive charging.
-    2. **Prep + high price** (frontier): sell temptation before event —
-       cost branch holds reserves.
-    3. **In-event + low SOC** (recovery): reserves depleted during event —
-       cost branch manages corrective control.
-    4. **In-event + adequate SOC + high price** (frontier): reserves OK
-       but sell temptation threatens depletion — cost branch holds.
+    1. **Short prep + high price** (frontier): sell temptation shortly
+       before event — cost branch holds reserves.
+    2. **In-event + high price** (frontier): sell temptation during
+       event — cost branch holds reserves.
+    3. **In-event + emergency low SOC** (backstop): reserves critically
+       depleted during event — cost branch owns corrective control.
 
+    Prep window reduced to 3h.  Prep-SOC labels removed.
     Off-event states are label=0: reward branch owns.
     """
 
@@ -1388,6 +1369,7 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
         soc_target: float = DEFAULT_DR_SOC_TARGET,
         prep_window: int = DEFAULT_DR_PREP_WINDOW,
         high_price_quantile: float = DEFAULT_DR_HIGH_PRICE_QUANTILE,
+        emergency_soc: float = DEFAULT_DR_EMERGENCY_SOC,
     ):
         super().__init__(env)
         self._event_starts = tuple(sorted(event_starts))
@@ -1395,6 +1377,7 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
         self._soc_target = soc_target
         self._prep_window = prep_window
         self._high_price_quantile = high_price_quantile
+        self._emergency_soc = emergency_soc
 
         self._high_price_threshold: Optional[float] = None
         self._episode_length: int = 720  # updated in _scenario_init
@@ -1420,16 +1403,18 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
                 self._episode_length = len(sched)
                 break
 
-        # High-price threshold
-        all_prices = []
+        # High-price threshold — per-timestep max across buildings
+        # (matches _max_pre_step_price used at decision time)
+        raw_price_arrays = []
         for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
                 ep = b.pricing.electricity_pricing
                 if hasattr(ep, "__len__") and len(ep) > 0:
-                    all_prices.extend(ep[:self._episode_length])
-        if all_prices:
+                    raw_price_arrays.append(np.asarray(ep[:self._episode_length], dtype=float))
+        if raw_price_arrays:
+            max_price_series = np.max(raw_price_arrays, axis=0)
             self._high_price_threshold = float(
-                np.quantile(all_prices, self._high_price_quantile)
+                np.quantile(max_price_series, self._high_price_quantile)
             )
 
     # -- Helpers -------------------------------------------------------
@@ -1500,19 +1485,16 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
     def _compute_label(self, obs) -> int:
         """Hard-routing label: cost branch owns event-adjacent states.
 
-        Recovery: prep/event + low SOC → cost branch charges/recovers.
-        Frontier: prep + high price, event + adequate SOC + high price.
+        Frontier: short-prep/event + high price → cost branch holds.
+        Emergency: in-event + critically low SOC → cost branch recovers.
         """
         self._ensure_base_init()
 
         ts = self._get_time_step()  # pre-step
         steps_until = self._steps_until_next_event(ts)
 
-        # Preparation window
+        # Short preparation window — frontier only (no SOC labels)
         if 0 < steps_until <= self._prep_window:
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._soc_target:
-                return 1
             if self._high_price_threshold is not None:
                 buildings = self._get_buildings()
                 price = self._max_pre_step_price(buildings)
@@ -1522,17 +1504,16 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 
         # In-event
         if steps_until == 0:
+            # Frontier: high price sell temptation during event
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1
+            # Emergency backstop: critically low SOC during event
             mean_soc = self._mean_electrical_soc_pre_step()
-            # Recovery: low SOC during event
-            if mean_soc is not None and mean_soc < self._soc_target:
+            if mean_soc is not None and mean_soc < self._emergency_soc:
                 return 1
-            # Frontier: adequate SOC + high price
-            if mean_soc is not None and mean_soc >= self._soc_target:
-                if self._high_price_threshold is not None:
-                    buildings = self._get_buildings()
-                    price = self._max_pre_step_price(buildings)
-                    if price is not None and price > self._high_price_threshold:
-                        return 1
 
         return 0
 
@@ -1553,9 +1534,10 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_SR_SOC_RESERVE = 0.50
-DEFAULT_SR_PREP_HOURS = 4
+DEFAULT_SR_PREP_HOURS = 2
 DEFAULT_SR_BUFFER_HOURS = 4
-DEFAULT_SR_HIGH_PRICE_QUANTILE = 0.60
+DEFAULT_SR_HIGH_PRICE_QUANTILE = 0.75
+DEFAULT_SR_EMERGENCY_SOC = 0.25
 
 
 class SolarRampReserveWrapper(CityLearnBaseWrapper):
@@ -1602,15 +1584,14 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     label=1 routes sunset-adjacent states to the cost branch:
 
-    1. **Pre-sunset + low SOC** (recovery): reserves depleted before
-       buffer — cost branch owns aggressive charging.
-    2. **Pre-sunset + high price** (frontier): sell temptation before
+    1. **Short pre-sunset + high price** (frontier): sell temptation
+       shortly before buffer — cost branch holds reserves.
+    2. **In-buffer + high price** (frontier): sell temptation during
        buffer — cost branch holds reserves.
-    3. **In-buffer + low SOC** (recovery): reserves depleted during
-       buffer — cost branch manages corrective control.
-    4. **In-buffer + adequate SOC + high price** (frontier): reserves OK
-       but sell temptation threatens depletion — cost branch holds.
+    3. **In-buffer + emergency low SOC** (backstop): reserves critically
+       depleted during buffer — cost branch owns corrective control.
 
+    Prep window reduced to 2h.  Pre-sunset SOC labels removed.
     Off-event states are label=0: reward branch owns.
     """
 
@@ -1621,12 +1602,14 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
         prep_hours: int = DEFAULT_SR_PREP_HOURS,
         buffer_hours: int = DEFAULT_SR_BUFFER_HOURS,
         high_price_quantile: float = DEFAULT_SR_HIGH_PRICE_QUANTILE,
+        emergency_soc: float = DEFAULT_SR_EMERGENCY_SOC,
     ):
         super().__init__(env)
         self._soc_reserve = soc_reserve
         self._prep_hours = prep_hours
         self._buffer_hours = buffer_hours
         self._high_price_quantile = high_price_quantile
+        self._emergency_soc = emergency_soc
 
         self._high_price_threshold: Optional[float] = None
         self._episode_length: int = 720
@@ -1687,16 +1670,18 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
 
         self._buffer_starts.sort()
 
-        # High-price threshold
-        all_prices = []
+        # High-price threshold — per-timestep max across buildings
+        # (matches _max_pre_step_price used at decision time)
+        raw_price_arrays = []
         for b in buildings:
             if hasattr(b, "pricing") and b.pricing is not None:
                 ep = b.pricing.electricity_pricing
                 if hasattr(ep, "__len__") and len(ep) > 0:
-                    all_prices.extend(ep[:n_hours])
-        if all_prices:
+                    raw_price_arrays.append(np.asarray(ep[:n_hours], dtype=float))
+        if raw_price_arrays:
+            max_price_series = np.max(raw_price_arrays, axis=0)
             self._high_price_threshold = float(
-                np.quantile(all_prices, self._high_price_quantile)
+                np.quantile(max_price_series, self._high_price_quantile)
             )
 
     # -- Helpers -------------------------------------------------------
@@ -1760,17 +1745,14 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     def _compute_label(self, obs) -> int:
         """Hard-routing label: cost branch owns sunset-adjacent states.
 
-        Recovery: pre-sunset/buffer + low SOC → cost branch charges/recovers.
-        Frontier: pre-sunset + high price, buffer + adequate SOC + high price.
+        Frontier: short-prep/buffer + high price → cost branch holds.
+        Emergency: in-buffer + critically low SOC → cost branch recovers.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # Pre-sunset preparation
+        # Short pre-sunset preparation — frontier only (no SOC labels)
         if ts in self._prep_timesteps:
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._soc_reserve:
-                return 1
             if self._high_price_threshold is not None:
                 buildings = self._get_buildings()
                 price = self._max_pre_step_price(buildings)
@@ -1780,17 +1762,16 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
 
         # In-buffer
         if ts in self._buffer_timesteps:
+            # Frontier: high price sell temptation during buffer
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1
+            # Emergency backstop: critically low SOC during buffer
             mean_soc = self._mean_electrical_soc_pre_step()
-            # Recovery: low SOC during buffer
-            if mean_soc is not None and mean_soc < self._soc_reserve:
+            if mean_soc is not None and mean_soc < self._emergency_soc:
                 return 1
-            # Frontier: adequate SOC + high price
-            if mean_soc is not None and mean_soc >= self._soc_reserve:
-                if self._high_price_threshold is not None:
-                    buildings = self._get_buildings()
-                    price = self._max_pre_step_price(buildings)
-                    if price is not None and price > self._high_price_threshold:
-                        return 1
 
         return 0
 
@@ -1819,6 +1800,7 @@ def make_peak_ratchet_env(
     peak_cap_margin: float = DEFAULT_PR_PEAK_CAP_MARGIN,
     price_low_quantile: float = DEFAULT_PR_PRICE_LOW_QUANTILE,
     charge_headroom_frac: float = DEFAULT_PR_CHARGE_HEADROOM_FRAC,
+    ratchet_margin: float = DEFAULT_PR_RATCHET_MARGIN,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -1830,6 +1812,7 @@ def make_peak_ratchet_env(
         peak_cap_margin=peak_cap_margin,
         price_low_quantile=price_low_quantile,
         charge_headroom_frac=charge_headroom_frac,
+        ratchet_margin=ratchet_margin,
     )
 
 
@@ -1842,6 +1825,7 @@ def make_peak_ratchet_vec_env(
     peak_cap_margin: float = DEFAULT_PR_PEAK_CAP_MARGIN,
     price_low_quantile: float = DEFAULT_PR_PRICE_LOW_QUANTILE,
     charge_headroom_frac: float = DEFAULT_PR_CHARGE_HEADROOM_FRAC,
+    ratchet_margin: float = DEFAULT_PR_RATCHET_MARGIN,
     **kwargs,
 ):
     env_kwargs = {
@@ -1851,6 +1835,7 @@ def make_peak_ratchet_vec_env(
         "peak_cap_margin": peak_cap_margin,
         "price_low_quantile": price_low_quantile,
         "charge_headroom_frac": charge_headroom_frac,
+        "ratchet_margin": ratchet_margin,
     }
     return make_cost_vec_env(
         make_peak_ratchet_env,
@@ -1870,6 +1855,7 @@ def make_demand_response_env(
     soc_target: float = DEFAULT_DR_SOC_TARGET,
     prep_window: int = DEFAULT_DR_PREP_WINDOW,
     high_price_quantile: float = DEFAULT_DR_HIGH_PRICE_QUANTILE,
+    emergency_soc: float = DEFAULT_DR_EMERGENCY_SOC,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -1882,6 +1868,7 @@ def make_demand_response_env(
         soc_target=soc_target,
         prep_window=prep_window,
         high_price_quantile=high_price_quantile,
+        emergency_soc=emergency_soc,
     )
 
 
@@ -1895,6 +1882,7 @@ def make_demand_response_vec_env(
     soc_target: float = DEFAULT_DR_SOC_TARGET,
     prep_window: int = DEFAULT_DR_PREP_WINDOW,
     high_price_quantile: float = DEFAULT_DR_HIGH_PRICE_QUANTILE,
+    emergency_soc: float = DEFAULT_DR_EMERGENCY_SOC,
     **kwargs,
 ):
     env_kwargs = {
@@ -1905,6 +1893,7 @@ def make_demand_response_vec_env(
         "soc_target": soc_target,
         "prep_window": prep_window,
         "high_price_quantile": high_price_quantile,
+        "emergency_soc": emergency_soc,
     }
     return make_cost_vec_env(
         make_demand_response_env,
@@ -1923,6 +1912,7 @@ def make_solar_ramp_reserve_env(
     prep_hours: int = DEFAULT_SR_PREP_HOURS,
     buffer_hours: int = DEFAULT_SR_BUFFER_HOURS,
     high_price_quantile: float = DEFAULT_SR_HIGH_PRICE_QUANTILE,
+    emergency_soc: float = DEFAULT_SR_EMERGENCY_SOC,
     **kwargs,
 ):
     inner = make_citylearn_inner_env(
@@ -1934,6 +1924,7 @@ def make_solar_ramp_reserve_env(
         prep_hours=prep_hours,
         buffer_hours=buffer_hours,
         high_price_quantile=high_price_quantile,
+        emergency_soc=emergency_soc,
     )
 
 
@@ -1946,6 +1937,7 @@ def make_solar_ramp_reserve_vec_env(
     prep_hours: int = DEFAULT_SR_PREP_HOURS,
     buffer_hours: int = DEFAULT_SR_BUFFER_HOURS,
     high_price_quantile: float = DEFAULT_SR_HIGH_PRICE_QUANTILE,
+    emergency_soc: float = DEFAULT_SR_EMERGENCY_SOC,
     **kwargs,
 ):
     env_kwargs = {
@@ -1955,6 +1947,7 @@ def make_solar_ramp_reserve_vec_env(
         "prep_hours": prep_hours,
         "buffer_hours": buffer_hours,
         "high_price_quantile": high_price_quantile,
+        "emergency_soc": emergency_soc,
     }
     return make_cost_vec_env(
         make_solar_ramp_reserve_env,
