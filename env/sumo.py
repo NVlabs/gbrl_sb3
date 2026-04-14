@@ -1898,25 +1898,41 @@ class SumoRewardCostWrapper(ParallelEnv):
         # sumo_rl's reset() calls close() on the old TraCI connection.
         # If TraCI is already dead (e.g. from a crash in the previous
         # episode), close() will throw. Catch that and force a fresh start.
-        try:
-            obs, infos = self._env.reset(seed=seed, options=options)
-        except Exception:
-            # Kill any lingering SUMO process and TraCI state so the
-            # next reset() doesn't trip over a stale connection.
+        # We retry up to 3 times, fully cleaning TraCI + libsumo each time.
+        last_reset_err = None
+        for _reset_attempt in range(3):
             try:
-                self._env.close()
-            except Exception:
-                pass
-            # Force-clear TraCI's global connection registry so that
-            # sumo_rl's next reset() → __init__() → traci.start()
-            # doesn't hit "Connection 'default' is already active."
-            try:
-                import traci
-                if hasattr(traci, '_connections'):
-                    traci._connections.pop("default", None)
-            except Exception:
-                pass
-            obs, infos = self._env.reset(seed=seed, options=options)
+                obs, infos = self._env.reset(seed=seed, options=options)
+                last_reset_err = None
+                break
+            except Exception as e:
+                last_reset_err = e
+                import warnings
+                warnings.warn(
+                    f"SumoEnvWrapper.reset attempt {_reset_attempt+1}/3 failed: {e}"
+                )
+                # Kill any lingering SUMO process and TraCI state
+                try:
+                    self._env.close()
+                except Exception:
+                    pass
+                # Force-clear TraCI's global connection registry
+                try:
+                    import traci
+                    if hasattr(traci, '_connections'):
+                        traci._connections.pop("default", None)
+                except Exception:
+                    pass
+                # Force-close libsumo backend (clears corrupted process state)
+                try:
+                    import libsumo
+                    libsumo.close()
+                except Exception:
+                    pass
+                import time
+                time.sleep(1)
+        if last_reset_err is not None:
+            raise last_reset_err
 
         self.agents = list(self._env.agents) if hasattr(self._env, 'agents') else list(self.possible_agents)
 
