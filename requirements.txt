@@ -9,6 +9,7 @@ sb3_contrib==2.7.1
 wandb
 psutil
 sumo-rl
+libsumo
 supersuit
 pettingzoo==1.24.3
 mujoco
