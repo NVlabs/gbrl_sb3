@@ -88,10 +88,10 @@ class SumoRewardCostWrapper(ParallelEnv):
       - "convoy_priority":  binary cost when convoy is actively split.
       - "bus_priority":     binary cost when bus waits past T_cost.
 
-    Labels are simple ownership rules, not conflict detectors:
-      once a priority entity becomes urgent, the cost objective owns the
-      state until that entity clears.  Topology-agnostic — works the same
-      on arterial, grid, and single-intersection networks.
+    Labels are ownership rules that partition the state space:
+      cost objective owns when a priority entity is urgent, on a red
+      lane, and the controller can act.  Convoy active splits own
+      unconditionally.  No pressure gates, no topology dependence.
 
     Event generation is exogenous: static conflict routes precomputed at
     reset from network topology (side-street approaches), selected via
@@ -192,7 +192,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         self._side_queue_cap = side_queue_cap
         self._deficit_kappa = deficit_kappa
 
-        # Bus / convoy injection parameters
+        # Bus / convoy / premium injection parameters
         self._bus_injection_interval = bus_injection_interval
         self._bus_count_per_injection = bus_count_per_injection
         self._bus_cost_threshold = bus_cost_threshold    # T_bus
@@ -1234,25 +1234,37 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _bus_priority_label(self, agent_id: str) -> int:
         """Ownership rule for bus priority.
 
-        Cost owns whenever this intersection has an urgent bus.
-        Urgent = normalized bus wait >= T_warn / T_cost.
+        Cost owns when an urgent bus is waiting on a red lane and the
+        controller can act.  Urgent = bus_wait >= T_warn / T_cost.
 
-        This is a pure ownership label:
-          - no pressure gate
-          - no symmetry assumption
-          - no served/unserved requirement
+        Gates (all topology-agnostic):
+          - can_switch: no decision if locked in min_green + yellow
+          - not served: bus already on green needs no intervention
+          - urgency: bus_wait past warning threshold
 
-        Once the bus is urgent, the priority objective owns the state
-        until the bus clears.
+        No pressure gate.  No queue-asymmetry test.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
         if has_bus is None or bus_wait is None:
             return 0
+        if not np.any(has_bus > 0):
+            return 0
 
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+            return 0
+
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
         warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
-        urgent_bus = (has_bus > 0) & (bus_wait >= warn_norm)
-        return int(np.any(urgent_bus))
+
+        for i in range(len(has_bus)):
+            if has_bus[i] > 0 and i not in served_lanes and bus_wait[i] >= warn_norm:
+                return 1
+        return 0
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
@@ -1288,31 +1300,49 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _convoy_priority_label(self, agent_id: str) -> int:
         """Ownership rule for convoy priority.
 
-        Cost owns whenever a convoy is materially present at this
-        intersection and has not fully cleared yet.
+        Cost owns in two cases:
 
-        Urgent convoy = either:
-          1. active split: 0 < progress < 1
-          2. approaching/materially present: seen_frac >= 0.33
+        A. Active split (0 < progress < 1): the convoy IS being split.
+           Cost owns unconditionally — no can_switch gate because the
+           state itself demands cost-objective gradients regardless of
+           whether the agent can act this step.
 
-        Pure ownership label:
-          - no pressure/asymmetry gate
-          - no served/unserved branching
-          - no dependence on network symmetry
+        B. Pre-split (progress == 0, seen_frac >= 0.33, on red lane,
+           can switch): convoy has materially arrived and is blocked.
+           Cost should preemptively own to prevent a split.
 
-        Once a meaningful part of the platoon is here, keep
-        prioritizing the platoon until it clears.
+        No pressure gate.  No queue-asymmetry test.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
-        seen_frac = self._convoy_seen_frac.get(agent_id)
-        if has_convoy is None or convoy_progress is None or seen_frac is None:
+        if has_convoy is None or convoy_progress is None:
             return 0
 
-        active_split = (has_convoy > 0) & (convoy_progress > 0.0) & (convoy_progress < 1.0)
-        materially_present = (has_convoy > 0) & (seen_frac >= 0.33)
-        urgent_convoy = active_split | materially_present
-        return int(np.any(urgent_convoy))
+        seen_frac = self._convoy_seen_frac.get(agent_id)
+
+        # Branch A: active split — cost owns unconditionally
+        for i in range(len(has_convoy)):
+            if has_convoy[i] > 0:
+                prog = convoy_progress[i]
+                if 0 < prog < 1.0:
+                    return 1
+
+        # Branch B: pre-split — need can_switch + unserved
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+            return 0
+
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+
+        for i in range(len(has_convoy)):
+            if has_convoy[i] > 0 and i not in served_lanes:
+                sf = float(seen_frac[i]) if seen_frac is not None and i < len(seen_frac) else 0.0
+                if sf >= 0.33:
+                    return 1
+        return 0
 
     # ── Premium priority cost/label ──────────────────────────────────────
 
@@ -1335,25 +1365,33 @@ class SumoRewardCostWrapper(ParallelEnv):
     def _premium_priority_label(self, agent_id: str) -> int:
         """Ownership rule for premium priority.
 
-        Cost owns whenever this intersection has an urgent premium vehicle.
-        Urgent = normalized premium delay >= T_warn / T_cost.
+        Cost owns when an urgent premium vehicle is on a red lane and
+        the controller can act.  Urgent = premium_wait >= T_warn / T_cost.
 
-        Pure ownership label:
-          - no pressure gate
-          - no topology dependence
-          - no served/unserved requirement
-
-        Once the premium vehicle is urgent, the priority objective owns
-        the state until it clears this intersection.
+        Same gates as bus: can_switch, not served, urgency.
+        No pressure gate.  No topology dependence.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
         if has_premium is None or premium_wait is None:
             return 0
+        if not np.any(has_premium > 0):
+            return 0
 
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+            return 0
+
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
         warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
-        urgent_premium = (has_premium > 0) & (premium_wait >= warn_norm)
-        return int(np.any(urgent_premium))
+
+        for i in range(len(has_premium)):
+            if has_premium[i] > 0 and i not in served_lanes and premium_wait[i] >= warn_norm:
+                return 1
+        return 0
 
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.
@@ -2267,6 +2305,73 @@ def _sumo_rl_path(*parts) -> str:
     return path
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-env × per-scenario injection defaults
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario parameters tuned per environment so that each intersection sees
+# ~10-30% label rate under a random policy.  Single-intersection envs need
+# slower injection (every entity passes through); multi-agent networks need
+# faster injection (entities only touch a fraction of intersections).
+#
+# Keys: (env_name, cost_fn) → dict of scenario hyperparams.
+# Any key not listed uses the global defaults in make_sumo_vec_env / __init__.
+# Caller can still override via env_kwargs — these are just defaults.
+
+SCENARIO_DEFAULTS: Dict[Tuple[str, str], dict] = {
+    # ── arterial4x4 (16 agents, asymmetric, EW mainline) ────────────
+    ("sumo-arterial4x4-v0", "bus_priority"): {
+        "bus_injection_interval": 20.0,
+        "bus_cost_threshold": 15.0,
+        "bus_warn_threshold": 6.0,
+    },
+    ("sumo-arterial4x4-v0", "convoy_priority"): {
+        "convoy_injection_interval": 80.0,
+        "convoy_size_min": 10,
+        "convoy_size_max": 12,
+        "convoy_headway": 2.0,
+    },
+    ("sumo-arterial4x4-v0", "premium_priority"): {
+        "premium_injection_interval": 10.0,
+        "premium_cost_threshold": 8.0,
+        "premium_warn_threshold": 3.0,
+    },
+    # ── grid4x4 (16 agents, symmetric, balanced traffic) ────────────
+    ("sumo-grid4x4-v0", "bus_priority"): {
+        "bus_injection_interval": 15.0,
+        "bus_cost_threshold": 15.0,
+        "bus_warn_threshold": 6.0,
+    },
+    ("sumo-grid4x4-v0", "convoy_priority"): {
+        "convoy_injection_interval": 80.0,
+        "convoy_size_min": 10,
+        "convoy_size_max": 12,
+        "convoy_headway": 2.0,
+    },
+    ("sumo-grid4x4-v0", "premium_priority"): {
+        "premium_injection_interval": 8.0,
+        "premium_cost_threshold": 8.0,
+        "premium_warn_threshold": 3.0,
+    },
+    # ── single-vhvh (1 agent, all entities pass through) ────────────
+    ("sumo-single-vhvh-v0", "bus_priority"): {
+        "bus_injection_interval": 90.0,
+        "bus_cost_threshold": 15.0,
+        "bus_warn_threshold": 6.0,
+    },
+    ("sumo-single-vhvh-v0", "convoy_priority"): {
+        "convoy_injection_interval": 300.0,
+        "convoy_size_min": 10,
+        "convoy_size_max": 12,
+        "convoy_headway": 2.0,
+    },
+    ("sumo-single-vhvh-v0", "premium_priority"): {
+        "premium_injection_interval": 60.0,
+        "premium_cost_threshold": 8.0,
+        "premium_warn_threshold": 3.0,
+    },
+}
+
+
 # RESCO benchmark configurations
 # Each has uniform obs/action spaces across all intersections
 SUMO_CONFIGS = {
@@ -2484,19 +2589,6 @@ def make_sumo_vec_env(
     tau_service: int = 6,
     side_queue_cap: float = 0.7,
     deficit_kappa: float = 5.0,
-    bus_injection_interval: float = 30.0,
-    bus_count_per_injection: int = 1,
-    bus_cost_threshold: float = 15.0,
-    bus_warn_threshold: float = 6.0,
-    convoy_injection_interval: float = 80.0,
-    convoy_size_min: int = 10,
-    convoy_size_max: int = 12,
-    convoy_headway: float = 2.0,
-    premium_injection_interval: float = 15.0,
-    premium_cost_threshold: float = 8.0,
-    premium_warn_threshold: float = 3.0,
-    premium_count_per_injection: int = 1,
-    premium_headway: float = 2.0,
     clean_episode_prob: float = 0.0,
     use_gui: bool = False,
     debug: bool = False,
@@ -2562,6 +2654,35 @@ def make_sumo_vec_env(
     config = SUMO_CONFIGS[env_name].copy()
     config.update(override_kwargs)
 
+    # ── Apply per-env scenario defaults ──
+    # SCENARIO_DEFAULTS[(env_name, cost_fn)] provides tuned injection params.
+    # Global fallbacks for envs not in the table.
+    # Caller can override any param via override_kwargs / env_kwargs.
+    _GLOBAL_SCENARIO_FALLBACKS = {
+        "bus_injection_interval": 30.0,
+        "bus_count_per_injection": 1,
+        "bus_cost_threshold": 15.0,
+        "bus_warn_threshold": 6.0,
+        "convoy_injection_interval": 80.0,
+        "convoy_size_min": 10,
+        "convoy_size_max": 12,
+        "convoy_headway": 2.0,
+        "premium_injection_interval": 15.0,
+        "premium_cost_threshold": 8.0,
+        "premium_warn_threshold": 3.0,
+        "premium_count_per_injection": 1,
+        "premium_headway": 2.0,
+    }
+    # Layer: global fallbacks < SCENARIO_DEFAULTS < caller overrides
+    scenario_params = dict(_GLOBAL_SCENARIO_FALLBACKS)
+    scenario_params.update(SCENARIO_DEFAULTS.get((env_name, cost_fn), {}))
+    # Caller overrides from env_kwargs (passed through override_kwargs)
+    _scenario_keys = set(_GLOBAL_SCENARIO_FALLBACKS.keys()) | {"clean_episode_prob"}
+    for k in list(config.keys()):
+        if k in _scenario_keys:
+            scenario_params[k] = config.pop(k)
+    scenario_params.setdefault("clean_episode_prob", clean_episode_prob)
+
     # Resolve lazy file paths
     net_file = config.pop("net_file_fn")()
     route_file = config.pop("route_file_fn")()
@@ -2600,20 +2721,20 @@ def make_sumo_vec_env(
         tau_service=tau_service,
         side_queue_cap=side_queue_cap,
         deficit_kappa=deficit_kappa,
-        bus_injection_interval=bus_injection_interval,
-        bus_count_per_injection=bus_count_per_injection,
-        bus_cost_threshold=bus_cost_threshold,
-        bus_warn_threshold=bus_warn_threshold,
-        convoy_injection_interval=convoy_injection_interval,
-        convoy_size_min=convoy_size_min,
-        convoy_size_max=convoy_size_max,
-        convoy_headway=convoy_headway,
-        premium_injection_interval=premium_injection_interval,
-        premium_cost_threshold=premium_cost_threshold,
-        premium_warn_threshold=premium_warn_threshold,
-        premium_count_per_injection=premium_count_per_injection,
-        premium_headway=premium_headway,
-        clean_episode_prob=clean_episode_prob,
+        bus_injection_interval=scenario_params["bus_injection_interval"],
+        bus_count_per_injection=scenario_params["bus_count_per_injection"],
+        bus_cost_threshold=scenario_params["bus_cost_threshold"],
+        bus_warn_threshold=scenario_params["bus_warn_threshold"],
+        convoy_injection_interval=scenario_params["convoy_injection_interval"],
+        convoy_size_min=scenario_params["convoy_size_min"],
+        convoy_size_max=scenario_params["convoy_size_max"],
+        convoy_headway=scenario_params["convoy_headway"],
+        premium_injection_interval=scenario_params["premium_injection_interval"],
+        premium_cost_threshold=scenario_params["premium_cost_threshold"],
+        premium_warn_threshold=scenario_params["premium_warn_threshold"],
+        premium_count_per_injection=scenario_params["premium_count_per_injection"],
+        premium_headway=scenario_params["premium_headway"],
+        clean_episode_prob=scenario_params["clean_episode_prob"],
     )
 
     if debug:
