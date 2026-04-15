@@ -19,3 +19,4 @@ datasets/
 logs/*
 sumo-rl/
 test/
+lepton_scripts/

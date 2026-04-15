@@ -330,19 +330,19 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         district_import = max(Σ_i NEC_i, 0)
         cost = clamp((district_import − frontier) / (cap − frontier), 0, 1)
 
-    Label — hard-routing state partition
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes only in-congestion + low-price states to the cost
-    branch:
+    Label — congestion + short prep indicator
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ::
 
-    1. **In-congestion + low price** (frontier): genuinely cheap
-       electricity tempts charging/importing — but import during
-       congestion pushes toward the capacity cap.  Cost branch
-       suppresses import.
+        label = 1   iff   timestep ∈ congestion_window
+                          OR within 3 hours before congestion start
 
-    All prep-window labels and SOC-based recovery labels are removed
-    to keep label density low and stable (~5%).  Off-congestion states
-    are always label=0: reward branch owns.
+    During high-demand congestion hours and the 3-hour preparation
+    window before each event, battery charging increases district
+    import and risks exceeding the contracted capacity.  The safety
+    policy owns these timesteps; the reward policy owns all other
+    hours.  Both windows are pre-computed from the known NSL
+    schedule (observable state) and are trajectory-independent.
     """
 
     def __init__(
@@ -547,23 +547,17 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns in-congestion + low price.
-
-        Frontier: in-congestion + low price → cost branch suppresses import.
-        """
+        """label=1 during congestion hours and 3h pre-congestion prep."""
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
-
-        if ts not in self._congestion_timesteps:
-            return 0
-
-        # Frontier: low price during congestion tempts charging → import stress
-        if self._low_price_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price <= self._low_price_threshold:
+        if ts in self._congestion_timesteps:
+            return 1
+        # 3-hour prep window before each congestion event
+        for cs in self._congestion_starts:
+            if cs > ts + 3:
+                break  # sorted — no further starts within 3h
+            if ts < cs:  # within 3h before this congestion start
                 return 1
-
         return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
@@ -618,17 +612,19 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         district_import = max(Σ_i NEC_i, 0)
         cost = dirty × clamp(district_import / import_scale, 0, 1)
 
-    Label — hard-routing state partition
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes only in-dirty + low-price states to the cost branch:
+    Label — dirty-grid + cheap-price indicator
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ::
 
-    1. **In-dirty + low price** (frontier): cheap electricity tempts
-       charging/importing — but import during dirty grid incurs carbon
-       penalty.  Cost branch suppresses dirty import.
+        label = 1   iff   timestep ∈ (dirty_window ∪ prep_window)
+                          AND price ≤ low_price_threshold
 
-    All prep-window labels and SOC-based recovery labels are removed
-    to keep label density low and stable (~5%).  Off-dirty states are
-    always label=0: reward branch owns.
+    During dirty-grid periods (and their preparation windows), cheap
+    electricity prices tempt the reward policy to charge — but importing
+    during dirty hours incurs carbon cost.  The safety policy owns
+    these conflict states; the reward policy owns all other hours.
+    Both the dirty/prep windows and the price threshold are pre-computed
+    from known schedules (observable state, trajectory-independent).
     """
 
     def __init__(
@@ -861,17 +857,13 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns in-dirty + low price.
-
-        Frontier: in-dirty + low price → cost branch suppresses dirty import.
-        """
+        """label=1 during dirty/prep windows when price is cheap."""
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        if ts not in self._dirty_timesteps:
+        if ts not in self._dirty_timesteps and ts not in self._prep_timesteps:
             return 0
 
-        # Frontier: low price during dirty grid tempts charging → dirty import
         if self._low_price_threshold is not None:
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
@@ -1114,25 +1106,19 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     Cost is only positive when a *new* peak above peak_target is set.
     Running peak resets to 0 on ``env.reset()``.
 
-    Label — ratchet-aware charging trap
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — high-demand indicator
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        potential_import = district_nsl + charge_headroom_frac × total_charge_power
-        label = 1   iff   price ≤ price_low_threshold
-                          AND potential_import > max(running_peak, peak_target)
+        label = 1   iff   district_nsl > peak_target
 
-    Early in the episode when running_peak is low, many cheap + high-load
-    hours trigger label=1 (any charging threatens a new peak).  Later,
-    after a high-NSL spike has already set the peak, most hours fall below
-    it and become label=0 — the reward policy can charge freely.
-
-    **Why Split-RL wins**: CUP uses a fixed λ that cannot adapt to the
-    evolving peak.  Its single multiplier over-constrains early (inhibiting
-    profitable charging) and under-constrains late (not protecting against
-    new peaks near the current record).  Split-RL partitions the state
-    space based on {running_peak, nsl, price}, routing only the
-    peak-threatening states to the cost policy.
+    The label is **trajectory-independent**: it depends only on the
+    pre-computed NSL schedule, not on the running peak (which evolves
+    with the agent's actions).  During high-demand hours (base load
+    above the 75th-percentile), any battery charging adds to district
+    import and risks setting a new peak.  The safety policy owns
+    these timesteps to limit charging; the reward policy owns all
+    lower-demand hours.
     """
 
     def __init__(
@@ -1278,24 +1264,16 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
+        """label=1 when district base demand exceeds peak target."""
         self._ensure_base_init()
-        if self._price_low_threshold is None or self._peak_target is None:
-            return 0
-
-        buildings = self._get_buildings()
-        price = self._max_pre_step_price(buildings)
-        if price is None or price > self._price_low_threshold:
+        if self._peak_target is None:
             return 0
 
         nsl = self._district_pre_step_nsl()
         if nsl is None:
             return 0
 
-        # Would charging push import above the current ratchet level?
-        # Apply margin so only clear threats are routed to cost branch.
-        potential = nsl + self._charge_headroom_frac * self._total_charge_power
-        threshold = self._ratchet_margin * max(self._running_peak, self._peak_target)
-        return 1 if potential > threshold else 0
+        return 1 if nsl > self._peak_target else 0
 
     # -- Gymnasium API overrides (obs augmentation + ratchet reset) -----
 
@@ -1346,19 +1324,17 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
         else:
             cost = 0
 
-    Label — hard-routing state partition
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes event-adjacent states to the cost branch:
+    Label — event-window indicator
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ::
 
-    1. **Short prep + high price** (frontier): sell temptation shortly
-       before event — cost branch holds reserves.
-    2. **In-event + high price** (frontier): sell temptation during
-       event — cost branch holds reserves.
-    3. **In-event + emergency low SOC** (backstop): reserves critically
-       depleted during event — cost branch owns corrective control.
+        label = 1   iff   timestep ∈ event_window
 
-    Prep window reduced to 3h.  Prep-SOC labels removed.
-    Off-event states are label=0: reward branch owns.
+    During demand response events, the safety policy controls
+    battery actions to maintain reserves.  The reward policy
+    owns all non-event hours and is free to charge cheaply
+    (building SOC reserves that benefit the subsequent event).
+    Event windows are fixed and known at episode start.
     """
 
     def __init__(
@@ -1483,39 +1459,10 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns event-adjacent states.
-
-        Frontier: short-prep/event + high price → cost branch holds.
-        Emergency: in-event + critically low SOC → cost branch recovers.
-        """
+        """label=1 during demand response events."""
         self._ensure_base_init()
-
         ts = self._get_time_step()  # pre-step
-        steps_until = self._steps_until_next_event(ts)
-
-        # Short preparation window — frontier only (no SOC labels)
-        if 0 < steps_until <= self._prep_window:
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
-            return 0
-
-        # In-event
-        if steps_until == 0:
-            # Frontier: high price sell temptation during event
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
-            # Emergency backstop: critically low SOC during event
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._emergency_soc:
-                return 1
-
-        return 0
+        return 1 if self._in_event_window(ts) else 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
 
@@ -1580,19 +1527,18 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     Cost only fires during the specific post-sunset windows, not during
     all solar hours.  This makes the cost sparse and event-driven.
 
-    Label — hard-routing state partition
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes sunset-adjacent states to the cost branch:
+    Label — buffer-window indicator
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ::
 
-    1. **Short pre-sunset + high price** (frontier): sell temptation
-       shortly before buffer — cost branch holds reserves.
-    2. **In-buffer + high price** (frontier): sell temptation during
-       buffer — cost branch holds reserves.
-    3. **In-buffer + emergency low SOC** (backstop): reserves critically
-       depleted during buffer — cost branch owns corrective control.
+        label = 1   iff   timestep ∈ buffer_window ∪ prep_window
 
-    Prep window reduced to 2h.  Pre-sunset SOC labels removed.
-    Off-event states are label=0: reward branch owns.
+    During post-sunset buffer windows and the preparation hours
+    preceding them, any battery action affects whether reserves
+    are available when solar generation drops.  The safety policy
+    owns these timesteps; the reward policy owns all other hours.
+    Both windows are pre-computed from the known solar schedule
+    (observable state) and are trajectory-independent.
     """
 
     def __init__(
@@ -1743,36 +1689,11 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns sunset-adjacent states.
-
-        Frontier: short-prep/buffer + high price → cost branch holds.
-        Emergency: in-buffer + critically low SOC → cost branch recovers.
-        """
+        """label=1 during buffer and prep windows."""
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
-
-        # Short pre-sunset preparation — frontier only (no SOC labels)
-        if ts in self._prep_timesteps:
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
-            return 0
-
-        # In-buffer
-        if ts in self._buffer_timesteps:
-            # Frontier: high price sell temptation during buffer
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
-            # Emergency backstop: critically low SOC during buffer
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._emergency_soc:
-                return 1
-
+        if ts in self._buffer_timesteps or ts in self._prep_timesteps:
+            return 1
         return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------

@@ -88,8 +88,10 @@ class SumoRewardCostWrapper(ParallelEnv):
       - "convoy_priority":  binary cost when convoy is actively split.
       - "bus_priority":     binary cost when bus waits past T_cost.
 
-    Labels are state-partition ownership rules (not reward proxies):
-      - entity on unserved lane + can_switch + urgency + queue asymmetry  (bus/premium/convoy)
+    Labels are simple ownership rules, not conflict detectors:
+      once a priority entity becomes urgent, the cost objective owns the
+      state until that entity clears.  Topology-agnostic — works the same
+      on arterial, grid, and single-intersection networks.
 
     Event generation is exogenous: static conflict routes precomputed at
     reset from network topology (side-street approaches), selected via
@@ -1230,60 +1232,27 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)) else 0.0
 
     def _bus_priority_label(self, agent_id: str) -> int:
-        """State-partition label for bus priority: g(s) → {0, 1}.
+        """Ownership rule for bus priority.
 
-        Determines which objective OWNS gradient updates in this state.
-        label=1 → cost objective owns → tree routes cost gradients here.
-        label=0 → reward objective owns → tree routes reward gradients here.
+        Cost owns whenever this intersection has an urgent bus.
+        Urgent = normalized bus wait >= T_warn / T_cost.
 
-        Fires when ALL of:
-          1. A bus is waiting on an unserved (red) lane,
-          2. The agent CAN switch (min_green satisfied),
-          3. The bus wait exceeds warning threshold (urgency),
-          4. The served approach has higher queue pressure (conflict).
+        This is a pure ownership label:
+          - no pressure gate
+          - no symmetry assumption
+          - no served/unserved requirement
 
-        Condition 4 is the conflict: reward wants to stay on the busy
-        served lane, cost wants to switch to serve the bus.  Without
-        queue asymmetry there is no conflict — reward and cost agree.
+        Once the bus is urgent, the priority objective owns the state
+        until the bus clears.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
         if has_bus is None or bus_wait is None:
             return 0
-        if not np.any(has_bus > 0):
-            return 0
 
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-
-        # Must be able to switch — no decision point otherwise
-        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
-            return 0
-
-        phase = ts.green_phase
-        phase_map = self._phase_to_lanes.get(agent_id, {})
-        served_lanes = set(phase_map.get(phase, []))
-
-        # Queue pressure on served lanes
-        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
-        served_pressure = max(
-            (lane_queues[j] if j < len(lane_queues) else 0
-             for j in served_lanes),
-            default=0,
-        )
-
-        # Normalised warn threshold
         warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
-
-        for i in range(len(has_bus)):
-            if has_bus[i] > 0 and i not in served_lanes:
-                if bus_wait[i] > warn_norm:
-                    # Conflict: served lane is busier → reward says stay
-                    unserved_pressure = lane_queues[i] if i < len(lane_queues) else 0
-                    if served_pressure > unserved_pressure:
-                        return 1
-        return 0
+        urgent_bus = (has_bus > 0) & (bus_wait >= warn_norm)
+        return int(np.any(urgent_bus))
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
@@ -1317,74 +1286,33 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 0.0
 
     def _convoy_priority_label(self, agent_id: str) -> int:
-        """State-partition label for convoy priority: g(s) → {0, 1}.
+        """Ownership rule for convoy priority.
 
-        Determines which objective OWNS gradient updates in this state.
-        label=1 → cost objective owns → tree routes cost gradients here.
-        label=0 → reward objective owns → tree routes reward gradients here.
+        Cost owns whenever a convoy is materially present at this
+        intersection and has not fully cleared yet.
 
-        Two branches:
+        Urgent convoy = either:
+          1. active split: 0 < progress < 1
+          2. approaching/materially present: seen_frac >= 0.33
 
-        A. Active split (0 < progress < 1): label=1 unconditionally,
-           regardless of whether the convoy lane is served or unserved.
-           - Unserved (rescue): convoy stuck at red, switch to serve it.
-           - Served (hold-green): convoy partially passed, reward wants
-             to leave for a busier lane but cost needs to hold green
-             until the platoon clears.
-           No queue asymmetry needed — the convoy IS the queue.
+        Pure ownership label:
+          - no pressure/asymmetry gate
+          - no served/unserved branching
+          - no dependence on network symmetry
 
-        B. Pre-split (progress == 0, seen_frac >= 0.33, unserved):
-           label=1 only if served lane is busier (margin 0.05).
-           Anticipatory branch — convoy arriving but not yet split.
-           The asymmetry gate keeps this branch conservative.
+        Once a meaningful part of the platoon is here, keep
+        prioritizing the platoon until it clears.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
-        if has_convoy is None or convoy_progress is None:
-            return 0
-
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-
-        # Must be able to switch — no decision point otherwise
-        can_switch = ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
-        if not can_switch:
-            return 0
-
-        phase = ts.green_phase
-        phase_map = self._phase_to_lanes.get(agent_id, {})
-        served_lanes = set(phase_map.get(phase, []))
-
-        # Queue pressure on served lanes
-        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
-        served_pressure = max(
-            (lane_queues[j] if j < len(lane_queues) else 0
-             for j in served_lanes),
-            default=0,
-        )
-
         seen_frac = self._convoy_seen_frac.get(agent_id)
+        if has_convoy is None or convoy_progress is None or seen_frac is None:
+            return 0
 
-        for i in range(len(has_convoy)):
-            if has_convoy[i] <= 0:
-                continue
-            prog = convoy_progress[i]
-
-            # Branch A: active split — cost owns regardless of
-            # whether the convoy lane is served (hold-green) or
-            # unserved (rescue).
-            if 0 < prog < 1.0:
-                return 1
-
-            # Branch B: pre-split — only on unserved lanes with
-            # queue asymmetry gate.
-            if i not in served_lanes:
-                if prog == 0 and seen_frac is not None and seen_frac[i] >= 0.33:
-                    convoy_pressure = lane_queues[i] if i < len(lane_queues) else 0
-                    if served_pressure > convoy_pressure + 0.05:
-                        return 1
-        return 0
+        active_split = (has_convoy > 0) & (convoy_progress > 0.0) & (convoy_progress < 1.0)
+        materially_present = (has_convoy > 0) & (seen_frac >= 0.33)
+        urgent_convoy = active_split | materially_present
+        return int(np.any(urgent_convoy))
 
     # ── Premium priority cost/label ──────────────────────────────────────
 
@@ -1405,62 +1333,27 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str) -> int:
-        """State-partition label for premium priority: g(s) → {0, 1}.
+        """Ownership rule for premium priority.
 
-        Determines which objective OWNS gradient updates in this state.
-        label=1 → cost objective owns → tree routes cost gradients here.
-        label=0 → reward objective owns → tree routes reward gradients here.
+        Cost owns whenever this intersection has an urgent premium vehicle.
+        Urgent = normalized premium delay >= T_warn / T_cost.
 
-        Fires when ALL of:
-          1. A premium vehicle is on an unserved (red) lane,
-          2. The agent CAN switch (min_green satisfied),
-          3. The premium delay exceeds warning threshold (urgency),
-          4. The premium's lane has lower queue pressure than served
-             (conflict — reward sees no reason to switch).
+        Pure ownership label:
+          - no pressure gate
+          - no topology dependence
+          - no served/unserved requirement
 
-        Condition 4 is the value-asymmetry conflict: the premium is
-        physically identical to a regular car, but contractually
-        prioritized.  The reward sees a low-pressure lane and stays
-        on the busy served lane.  The cost demands switching.
+        Once the premium vehicle is urgent, the priority objective owns
+        the state until it clears this intersection.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
         if has_premium is None or premium_wait is None:
             return 0
-        if not np.any(has_premium > 0):
-            return 0
 
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-
-        # Must be able to switch — no decision point otherwise
-        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
-            return 0
-
-        phase = ts.green_phase
-        phase_map = self._phase_to_lanes.get(agent_id, {})
-        served_lanes = set(phase_map.get(phase, []))
-
-        # Queue pressure on served lanes
-        lane_queues = self._ts_query(agent_id, 'get_lanes_queue') or []
-        served_pressure = max(
-            (lane_queues[j] if j < len(lane_queues) else 0
-             for j in served_lanes),
-            default=0,
-        )
-
-        # Normalised warn threshold
         warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
-
-        for i in range(len(has_premium)):
-            if has_premium[i] > 0 and i not in served_lanes:
-                if premium_wait[i] > warn_norm:
-                    # Conflict: premium's lane is quieter → reward says stay
-                    unserved_pressure = lane_queues[i] if i < len(lane_queues) else 0
-                    if served_pressure > unserved_pressure:
-                        return 1
-        return 0
+        urgent_premium = (has_premium > 0) & (premium_wait >= warn_norm)
+        return int(np.any(urgent_premium))
 
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.

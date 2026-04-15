@@ -242,7 +242,7 @@ class MultiRoomCorridorEnv(MiniGridEnv):
             "top_door_opened": False,
             "goal_reached": False,
         }
-        self._milestone_reward = 0.1  # sparse bonus per milestone
+        self._milestone_reward = 0.5  # big bonus per milestone
 
         # Distance shaping: only active after green key is obtained
         self._prev_dist_to_goal = None
@@ -296,14 +296,14 @@ class MultiRoomCorridorEnv(MiniGridEnv):
             if self.carrying.color == self.top_door_color:
                 ms["box_opened"] = True
                 ms["green_key_picked"] = True
-                reward += self._milestone_reward * 2  # box + key in one
+                reward += self._milestone_reward * 2  # box + key = +1.0
 
         # --- Milestone: top door opened (hardest transition — big bonus) ---
         if not ms["top_door_opened"]:
             top_door_obj = self.grid.get(*self.top_door_pos)
             if top_door_obj is None or (isinstance(top_door_obj, Door) and top_door_obj.is_open):
                 ms["top_door_opened"] = True
-                reward += self._milestone_reward * 5  # 0.5 bonus for corridor transit
+                reward += self._milestone_reward  # +0.5 for corridor transit
 
         # Distance shaping: always active, guides toward goal
         agent_pos = np.array(self.agent_pos, dtype=np.float64)
@@ -311,7 +311,7 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         if self._prev_dist_to_goal is not None:
             # Reward for getting closer to goal (potential-based shaping)
             dist_delta = self._prev_dist_to_goal - dist_to_goal
-            reward += 0.01 * dist_delta
+            reward += 0.05 * dist_delta
         self._prev_dist_to_goal = dist_to_goal
 
         # --- Goal completion: big reward ---
