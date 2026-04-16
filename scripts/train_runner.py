@@ -532,8 +532,7 @@ def train_runner():
     resume_dir = _pop_extra_arg('--resume_dir')
 
     sweep_id_env = os.getenv("SWEEP_ID")
-    no_resume = bool(os.getenv("NO_RESUME"))
-    use_checkpointing = (not no_resume) and (not sweep_id_env or bool(os.getenv("AUTORESUME")))
+    use_checkpointing = os.getenv("AUTORESUME", "").lower() in ("1", "true", "yes")
 
     # ── Env cleanup ──────────────────────────────────────────────────────
     os.environ.pop('MASTER_ADDR', None)
@@ -558,10 +557,8 @@ def train_runner():
                 print("AutoResume timer already expired at startup — exiting.")
                 sys.exit(0)
             auto_resume_details = AutoResume.get_resume_details()
-        elif bool(os.getenv("AUTORESUME")):
-            # Only auto-detect local resume state when AUTORESUME is explicitly set.
-            # Without it, checkpoints are still saved on interrupt but won't
-            # auto-resume on the next run.  Use --resume_dir for manual resume.
+        elif os.getenv("AUTORESUME", "").lower() in ("1", "true", "yes"):
+            # Auto-detect local resume state only when AUTORESUME is enabled.
             auto_resume_details = _load_local_resume(sweep_id=sweep_id_env)
             if auto_resume_details:
                 print(f"Found local resume state: {auto_resume_details}")
@@ -835,12 +832,7 @@ def _pop_extra_arg(flag):
 
 if __name__ == "__main__":
     SWEEP_ID = os.getenv("SWEEP_ID", None)
-    use_autoresume = bool(os.getenv("AUTORESUME"))
-    no_resume = bool(os.getenv("NO_RESUME"))
-
-    # Clear stale resume state when NO_RESUME is set
-    if no_resume and SWEEP_ID:
-        _clear_local_resume(sweep_id=SWEEP_ID)
+    use_autoresume = os.getenv("AUTORESUME", "").lower() in ("1", "true", "yes")
 
     if SWEEP_ID is None:
         # ── Direct run (no sweep) ───────────────────────────────────────
