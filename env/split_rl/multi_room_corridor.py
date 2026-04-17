@@ -239,12 +239,24 @@ class MultiRoomCorridorEnv(MiniGridEnv):
             "right_door_opened": False,
             "box_opened": False,       # green key obtained from box
             "green_key_picked": False,
+            "entered_corridor": False, # diagnostic: entered corridor with green key
+            "near_top_door": False,    # diagnostic: adjacent to top door
             "top_door_opened": False,
             "goal_reached": False,
         }
         self._milestone_reward = 0.5  # big bonus per milestone
 
-        # Distance shaping: only active after green key is obtained
+        # Corridor geometry for diagnostic milestones
+        corridor_x = self.width // 2
+        corridor_width = 3
+        top_room_bottom = self.height // 3
+        bottom_top = 2 * self.height // 3
+        self._corridor_left = corridor_x - corridor_width // 2
+        self._corridor_right = corridor_x + corridor_width // 2
+        self._corridor_top = top_room_bottom + 1
+        self._corridor_bottom = bottom_top - 1
+
+        # Distance shaping state
         self._prev_dist_to_goal = None
 
         return obs, info
@@ -298,6 +310,22 @@ class MultiRoomCorridorEnv(MiniGridEnv):
                 ms["green_key_picked"] = True
                 reward += self._milestone_reward * 2  # box + key = +1.0
 
+        # --- Diagnostic: entered corridor with green key ---
+        if not ms["entered_corridor"] and ms["box_opened"]:
+            ax, ay = self.agent_pos
+            if (self._corridor_left <= ax <= self._corridor_right and
+                    self._corridor_top <= ay <= self._corridor_bottom):
+                ms["entered_corridor"] = True
+                # No reward — diagnostic only
+
+        # --- Diagnostic: near top door (adjacent) ---
+        if not ms["near_top_door"] and ms["entered_corridor"]:
+            ax, ay = self.agent_pos
+            tdx, tdy = self.top_door_pos
+            if abs(ax - tdx) + abs(ay - tdy) <= 1:
+                ms["near_top_door"] = True
+                # No reward — diagnostic only
+
         # --- Milestone: top door opened (hardest transition — big bonus) ---
         if not ms["top_door_opened"]:
             top_door_obj = self.grid.get(*self.top_door_pos)
@@ -305,11 +333,10 @@ class MultiRoomCorridorEnv(MiniGridEnv):
                 ms["top_door_opened"] = True
                 reward += self._milestone_reward  # +0.5 for corridor transit
 
-        # Distance shaping: always active, guides toward goal
+        # Distance shaping: global 0.1 toward goal
         agent_pos = np.array(self.agent_pos, dtype=np.float64)
         dist_to_goal = np.linalg.norm(agent_pos - self.goal_pos)
         if self._prev_dist_to_goal is not None:
-            # Reward for getting closer to goal (potential-based shaping)
             dist_delta = self._prev_dist_to_goal - dist_to_goal
             reward += 0.1 * dist_delta
         self._prev_dist_to_goal = dist_to_goal
@@ -325,6 +352,11 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         info["milestones_completed"] = float(n_milestones)
         for k, v in ms.items():
             info[f"milestone_{k}"] = float(v)
+
+        # Phase label for Split-RL objective routing:
+        # label=0 (pre-handoff AWR) before box_opened
+        # label=5 (post-handoff AWR) after box_opened
+        info["phase_label"] = 5 if ms["box_opened"] else 0
 
         return obs, reward, terminated, truncated, info
 

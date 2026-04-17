@@ -45,12 +45,14 @@ IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 # Expert label mapping (consistent ordering)
 # Labels 1-3: expert-specific critical actions (pickup/drop/toggle)
 # Label 4: shared navigation actions (left/right/forward) from all experts
+# Label 5: post-handoff AWR (online data after box_opened)
 EXPERT_LABEL_MAP = {
     'moveball': 1,
     'keydoor': 2,
     'boxkey': 3,
 }
 SHARED_NAV_LABEL = 4
+POST_HANDOFF_LABEL = 5
 NAVIGATION_ACTIONS = {0, 1, 2}  # left, right, forward
 
 
@@ -327,7 +329,8 @@ class SPLIT_AWR_GBRL(OffPolicyAlgorithm):
         1. Sample mixed batch from unified buffer (online + expert)
         2. AWR: forward pass → loss → backward → extract per-sample policy & value grads
         3. BC: forward pass → probs → analytical grad (probs - one_hot) for ALL samples
-        4. Provide (n_objs, batch, policy_dim+1): obj 0 = AWR, objs 1..K = BC (same tensor)
+        4. Provide (n_objs, batch, policy_dim+1):
+           obj 0 = early AWR, objs 1..4 = BC, obj 5 = post-handoff AWR
         5. obj_labels routes each sample to pick gradient from the correct objective
         """
         self.policy.set_training_mode(True)
@@ -407,9 +410,13 @@ class SPLIT_AWR_GBRL(OffPolicyAlgorithm):
                     bc_loss_val = F.cross_entropy(expert_logits, expert_acts)
                     bc_losses.append(bc_loss_val.item())
 
-            # 4. Build gradient tuple: obj 0 = AWR, objs 1..K = BC (same tensor)
+            # 4. Build gradient tuple:
+            #    obj 0 = early AWR, objs 1..4 = BC, obj 5 = post-handoff AWR
             #    obj_labels routes each sample to the correct objective's gradient
-            policy_grads = (policy_grad,) + (bc_grads,) * (self.n_objs - 1)
+            #    Both AWR objectives get the same AWR gradient; the tree learns
+            #    separate leaves for pre-handoff vs post-handoff reward contexts
+            n_bc_objs = self.n_objs - 2  # objs 1..4 = BC (4 objectives)
+            policy_grads = (policy_grad,) + (bc_grads,) * n_bc_objs + (policy_grad,)
 
             # 5. Multi-objective GBRL step
             self.policy.step(

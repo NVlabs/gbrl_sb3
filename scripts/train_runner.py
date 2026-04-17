@@ -241,10 +241,18 @@ def _is_json_serializable(v):
 
 # ── wandb config → argparse bridge ──────────────────────────────────────────
 
+# Keys injected by the sweep controller — must not be overwritten by defaults.
+_sweep_config_keys = set()
+
+
 def _inject_args_from_wandb_config():
     """Bridge wandb sweep config → argparse by rebuilding sys.argv."""
+    global _sweep_config_keys
     wandb.init(sync_tensorboard=True, monitor_gym=True)
     config = dict(wandb.config)
+
+    # Remember which keys the sweep controls so config.update() won't clobber them.
+    _sweep_config_keys = {k for k in config if not k.startswith('_')}
 
     algo = config.get('algo_type', '')
     env = config.get('env_name', '')
@@ -659,9 +667,11 @@ def train_runner():
             wandb_run = wandb.run
             wandb_run.name = (getattr(args, 'run_name', None) or 'default') + \
                 f'_{args.algo_type}_{args.env_type}_{args.env_name}_seed_{args.seed}'
+            # Only push non-sweep params; sweep-locked keys must not be
+            # overwritten by argparse defaults.
             wandb_run.config.update(
-                {k: v for k, v in vars(args).items() if _is_json_serializable(v)},
-                allow_val_change=True)
+                {k: v for k, v in vars(args).items()
+                 if _is_json_serializable(v) and k not in _sweep_config_keys})
         else:
             if wandb.run is not None:
                 wandb.finish(quiet=True)
