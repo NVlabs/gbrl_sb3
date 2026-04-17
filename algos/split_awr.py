@@ -45,7 +45,7 @@ IDX_TO_STATE = {v: k for k, v in STATE_TO_IDX.items()}
 # Expert label mapping (consistent ordering)
 # Labels 1-3: expert-specific critical actions (pickup/drop/toggle)
 # Label 4: shared navigation actions (left/right/forward) from all experts
-# Label 5: post-handoff AWR (online data after box_opened)
+# Label 5: post-handoff online AWR (corridor phase, dense shaping active)
 EXPERT_LABEL_MAP = {
     'moveball': 1,
     'keydoor': 2,
@@ -413,9 +413,8 @@ class SPLIT_AWR_GBRL(OffPolicyAlgorithm):
             # 4. Build gradient tuple:
             #    obj 0 = early AWR, objs 1..4 = BC, obj 5 = post-handoff AWR
             #    obj_labels routes each sample to the correct objective's gradient
-            #    Both AWR objectives get the same AWR gradient; the tree learns
-            #    separate leaves for pre-handoff vs post-handoff reward contexts
-            n_bc_objs = self.n_objs - 2  # objs 1..4 = BC (4 objectives)
+            #    obj 0 = pre-handoff AWR, objs 1-4 = BC, obj 5 = post-handoff AWR
+            n_bc_objs = self.n_objs - 2  # objs 1..4
             policy_grads = (policy_grad,) + (bc_grads,) * n_bc_objs + (policy_grad,)
 
             # 5. Multi-objective GBRL step

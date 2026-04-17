@@ -330,19 +330,22 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         district_import = max(Σ_i NEC_i, 0)
         cost = clamp((district_import − frontier) / (cap − frontier), 0, 1)
 
-    Label — congestion + short prep indicator
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — congestion + cheap-price conflict
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
         label = 1   iff   timestep ∈ congestion_window
-                          OR within 3 hours before congestion start
+                          AND price ≤ low_price_threshold
 
-    During high-demand congestion hours and the 3-hour preparation
-    window before each event, battery charging increases district
-    import and risks exceeding the contracted capacity.  The safety
-    policy owns these timesteps; the reward policy owns all other
-    hours.  Both windows are pre-computed from the known NSL
-    schedule (observable state) and are trajectory-independent.
+    During congestion hours when electricity is cheap, the reward
+    policy is tempted to charge (cheap!) but charging increases
+    district import and threatens the contracted capacity cap.
+    The safety policy owns these conflict states.  When price is
+    high during congestion the reward policy naturally avoids
+    charging, so there is no conflict — label stays 0.
+    Pre-congestion prep hours are always label=0: cheap prep
+    means both branches agree (charge up before congestion),
+    and expensive prep is reward-only territory.
     """
 
     def __init__(
@@ -547,17 +550,21 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """label=1 during congestion hours and 3h pre-congestion prep."""
+        """label=1 during congestion when price is cheap (conflict state)."""
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
-        if ts in self._congestion_timesteps:
-            return 1
-        # 3-hour prep window before each congestion event
-        for cs in self._congestion_starts:
-            if cs > ts + 3:
-                break  # sorted — no further starts within 3h
-            if ts < cs:  # within 3h before this congestion start
+
+        if ts not in self._congestion_timesteps:
+            return 0
+
+        # Conflict: congestion + cheap price → reward wants to charge,
+        # but charging increases district import toward the cap.
+        if self._low_price_threshold is not None:
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if price is not None and price <= self._low_price_threshold:
                 return 1
+
         return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
@@ -612,19 +619,19 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
         district_import = max(Σ_i NEC_i, 0)
         cost = dirty × clamp(district_import / import_scale, 0, 1)
 
-    Label — dirty-grid + cheap-price indicator
+    Label — dirty-grid + cheap-price conflict
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        label = 1   iff   timestep ∈ (dirty_window ∪ prep_window)
+        label = 1   iff   timestep ∈ dirty_window
                           AND price ≤ low_price_threshold
 
-    During dirty-grid periods (and their preparation windows), cheap
-    electricity prices tempt the reward policy to charge — but importing
-    during dirty hours incurs carbon cost.  The safety policy owns
-    these conflict states; the reward policy owns all other hours.
-    Both the dirty/prep windows and the price threshold are pre-computed
-    from known schedules (observable state, trajectory-independent).
+    During dirty-grid periods, cheap electricity prices tempt the
+    reward policy to charge — but importing when the grid is dirty
+    incurs carbon cost.  The safety policy owns these conflict states.
+    Pre-dirty prep hours are excluded: cheap clean power before a
+    dirty window is a good time to charge (both branches agree),
+    so routing those to cost wastes reward learning.
     """
 
     def __init__(
@@ -857,11 +864,12 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """label=1 during dirty/prep windows when price is cheap."""
+        """label=1 during dirty windows when price is cheap (conflict state)."""
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        if ts not in self._dirty_timesteps and ts not in self._prep_timesteps:
+        # Only dirty windows — prep excluded (cheap pre-dirty = aligned)
+        if ts not in self._dirty_timesteps:
             return 0
 
         if self._low_price_threshold is not None:

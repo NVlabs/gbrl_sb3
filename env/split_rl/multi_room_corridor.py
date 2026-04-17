@@ -333,10 +333,12 @@ class MultiRoomCorridorEnv(MiniGridEnv):
                 ms["top_door_opened"] = True
                 reward += self._milestone_reward  # +0.5 for corridor transit
 
-        # Distance shaping: global 0.1 toward goal
+        # Distance shaping: only active after box_opened (green key obtained)
+        # Before handoff: BC dominates via sparse milestones, shaping would be premature
+        # After handoff: dense shaping guides corridor transit to final door
         agent_pos = np.array(self.agent_pos, dtype=np.float64)
         dist_to_goal = np.linalg.norm(agent_pos - self.goal_pos)
-        if self._prev_dist_to_goal is not None:
+        if ms["box_opened"] and self._prev_dist_to_goal is not None:
             dist_delta = self._prev_dist_to_goal - dist_to_goal
             reward += 0.1 * dist_delta
         self._prev_dist_to_goal = dist_to_goal
@@ -353,9 +355,9 @@ class MultiRoomCorridorEnv(MiniGridEnv):
         for k, v in ms.items():
             info[f"milestone_{k}"] = float(v)
 
-        # Phase label for Split-RL objective routing:
-        # label=0 (pre-handoff AWR) before box_opened
-        # label=5 (post-handoff AWR) after box_opened
+        # Phase label for objective routing:
+        # 0 = pre-handoff (sparse milestones only, no shaping)
+        # 5 = post-handoff (dense shaping active, corridor phase)
         info["phase_label"] = 5 if ms["box_opened"] else 0
 
         return obs, reward, terminated, truncated, info

@@ -1232,17 +1232,15 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)) else 0.0
 
     def _bus_priority_label(self, agent_id: str) -> int:
-        """Ownership rule for bus priority.
+        """Narrow intervention label for bus priority.
 
-        Cost owns when an urgent bus is waiting on a red lane and the
-        controller can act.  Urgent = bus_wait >= T_warn / T_cost.
+        Cost owns only during the pre-violation window:
+          warn_norm <= bus_wait < 1.0
 
-        Gates (all topology-agnostic):
-          - can_switch: no decision if locked in min_green + yellow
-          - not served: bus already on green needs no intervention
-          - urgency: bus_wait past warning threshold
+        Below warn_norm: too early, reward head should own.
+        At/above 1.0: violation already fired, post-mortem — reward head.
 
-        No pressure gate.  No queue-asymmetry test.
+        Gates: can_switch, not served.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
@@ -1262,7 +1260,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
 
         for i in range(len(has_bus)):
-            if has_bus[i] > 0 and i not in served_lanes and bus_wait[i] >= warn_norm:
+            if has_bus[i] > 0 and i not in served_lanes and warn_norm <= bus_wait[i] < 1.0:
                 return 1
         return 0
 
@@ -1298,36 +1296,28 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 0.0
 
     def _convoy_priority_label(self, agent_id: str) -> int:
-        """Ownership rule for convoy priority.
+        """Narrow intervention label for convoy priority.
 
-        Cost owns in two cases:
+        Cost owns when the agent can act (can_switch gate) and:
 
-        A. Active split (0 < progress < 1): the convoy IS being split.
-           Cost owns unconditionally — no can_switch gate because the
-           state itself demands cost-objective gradients regardless of
-           whether the agent can act this step.
+          A. Pre-split (unserved only): convoy arriving on a red lane,
+             progress == 0, seen_frac >= 0.33.  Decision frontier —
+             switching now prevents the split.
 
-        B. Pre-split (progress == 0, seen_frac >= 0.33, on red lane,
-           can switch): convoy has materially arrived and is blocked.
-           Cost should preemptively own to prevent a split.
+          B. Early split (served or unserved): 0 < progress < 0.5.
+             Convoy is being split but less than half lost.  If the
+             convoy lane is already green, cost still owns because the
+             agent must hold green (not switch away).  If unserved,
+             cost owns because the agent should switch to serve it.
 
-        No pressure gate.  No queue-asymmetry test.
+        Both branches require can_switch.  Branch A also requires
+        unserved; Branch B does not.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
         if has_convoy is None or convoy_progress is None:
             return 0
 
-        seen_frac = self._convoy_seen_frac.get(agent_id)
-
-        # Branch A: active split — cost owns unconditionally
-        for i in range(len(has_convoy)):
-            if has_convoy[i] > 0:
-                prog = convoy_progress[i]
-                if 0 < prog < 1.0:
-                    return 1
-
-        # Branch B: pre-split — need can_switch + unserved
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0
@@ -1336,11 +1326,17 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        seen_frac = self._convoy_seen_frac.get(agent_id)
 
         for i in range(len(has_convoy)):
-            if has_convoy[i] > 0 and i not in served_lanes:
+            if has_convoy[i] > 0:
+                prog = convoy_progress[i]
                 sf = float(seen_frac[i]) if seen_frac is not None and i < len(seen_frac) else 0.0
-                if sf >= 0.33:
+                # Branch A: pre-split, unserved only
+                if i not in served_lanes and prog == 0.0 and sf >= 0.33:
+                    return 1
+                # Branch B: early split, served or unserved (hold-green ownership)
+                if 0.0 < prog < 0.5:
                     return 1
         return 0
 
@@ -1363,13 +1359,18 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str) -> int:
-        """Ownership rule for premium priority.
+        """Narrow intervention label for premium priority.
 
-        Cost owns when an urgent premium vehicle is on a red lane and
-        the controller can act.  Urgent = premium_wait >= T_warn / T_cost.
+        Cost owns when any premium vehicle is on a red lane with
+        0 < wait < 1.0 (pre-violation window).
 
-        Same gates as bus: can_switch, not served, urgency.
-        No pressure gate.  No topology dependence.
+        No urgency threshold — premium T_cost=8s with 7s control
+        latency leaves no room for a warning gate.  The moment a
+        premium appears on a red lane IS the decision frontier.
+
+        Upper bound < 1.0: violation already fired, post-mortem.
+
+        Gates: can_switch, not served.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -1386,10 +1387,9 @@ class SumoRewardCostWrapper(ParallelEnv):
 
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-        warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
 
         for i in range(len(has_premium)):
-            if has_premium[i] > 0 and i not in served_lanes and premium_wait[i] >= warn_norm:
+            if has_premium[i] > 0 and i not in served_lanes and 0.0 < premium_wait[i] < 1.0:
                 return 1
         return 0
 

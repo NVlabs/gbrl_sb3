@@ -453,8 +453,7 @@ class SplitCategoricalAWRReplayBuffer(CategoricalAWRReplayBuffer):
         self._expert_boundary = self.pos
 
     def add(self, obs, next_obs, action, reward, done, infos):
-        # Phase-aware label: use env-provided phase_label if available,
-        # otherwise default to label 0 (pre-handoff AWR)
+        # Phase-aware label: use env-provided phase_label if available
         if infos is not None and len(infos) > 0 and "phase_label" in infos[0]:
             self.labels[self.pos] = int(infos[0]["phase_label"])
         else:
