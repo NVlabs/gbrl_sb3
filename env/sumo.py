@@ -1231,16 +1231,24 @@ class SumoRewardCostWrapper(ParallelEnv):
             return 0.0
         return 1.0 if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)) else 0.0
 
+    def _can_switch_now(self, ts) -> bool:
+        """True when the agent is past min_green+yellow and can change phase."""
+        return (
+            ts is not None
+            and ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
+        )
+
     def _bus_priority_label(self, agent_id: str) -> int:
-        """Label for bus priority: cost-active OR anticipatory.
+        """Actor-routing label for bus priority.
 
-        1. Cost-active: any bus with wait >= 1.0 (matches cost fn
-           exactly).  No gates — cost head must own every state
-           where cost > 0 so it receives the cost signal.
+        Cost head owns the update when:
+          - a bus is present on this intersection's incoming lanes,
+          - the bus is urgent (wait >= warn threshold),
+          - and the controller can actually change the phase.
 
-        2. Anticipatory: warn_norm <= wait < 1.0, can_switch,
-           unserved.  Pre-violation window so cost head can learn
-           to prevent violations.
+        Red lane = switch-now conflict.
+        Green lane = hold-now conflict.
+        Both are cost-owned states for actor gradient routing.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
@@ -1249,25 +1257,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not np.any(has_bus > 0):
             return 0
 
-        # 1. Cost-active: label must cover all cost>0 states
-        if np.any((has_bus > 0) & (bus_wait >= 1.0 - 1e-6)):
-            return 1
-
-        # 2. Anticipatory: pre-violation window with action gates
         ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+        if not self._can_switch_now(ts):
             return 0
 
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
         warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
-
-        for i in range(len(has_bus)):
-            if has_bus[i] > 0 and i not in served_lanes and warn_norm <= bus_wait[i] < 1.0:
-                return 1
-        return 0
+        urgent_present = (has_bus > 0) & (bus_wait >= warn_norm - 1e-6)
+        return int(np.any(urgent_present))
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
@@ -1301,15 +1297,15 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 0.0
 
     def _convoy_priority_label(self, agent_id: str) -> int:
-        """Label for convoy priority: cost-active OR anticipatory.
+        """Actor-routing label for convoy priority.
 
-        1. Cost-active: convoy on unserved lane with 0 < progress < 1
-           (matches cost fn exactly).  No can_switch gate — cost head
-           must own every state where cost > 0.
+        Cost head owns the update when the controller can switch and the
+        convoy is in a decision-relevant regime:
 
-        2. Anticipatory (can_switch + unserved):
-           a. Pre-split: progress == 0, seen_frac >= 0.33.
-           b. Early split: 0 < progress < 0.5.
+          1. Pre-split arrival: seen_frac >= 0.33, progress ~ 0
+          2. Active split:      0 < progress < 1
+
+        Both apply on red (switch-now) and green (hold-now) lanes.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
@@ -1319,31 +1315,24 @@ class SumoRewardCostWrapper(ParallelEnv):
             return 0
 
         ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-
-        # 1. Cost-active: matches cost fn (unserved + active split)
-        for i in range(len(has_convoy)):
-            if has_convoy[i] > 0 and i not in served_lanes:
-                if 0 < convoy_progress[i] < 1.0:
-                    return 1
-
-        # 2. Anticipatory: needs can_switch
-        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+        if not self._can_switch_now(ts):
             return 0
 
         seen_frac = self._convoy_seen_frac.get(agent_id)
+
         for i in range(len(has_convoy)):
-            if has_convoy[i] > 0 and i not in served_lanes:
-                prog = convoy_progress[i]
-                sf = float(seen_frac[i]) if seen_frac is not None and i < len(seen_frac) else 0.0
-                if prog == 0.0 and sf >= 0.33:
-                    return 1
-                if 0.0 < prog < 0.5:
-                    return 1
+            if has_convoy[i] <= 0:
+                continue
+
+            prog = float(convoy_progress[i])
+            sf = float(seen_frac[i]) if seen_frac is not None and i < len(seen_frac) else 0.0
+
+            pre_split = prog <= 1e-6 and sf >= 0.33
+            active_split = 1e-6 < prog < 1.0 - 1e-6
+
+            if pre_split or active_split:
+                return 1
+
         return 0
 
     # ── Premium priority cost/label ──────────────────────────────────────
@@ -1365,15 +1354,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str) -> int:
-        """Label for premium priority: cost-active OR anticipatory.
+        """Actor-routing label for premium priority.
 
-        1. Cost-active: any premium with wait >= 1.0 (matches cost fn
-           exactly).  No gates — cost head must own every state
-           where cost > 0.
+        Same logic as bus:
+          urgent + still present + can_switch => cost-owned actor update.
 
-        2. Anticipatory: warn_norm <= wait < 1.0, can_switch,
-           unserved.  Pre-violation window so cost head can learn
-           to prevent violations.
+        Red lane = switch-now conflict.
+        Green lane = hold-now conflict.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
@@ -1382,25 +1369,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not np.any(has_premium > 0):
             return 0
 
-        # 1. Cost-active: label must cover all cost>0 states
-        if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)):
-            return 1
-
-        # 2. Anticipatory: pre-violation window with action gates
         ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-        if ts.time_since_last_phase_change < ts.min_green + ts.yellow_time:
+        if not self._can_switch_now(ts):
             return 0
 
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
         warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
-
-        for i in range(len(has_premium)):
-            if has_premium[i] > 0 and i not in served_lanes and warn_norm <= premium_wait[i] < 1.0:
-                return 1
-        return 0
+        urgent_present = (has_premium > 0) & (premium_wait >= warn_norm - 1e-6)
+        return int(np.any(urgent_present))
 
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.
