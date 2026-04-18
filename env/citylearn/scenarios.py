@@ -259,7 +259,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if self._high_price_threshold is not None:
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
-            if price is not None and price > self._high_price_threshold:
+            if price is not None and price >= self._high_price_threshold:
                 return 1
 
         # Emergency backstop: critically low SOC during peak
@@ -340,12 +340,12 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     During congestion hours when electricity is cheap, the reward
     policy is tempted to charge (cheap!) but charging increases
     district import and threatens the contracted capacity cap.
-    The safety policy owns these conflict states.  When price is
-    high during congestion the reward policy naturally avoids
-    charging, so there is no conflict — label stays 0.
-    Pre-congestion prep hours are always label=0: cheap prep
-    means both branches agree (charge up before congestion),
-    and expensive prep is reward-only territory.
+    The safety policy owns these conflict states.  Pre-congestion
+    prep hours are excluded: charging before congestion can build
+    reserves that help manage later congestion, so both branches
+    agree there.  The price filter ensures only actual conflict
+    states are routed — when price is high during congestion the
+    reward policy naturally avoids charging.
     """
 
     def __init__(
@@ -629,9 +629,9 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     During dirty-grid periods, cheap electricity prices tempt the
     reward policy to charge — but importing when the grid is dirty
     incurs carbon cost.  The safety policy owns these conflict states.
-    Pre-dirty prep hours are excluded: cheap clean power before a
-    dirty window is a good time to charge (both branches agree),
-    so routing those to cost wastes reward learning.
+    Pre-dirty prep hours are excluded: charging on cheap clean power
+    before a dirty window helps both reward and cost (builds reserves),
+    so routing those to the cost branch wastes reward learning.
     """
 
     def __init__(
@@ -864,11 +864,11 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """label=1 during dirty windows when price is cheap (conflict state)."""
+        """label=1 during dirty windows when price is cheap (no prep)."""
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # Only dirty windows — prep excluded (cheap pre-dirty = aligned)
+        # Dirty only — prep excluded (cheap clean power before dirty = aligned)
         if ts not in self._dirty_timesteps:
             return 0
 
@@ -1078,7 +1078,7 @@ def make_carbon_aware_vec_env(
 # Scenario E — Peak Import Ratchet
 # ###########################################################################
 
-DEFAULT_PR_PEAK_TARGET_QUANTILE = 0.75
+DEFAULT_PR_PEAK_TARGET_QUANTILE = 0.85
 DEFAULT_PR_PEAK_CAP_MARGIN = 1.5
 DEFAULT_PR_PRICE_LOW_QUANTILE = 0.35
 DEFAULT_PR_CHARGE_HEADROOM_FRAC = 0.50
@@ -1489,7 +1489,7 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_SR_SOC_RESERVE = 0.50
-DEFAULT_SR_PREP_HOURS = 2
+DEFAULT_SR_PREP_HOURS = 1
 DEFAULT_SR_BUFFER_HOURS = 4
 DEFAULT_SR_HIGH_PRICE_QUANTILE = 0.75
 DEFAULT_SR_EMERGENCY_SOC = 0.25
