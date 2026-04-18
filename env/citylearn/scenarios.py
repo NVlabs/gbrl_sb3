@@ -259,7 +259,7 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if self._high_price_threshold is not None:
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
-            if price is not None and price > self._high_price_threshold:
+            if price is not None and price >= self._high_price_threshold:
                 return 1
 
         # Emergency backstop: critically low SOC during peak
@@ -1114,19 +1114,20 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     Cost is only positive when a *new* peak above peak_target is set.
     Running peak resets to 0 on ``env.reset()``.
 
-    Label — high-demand indicator
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — high-demand + cheap-price conflict
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
         label = 1   iff   district_nsl > peak_target
+                          AND price ≤ price_low_threshold
 
     The label is **trajectory-independent**: it depends only on the
     pre-computed NSL schedule, not on the running peak (which evolves
-    with the agent's actions).  During high-demand hours (base load
-    above the 75th-percentile), any battery charging adds to district
-    import and risks setting a new peak.  The safety policy owns
-    these timesteps to limit charging; the reward policy owns all
-    lower-demand hours.
+    with the agent's actions).  During high-demand hours when electricity
+    is cheap, the reward wants to charge (cheap!) but charging adds to
+    district import and risks setting a new peak.  When price is high
+    during high-demand hours, the reward naturally avoids charging,
+    so there is no conflict — label stays 0.
     """
 
     def __init__(
@@ -1272,16 +1273,21 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """label=1 when district base demand exceeds peak target."""
+        """label=1 when high demand AND cheap price (conflict state)."""
         self._ensure_base_init()
-        if self._peak_target is None:
+        if self._peak_target is None or self._price_low_threshold is None:
             return 0
 
         nsl = self._district_pre_step_nsl()
-        if nsl is None:
+        if nsl is None or nsl <= self._peak_target:
             return 0
 
-        return 1 if nsl > self._peak_target else 0
+        buildings = self._get_buildings()
+        price = self._max_pre_step_price(buildings)
+        if price is None or price > self._price_low_threshold:
+            return 0
+
+        return 1
 
     # -- Gymnasium API overrides (obs augmentation + ratchet reset) -----
 
@@ -1539,14 +1545,14 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        label = 1   iff   timestep ∈ buffer_window ∪ prep_window
+        label = 1   iff   timestep ∈ buffer_window
 
-    During post-sunset buffer windows and the preparation hours
-    preceding them, any battery action affects whether reserves
-    are available when solar generation drops.  The safety policy
-    owns these timesteps; the reward policy owns all other hours.
-    Both windows are pre-computed from the known solar schedule
-    (observable state) and are trajectory-independent.
+    During post-sunset buffer windows, the reward wants to discharge
+    (sell expensive grid power) while the cost needs reserves.  The
+    safety policy owns these timesteps.  Prep hours before sunset
+    are excluded: both branches agree the agent should charge during
+    cheap solar hours, so routing prep to cost wastes reward learning.
+    The reward policy owns all non-buffer hours.
     """
 
     def __init__(
@@ -1697,12 +1703,10 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """label=1 during buffer and prep windows."""
+        """label=1 during post-sunset buffer windows only."""
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
-        if ts in self._buffer_timesteps or ts in self._prep_timesteps:
-            return 1
-        return 0
+        return 1 if ts in self._buffer_timesteps else 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
 
