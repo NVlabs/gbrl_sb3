@@ -259,6 +259,14 @@ def _inject_args_from_wandb_config():
     seed = config.get('seed', 0)
     wandb.run.name = f"{algo}_{env}_s{seed}"
 
+    # Log sweep params for diagnostics
+    hp_keys = {'batch_size', 'n_steps', 'n_epochs', 'gamma', 'max_depth',
+               'policy_lr', 'value_lr', 'cost_lr', 'ent_coef', 'log_std_init',
+               'log_std_lr', 'min_log_std_lr', 'gae_lambda', 'fixed_std', 'target_kl'}
+    sweep_hps = {k: v for k, v in config.items() if k in hp_keys}
+    print(f"[SWEEP] Received {len(config)} params from sweep controller")
+    print(f"[SWEEP] Key HPs from wandb.config: {sweep_hps}")
+
     sys.argv = [sys.argv[0]]
     for key, val in config.items():
         if key.startswith('_'):
@@ -272,7 +280,7 @@ def _inject_args_from_wandb_config():
             sys.argv.extend([f'--{key}', json.dumps(val)])
         else:
             sys.argv.extend([f'--{key}', str(val)])
-    print(f"Injected {len(config)} sweep params into sys.argv")
+    print(f"[SWEEP] Injected {len(_sweep_config_keys)} sweep keys into sys.argv: {sorted(_sweep_config_keys)}")
 
 
 def _inject_args_from_dict(saved):
@@ -636,11 +644,14 @@ def train_runner():
     # wandb resume support
     wandb_run_id_file = log_dir_path / "wandb_run_id.txt"
     effective_wandb_id = wandb_run_id
-    if wandb_run_id_file.exists():
+    if use_checkpointing and wandb_run_id_file.exists():
         effective_wandb_id = wandb_run_id_file.read_text().strip()
         print(f"Found existing wandb run ID from file: {effective_wandb_id}")
         if is_resume:
             args.wandb = True
+    elif wandb_run_id_file.exists() and not use_checkpointing:
+        # Stale file from a previous checkpointed run — ignore it.
+        print(f"Ignoring stale wandb_run_id.txt (checkpointing disabled): {wandb_run_id_file}")
 
     use_wandb = bool(args.wandb) if isinstance(args.wandb, bool) else str(args.wandb).lower() in ("true", "1", "yes")
     wandb_run = None
@@ -739,6 +750,28 @@ def train_runner():
             sweep_id=sweep_id_env,
         ))
 
+    # ── Sweep config verification ────────────────────────────────────────
+    if _sweep_config_keys:
+        hp_keys = {'batch_size', 'n_steps', 'n_epochs', 'gamma', 'max_depth',
+                   'policy_lr', 'value_lr', 'cost_lr', 'ent_coef', 'log_std_init',
+                   'log_std_lr', 'min_log_std_lr', 'gae_lambda', 'fixed_std'}
+        print("[SWEEP] Final args HP values (post-parse, post-defaults):")
+        final_hps = {k: getattr(args, k, None) for k in hp_keys if hasattr(args, k)}
+        print(f"[SWEEP]   {final_hps}")
+        if wandb_run is not None:
+            mismatches = []
+            for k in hp_keys & _sweep_config_keys:
+                arg_val = getattr(args, k, None)
+                cfg_val = wandb_run.config.get(k)
+                if arg_val is not None and cfg_val is not None and str(arg_val) != str(cfg_val):
+                    mismatches.append(f"{k}: args={arg_val} vs wandb.config={cfg_val}")
+            if mismatches:
+                print(f"[SWEEP] WARNING: HP mismatch between args and wandb.config:")
+                for m in mismatches:
+                    print(f"[SWEEP]   {m}")
+            else:
+                print("[SWEEP] All sweep HPs verified: args match wandb.config")
+
     # ── Build algorithm ──────────────────────────────────────────────────
     set_seed(args.seed)
     algo_kwargs = process_policy_kwargs(args)
@@ -817,8 +850,11 @@ def train_runner():
         vec_norm_ckpt = log_dir_path / "checkpoint_vecnormalize.pkl"
         if vec_norm_ckpt.exists():
             vec_norm_ckpt.unlink()
-        if wandb_run_id_file.exists():
-            wandb_run_id_file.unlink()
+
+    # Always clean up wandb_run_id.txt after successful completion,
+    # even when not checkpointing, to prevent stale IDs.
+    if wandb_run_id_file.exists():
+        wandb_run_id_file.unlink()
 
     if wandb_run is not None:
         wandb_run.finish()
