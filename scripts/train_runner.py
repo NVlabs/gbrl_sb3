@@ -282,6 +282,12 @@ def _inject_args_from_wandb_config():
             sys.argv.extend([f'--{key}', str(val)])
     print(f"[SWEEP] Injected {len(_sweep_config_keys)} sweep keys into sys.argv: {sorted(_sweep_config_keys)}")
 
+    # Sync the actual command to wandb so it's visible in the UI
+    actual_cmd = ' '.join(sys.argv)
+    wandb.run.summary['actual_command'] = actual_cmd
+    wandb.run.notes = f"Actual command:\n{actual_cmd}"
+    print(f"[SWEEP] Actual command: {actual_cmd}")
+
 
 def _inject_args_from_dict(saved):
     """Rebuild sys.argv from a saved args dict (checkpoint_args.json)."""

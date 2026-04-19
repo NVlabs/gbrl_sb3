@@ -78,10 +78,8 @@ class SumoRewardCostWrapper(ParallelEnv):
       reward = pressure (or override_reward) — the primary objective
       info['cost']            = binary constraint violation cost (0/1)
       info['original_reward'] = original sumo-rl reward (e.g. diff-waiting-time)
-      info['safety_label']    = anticipatory danger-zone label g(s) ∈ {0, 1}
-                                Pure function of state observations. Fires
-                                BEFORE cost (T_warn < T_cost) to give SPLIT-RL
-                                an anticipatory routing advantage.
+      info['safety_label']    = label: 0 (default/reward), 1 (hard cost),
+                                or [0,1] (shared frontier, both gradients).
 
     Primary benchmark scenarios (exogenous event injection):
       - "premium_priority": binary cost when premium vehicle waits past T_cost.
@@ -256,9 +254,15 @@ class SumoRewardCostWrapper(ParallelEnv):
         # Premium vehicle features
         self._has_premium: Dict[str, np.ndarray] = {}
         self._premium_wait: Dict[str, np.ndarray] = {}
+        self._premium_stopped: Dict[str, np.ndarray] = {}  # 1.0 if premium is stopped (speed<0.1)
         # Route-level tracking: vid → {depart_time, expected_time}
         # expected_time is free-flow travel time from origin to current position
         self._premium_vehicle_info: Dict[str, Dict] = {}  # vid → {depart_time, route_edges}
+        # Per-agent entry-delay: snapshot route_delay when vehicle first appears
+        # at this agent's lanes. local_delay = route_delay - entry_delay.
+        self._premium_entry_delay: Dict[str, Dict[str, float]] = {}  # agent → {vid → entry_delay}
+        # Bus stopped tracking
+        self._bus_stopped: Dict[str, np.ndarray] = {}  # 1.0 if bus is stopped (speed<0.1)
 
         # Debug mode: when True, extra keys are added to info dict each step
         self._debug: bool = False
@@ -994,6 +998,7 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._has_bus[agent_id].fill(0)
                 self._bus_wait[agent_id].fill(0)
                 self._bus_count[agent_id].fill(0)
+                self._bus_stopped[agent_id].fill(0)
             if need_convoy:
                 self._has_convoy[agent_id].fill(0)
                 self._convoy_count[agent_id].fill(0)
@@ -1002,6 +1007,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             if need_premium:
                 self._has_premium[agent_id].fill(0)
                 self._premium_wait[agent_id].fill(0)
+                self._premium_stopped[agent_id].fill(0)
 
         # Per-agent convoy tracking for this step
         # convoy_on_incoming[agent_id][convoy_id] = set of vids on incoming
@@ -1023,6 +1029,7 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._seen_bus_ids.add(vid)
                 lane = sumo.vehicle.getLaneID(vid)
                 vwait = sumo.vehicle.getWaitingTime(vid)
+                speed = sumo.vehicle.getSpeed(vid)
                 mapping = self._lane_to_agent.get(lane)
                 if mapping is None:
                     continue
@@ -1031,6 +1038,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                 self._bus_count[agent_id][lane_idx] += 1.0
                 self._bus_wait[agent_id][lane_idx] = max(
                     self._bus_wait[agent_id][lane_idx], vwait)
+                if speed < 0.1:
+                    self._bus_stopped[agent_id][lane_idx] = 1.0
             self._active_bus_ids -= departed
 
         if need_convoy:
@@ -1084,6 +1093,9 @@ class SumoRewardCostWrapper(ParallelEnv):
                     continue
                 agent_id, lane_idx = mapping
                 self._has_premium[agent_id][lane_idx] = 1.0
+                speed = sumo.vehicle.getSpeed(vid)
+                if speed < 0.1:
+                    self._premium_stopped[agent_id][lane_idx] = 1.0
                 # Route-level delay: elapsed - prefix_free_flow to current edge
                 # This gives real-time delay at the vehicle's current position,
                 # not clipped-to-zero until the full route time elapses.
@@ -1111,12 +1123,20 @@ class SumoRewardCostWrapper(ParallelEnv):
                         route_delay = max(0.0, elapsed - vinfo["prefix_times"][-1])
                 else:
                     route_delay = 0.0
+                # Localize premium delay: subtract entry delay at this agent
+                # so the training cost/label reflects only delay added HERE.
+                entry_cache = self._premium_entry_delay.setdefault(agent_id, {})
+                if vid not in entry_cache:
+                    entry_cache[vid] = route_delay
+                local_delay = max(0.0, route_delay - entry_cache[vid])
                 self._premium_wait[agent_id][lane_idx] = max(
-                    self._premium_wait[agent_id][lane_idx], route_delay)
+                    self._premium_wait[agent_id][lane_idx], local_delay)
             self._active_premium_ids -= departed
             # Clean up info for departed vehicles
             for vid in departed:
                 self._premium_vehicle_info.pop(vid, None)
+                for cache in self._premium_entry_delay.values():
+                    cache.pop(vid, None)
 
         # ── Normalize and store ──
         if need_bus:
@@ -1238,20 +1258,18 @@ class SumoRewardCostWrapper(ParallelEnv):
             and ts.time_since_last_phase_change >= ts.min_green + ts.yellow_time
         )
 
-    def _bus_priority_label(self, agent_id: str) -> int:
-        """Actor-routing label for bus priority.
+    def _bus_priority_label(self, agent_id: str):
+        """Label for bus priority.
 
-        Cost head owns the update when:
-          - a bus is present on this intersection's incoming lanes,
-          - the bus is urgent (wait >= warn threshold),
-          - and the controller can actually change the phase.
-
-        Red lane = switch-now conflict.
-        Green lane = hold-now conflict.
-        Both are cost-owned states for actor gradient routing.
+        Returns:
+          0     = default (no bus conflict)
+          [0,1] = shared frontier (urgent, blocked, pre-violation)
+          1     = hard cost (overdue bus, blocked)
+        Aggregates over ALL lanes before returning.
         """
         has_bus = self._has_bus.get(agent_id)
         bus_wait = self._bus_wait.get(agent_id)
+        stopped = self._bus_stopped.get(agent_id)
         if has_bus is None or bus_wait is None:
             return 0
         if not np.any(has_bus > 0):
@@ -1261,9 +1279,31 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not self._can_switch_now(ts):
             return 0
 
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
         warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
-        urgent_present = (has_bus > 0) & (bus_wait >= warn_norm - 1e-6)
-        return int(np.any(urgent_present))
+
+        any_hard = False
+        any_frontier = False
+
+        for i in range(len(has_bus)):
+            if has_bus[i] <= 0 or bus_wait[i] < warn_norm - 1e-6:
+                continue
+
+            on_red = i not in served_lanes
+            blocked_on_green = stopped is not None and stopped[i] > 0
+
+            if on_red or blocked_on_green:
+                if bus_wait[i] >= 1.0 - 1e-6:
+                    any_hard = True
+                else:
+                    any_frontier = True
+
+        if any_hard:
+            return 1
+        if any_frontier:
+            return [0, 1]
+        return 0
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
@@ -1296,19 +1336,18 @@ class SumoRewardCostWrapper(ParallelEnv):
                     return 1.0
         return 0.0
 
-    def _convoy_priority_label(self, agent_id: str) -> int:
-        """Actor-routing label for convoy priority.
+    def _convoy_priority_label(self, agent_id: str):
+        """Label for convoy priority.
 
-        Cost head owns the update when the controller can switch and the
-        convoy is in a decision-relevant regime:
-
-          1. Pre-split arrival: seen_frac >= 0.33, progress ~ 0
-          2. Active split:      0 < progress < 1
-
-        Both apply on red (switch-now) and green (hold-now) lanes.
+        Returns:
+          0     = default (no convoy conflict)
+          [0,1] = shared frontier (red pre-split, green active-split hold)
+          1     = hard cost (red active split — damage happening)
+        Aggregates over ALL lanes before returning.
         """
         has_convoy = self._has_convoy.get(agent_id)
         convoy_progress = self._convoy_progress.get(agent_id)
+        convoy_count = self._convoy_count.get(agent_id)
         if has_convoy is None or convoy_progress is None:
             return 0
         if not np.any(has_convoy > 0):
@@ -1318,7 +1357,12 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not self._can_switch_now(ts):
             return 0
 
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
         seen_frac = self._convoy_seen_frac.get(agent_id)
+
+        any_hard = False
+        any_frontier = False
 
         for i in range(len(has_convoy)):
             if has_convoy[i] <= 0:
@@ -1326,13 +1370,24 @@ class SumoRewardCostWrapper(ParallelEnv):
 
             prog = float(convoy_progress[i])
             sf = float(seen_frac[i]) if seen_frac is not None and i < len(seen_frac) else 0.0
+            visible_tail = float(convoy_count[i]) if convoy_count is not None and i < len(convoy_count) else 0.0
 
             pre_split = prog <= 1e-6 and sf >= 0.33
             active_split = 1e-6 < prog < 1.0 - 1e-6
 
-            if pre_split or active_split:
-                return 1
+            if i not in served_lanes:
+                if active_split:
+                    any_hard = True
+                elif pre_split:
+                    any_frontier = True
+            else:
+                if active_split and prog < 0.75 and visible_tail >= 0.15:
+                    any_frontier = True
 
+        if any_hard:
+            return 1
+        if any_frontier:
+            return [0, 1]
         return 0
 
     # ── Premium priority cost/label ──────────────────────────────────────
@@ -1353,17 +1408,18 @@ class SumoRewardCostWrapper(ParallelEnv):
             return 0.0
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
-    def _premium_priority_label(self, agent_id: str) -> int:
-        """Actor-routing label for premium priority.
+    def _premium_priority_label(self, agent_id: str):
+        """Label for premium priority.
 
-        Same logic as bus:
-          urgent + still present + can_switch => cost-owned actor update.
-
-        Red lane = switch-now conflict.
-        Green lane = hold-now conflict.
+        Returns:
+          0     = default (no premium conflict)
+          [0,1] = shared frontier (urgent, blocked, pre-violation)
+          1     = hard cost (actual violation, blocked)
+        Aggregates over ALL lanes before returning.
         """
         has_premium = self._has_premium.get(agent_id)
         premium_wait = self._premium_wait.get(agent_id)
+        stopped = self._premium_stopped.get(agent_id)
         if has_premium is None or premium_wait is None:
             return 0
         if not np.any(has_premium > 0):
@@ -1373,9 +1429,35 @@ class SumoRewardCostWrapper(ParallelEnv):
         if not self._can_switch_now(ts):
             return 0
 
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
         warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
-        urgent_present = (has_premium > 0) & (premium_wait >= warn_norm - 1e-6)
-        return int(np.any(urgent_present))
+
+        any_hard = False
+        any_frontier = False
+
+        for i in range(len(has_premium)):
+            if has_premium[i] <= 0:
+                continue
+
+            w = float(premium_wait[i])
+            if w < warn_norm - 1e-6:
+                continue
+
+            on_red = i not in served_lanes
+            blocked_on_green = stopped is not None and stopped[i] > 0
+
+            if on_red or blocked_on_green:
+                if w >= 1.0 - 1e-6:
+                    any_hard = True
+                else:
+                    any_frontier = True
+
+        if any_hard:
+            return 1
+        if any_frontier:
+            return [0, 1]
+        return 0
 
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.
@@ -1922,6 +2004,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             self._seen_convoy_vids = set()
             self._seen_premium_ids = set()
             self._premium_vehicle_info = {}  # reset route-level tracking
+            self._premium_entry_delay = {}  # reset local delay tracking
             self._convoy_seen_by_agent = {}  # reset per-agent convoy history
             if self._is_clean_episode:
                 # Push injection past episode horizon → no events
@@ -1954,6 +2037,8 @@ class SumoRewardCostWrapper(ParallelEnv):
                     self._convoy_progress[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._has_premium[agent_id] = np.zeros(n_lanes, dtype=np.float32)
                     self._premium_wait[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._premium_stopped[agent_id] = np.zeros(n_lanes, dtype=np.float32)
+                    self._bus_stopped[agent_id] = np.zeros(n_lanes, dtype=np.float32)
             # Build reverse lookup: lane_name → (agent_id, lane_index)
             self._lane_to_agent = {}
             for agent_id in self.possible_agents:
@@ -2143,7 +2228,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             has_cost = cost > 0
             self._update_failure_history(agent, has_cost)
 
-            # Label: state-based for side_queue/side_deficit/directional/bus/convoy/premium, else event-proximal
+            # Label dispatch: returns 0, 1, or [0,1]
             if self._cost_fn == "side_queue":
                 label = self._side_queue_label(agent)
             elif self._cost_fn == "side_deficit":

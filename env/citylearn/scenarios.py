@@ -243,29 +243,40 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
-    def _compute_label(self, obs) -> int:
-        """Hard-routing label: cost branch owns in-peak states only.
-
-        Frontier: in-peak + high price → cost branch holds.
-        Emergency: in-peak + critically low SOC → cost branch recovers.
+    def _compute_label(self, obs):
+        """Three-way label:
+            1        = cost-only (conflict: sell temptation / emergency)
+            [0, 1]   = both (aligned: prep reserve building)
+            0        = reward-only
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        if ts not in self._peak_timesteps:
-            return 0
+        # --- In-peak states ---
+        if ts in self._peak_timesteps:
+            # Conflict: high price sell temptation during peak
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1
 
-        # Frontier: high price sell temptation during peak
-        if self._high_price_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price > self._high_price_threshold:
+            # Conflict: critically low SOC during peak
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._emergency_soc:
                 return 1
 
-        # Emergency backstop: critically low SOC during peak
-        mean_soc = self._mean_electrical_soc_pre_step()
-        if mean_soc is not None and mean_soc < self._emergency_soc:
-            return 1
+            return 0
+
+        # --- Prep states (pre-peak, not overlapping peak) ---
+        if ts in self._prep_timesteps:
+            # High price during prep: reward wants to sell, safety wants reserves
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1  # conflict: sell temptation vs reserve building
+            return [0, 1]  # aligned: both want reserves before peak
 
         return 0
 
@@ -549,21 +560,32 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
-    def _compute_label(self, obs) -> int:
-        """label=1 during congestion when price is cheap (conflict state)."""
+    def _compute_label(self, obs):
+        """Three-way label:
+            1        = cost-only (conflict: congestion + cheap price)
+            [0, 1]   = both (aligned: prep + cheap, congestion + not-cheap)
+            0        = reward-only
+        """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        if ts not in self._congestion_timesteps:
-            return 0
+        # --- Congestion states ---
+        if ts in self._congestion_timesteps:
+            if self._low_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price <= self._low_price_threshold:
+                    return 1  # conflict: cheap charge temptation vs cap
+            # Not cheap → aligned: neither wants to charge
+            return [0, 1]
 
-        # Conflict: congestion + cheap price → reward wants to charge,
-        # but charging increases district import toward the cap.
-        if self._low_price_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price <= self._low_price_threshold:
-                return 1
+        # --- Prep states ---
+        if ts in self._prep_timesteps:
+            if self._low_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price <= self._low_price_threshold:
+                    return [0, 1]  # aligned: cheap reserve building
 
         return 0
 
@@ -863,20 +885,32 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
-    def _compute_label(self, obs) -> int:
-        """label=1 during dirty windows when price is cheap (conflict state)."""
+    def _compute_label(self, obs):
+        """Three-way label:
+            1        = cost-only (conflict: dirty + cheap price)
+            [0, 1]   = both (aligned: prep + cheap, dirty + not-cheap)
+            0        = reward-only
+        """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # Only dirty windows — prep excluded (cheap pre-dirty = aligned)
-        if ts not in self._dirty_timesteps:
-            return 0
+        # --- Dirty-grid states ---
+        if ts in self._dirty_timesteps:
+            if self._low_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price <= self._low_price_threshold:
+                    return 1  # conflict: cheap dirty import temptation
+            # Not cheap → aligned: both avoid dirty import
+            return [0, 1]
 
-        if self._low_price_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price <= self._low_price_threshold:
-                return 1
+        # --- Prep states ---
+        if ts in self._prep_timesteps:
+            if self._low_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price <= self._low_price_threshold:
+                    return [0, 1]  # aligned: cheap clean charging
 
         return 0
 
@@ -1271,8 +1305,12 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
-    def _compute_label(self, obs) -> int:
-        """label=1 when district base demand exceeds peak target."""
+    def _compute_label(self, obs):
+        """Three-way label:
+            1        = cost-only (conflict: ratchet-risk + cheap price)
+            [0, 1]   = both (aligned: ratchet-risk + not-cheap price)
+            0        = reward-only
+        """
         self._ensure_base_init()
         if self._peak_target is None:
             return 0
@@ -1281,7 +1319,23 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
         if nsl is None:
             return 0
 
-        return 1 if nsl > self._peak_target else 0
+        # Ratchet-risk gate: NSL high enough that moderate charging
+        # would push district import above the scaled peak target.
+        # Tighter than raw nsl > peak_target (~25% density).
+        charge_headroom = self._charge_headroom_frac * self._total_charge_power
+        ratchet_threshold = self._ratchet_margin * self._peak_target
+        if nsl + charge_headroom <= ratchet_threshold:
+            return 0
+
+        # Ratchet-risk period — split by price
+        if self._price_low_threshold is not None:
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if price is not None and price <= self._price_low_threshold:
+                return 1  # conflict: cheap charge during ratchet-risk
+
+        # Not cheap → aligned: both avoid expensive charging
+        return [0, 1]
 
     # -- Gymnasium API overrides (obs augmentation + ratchet reset) -----
 
@@ -1466,11 +1520,32 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
-    def _compute_label(self, obs) -> int:
-        """label=1 during demand response events."""
+    def _compute_label(self, obs):
+        """Three-way label:
+            1        = cost-only (event window always conflict)
+            [0, 1]   = both (aligned: prep + not-high-price)
+            0        = reward-only
+        """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
-        return 1 if self._in_event_window(ts) else 0
+
+        # --- During event: always conflict ---
+        # Even at moderate prices, reward still prefers discharging
+        # while safety needs reserves.  The conflict does not disappear.
+        if self._in_event_window(ts):
+            return 1
+
+        # --- Pre-event prep ---
+        steps_until = self._steps_until_next_event(ts)
+        if 0 < steps_until <= self._prep_window:
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 0  # high price prep = reward territory
+            return [0, 1]  # aligned: reserve building
+
+        return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
 
@@ -1696,12 +1771,27 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
 
     # -- Label ---------------------------------------------------------
 
-    def _compute_label(self, obs) -> int:
-        """label=1 during buffer and prep windows."""
+    def _compute_label(self, obs):
+        """Three-way label:
+            1        = cost-only (buffer window always conflict)
+            [0, 1]   = both (aligned: prep + low SOC)
+            0        = reward-only
+        """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
-        if ts in self._buffer_timesteps or ts in self._prep_timesteps:
+
+        # --- Post-sunset buffer: always conflict ---
+        # Even at moderate prices, reward wants to spend battery
+        # while safety wants to preserve reserves.  Conflict persists.
+        if ts in self._buffer_timesteps:
             return 1
+
+        # --- Pre-sunset prep + low SOC ---
+        if ts in self._prep_timesteps:
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._soc_reserve:
+                return [0, 1]  # aligned: fill reserves while solar
+
         return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------

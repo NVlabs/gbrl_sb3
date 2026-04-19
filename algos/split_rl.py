@@ -706,11 +706,20 @@ class SPLIT_RL(OnPolicyAlgorithm):
 
             kwargs = {}
             if self.safety_mode:
-                safety_labels = [info.get('safety_label', None) for info in infos]
+                raw_labels = [info.get('safety_label', None) for info in infos]
                 kwargs['cost'] = th.tensor([info.get('cost', 0.0) for info in infos])
                 kwargs['value_cost'] = value_costs
-                if safety_labels[0] is not None:
-                    kwargs['safety_label'] = safety_labels if safety_labels[0] is not None else None
+                if raw_labels[0] is not None:
+                    # Normalize: 0 → [0,0], 1 → [0,1], [0,1] → [0,1]
+                    sl = np.zeros((len(raw_labels), 2), dtype=np.float32)
+                    for i, lbl in enumerate(raw_labels):
+                        if isinstance(lbl, list):
+                            sl[i, 0] = 1.0  # frontier
+                            sl[i, 1] = 1.0  # also cost
+                        elif lbl == 1:
+                            sl[i, 1] = 1.0  # hard cost only
+                        # else: lbl == 0 → [0, 0] already
+                    kwargs['safety_label'] = sl
             elif self.guidance_mode:
                 guidance_labels = [info.get('guidance_active', None) for info in infos]
                 expert_action_probs = [info.get('expert_action', None) for info in infos]
@@ -741,14 +750,18 @@ class SPLIT_RL(OnPolicyAlgorithm):
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones, **kwargs)
 
         if self.safety_mode and hasattr(rollout_buffer, 'safety_labels'):
-            self.logger.record("rollout/env_safety_label_rate", float(np.mean(rollout_buffer.safety_labels)))
-
-        if self.safety_mode and hasattr(rollout_buffer, 'safety_labels'):
-            self.logger.record("rollout/safety_label_rate", float(np.mean(rollout_buffer.safety_labels)))
-            self.logger.record("rollout/safety_label_count", int(np.sum(rollout_buffer.safety_labels)))
-        if self.safety_mode and hasattr(rollout_buffer, 'costs'):
-            self.logger.record("rollout/step_cost_mean", float(np.mean(rollout_buffer.costs)))
-            self.logger.record("rollout/positive_cost_rate", float(np.mean(rollout_buffer.costs > 0)))
+            sl = rollout_buffer.safety_labels  # shape (buf, n_envs, 2)
+            frontier_col = sl[..., 0]
+            hard_col = sl[..., 1]
+            # label_rate: any non-default (frontier or hard cost)
+            label_rate = float(np.mean((frontier_col > 0) | (hard_col > 0)))
+            # frontier: shared [0,1] states
+            frontier_rate = float(np.mean(frontier_col > 0))
+            # hard: cost-only states
+            hard_rate = float(np.mean(hard_col > 0))
+            self.logger.record("rollout/safety_label_rate", label_rate)
+            self.logger.record("rollout/frontier_label_rate", frontier_rate)
+            self.logger.record("rollout/hard_cost_label_rate", hard_rate)
 
         callback.on_rollout_end()
 

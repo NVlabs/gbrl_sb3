@@ -19,7 +19,7 @@ Provides
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -232,7 +232,7 @@ class CityLearnBaseWrapper(gym.Wrapper):
     def _compute_cost(self, obs: np.ndarray) -> float:
         raise NotImplementedError
 
-    def _compute_label(self, obs: np.ndarray) -> int:
+    def _compute_label(self, obs: np.ndarray) -> Union[int, List[int]]:
         raise NotImplementedError
 
     # ------------------------------------------------------------------
