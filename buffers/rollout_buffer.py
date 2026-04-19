@@ -291,7 +291,10 @@ class CostRolloutBuffer(RolloutBuffer):
 
     def reset(self) -> None:
         super().reset()
+        # Bitmap: [reward_active, cost_active] per sample.
+        # Default [1,0] = reward-only (label=0).
         self.safety_labels = np.zeros((self.buffer_size, self.n_envs, 2), dtype=np.float32)
+        self.safety_labels[..., 0] = 1.0  # default: reward objective active
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.value_costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -340,18 +343,8 @@ class CostRolloutBuffer(RolloutBuffer):
         self.costs[self.pos] = cost.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
         if safety_label is not None:
-            # Convert per-env labels to binary matrix (n_envs, 2).
-            # Each env's label: 0 → [1,0], 1 → [0,1], [0,1] → [1,1]
-            sl_rows = []
-            for lbl in safety_label:
-                row = np.zeros(2, dtype=np.float32)
-                if isinstance(lbl, (list, np.ndarray)):
-                    for idx in lbl:
-                        row[int(idx)] = 1.0
-                else:
-                    row[int(lbl)] = 1.0
-                sl_rows.append(row)
-            self.safety_labels[self.pos] = np.array(sl_rows)
+            # safety_label is already a (n_envs, 2) bitmap from collect_rollouts.
+            self.safety_labels[self.pos] = np.asarray(safety_label)
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -448,7 +441,7 @@ class CostRolloutBuffer(RolloutBuffer):
             self.advantages_costs[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
             self.cost_returns[batch_inds].flatten(),
-            self.safety_labels[batch_inds],  # (batch, 2) — keep 2D for multi-label
+            self.safety_labels[batch_inds],  # (batch, 2) bitmap for GBRL obj_labels
         )
         return CostRolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
@@ -875,7 +868,10 @@ class CostCategoricalRolloutBuffer(BaseBuffer):
         self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if self.is_mixed else categorical_dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        # Bitmap: [reward_active, cost_active] per sample.
+        # Default [1,0] = reward-only (label=0).
         self.safety_labels = np.zeros((self.buffer_size, self.n_envs, 2), dtype=np.float32)
+        self.safety_labels[..., 0] = 1.0  # default: reward objective active
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -978,18 +974,8 @@ class CostCategoricalRolloutBuffer(BaseBuffer):
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
 
         if safety_label is not None:
-            # Convert per-env labels to binary matrix (n_envs, 2).
-            # Each env's label: 0 → [1,0], 1 → [0,1], [0,1] → [1,1]
-            sl_rows = []
-            for lbl in safety_label:
-                row = np.zeros(2, dtype=np.float32)
-                if isinstance(lbl, (list, np.ndarray)):
-                    for idx in lbl:
-                        row[int(idx)] = 1.0
-                else:
-                    row[int(lbl)] = 1.0
-                sl_rows.append(row)
-            self.safety_labels[self.pos] = np.array(sl_rows)
+            # safety_label is already a (n_envs, 2) bitmap from collect_rollouts.
+            self.safety_labels[self.pos] = np.asarray(safety_label)
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -1059,7 +1045,7 @@ class CostCategoricalRolloutBuffer(BaseBuffer):
             self.advantages_costs[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
             self.cost_returns[batch_inds].flatten(),
-            self.safety_labels[batch_inds],  # (batch, 2) — keep 2D for multi-label
+            self.safety_labels[batch_inds],  # (batch, 2) bitmap for GBRL obj_labels
         )
         return CostCategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 

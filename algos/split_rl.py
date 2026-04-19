@@ -710,15 +710,17 @@ class SPLIT_RL(OnPolicyAlgorithm):
                 kwargs['cost'] = th.tensor([info.get('cost', 0.0) for info in infos])
                 kwargs['value_cost'] = value_costs
                 if raw_labels[0] is not None:
-                    # Normalize: 0 → [0,0], 1 → [0,1], [0,1] → [0,1]
+                    # Convert to (n_envs, 2) bitmap: [reward_active, cost_active]
+                    # label=0 → [1,0] reward only
+                    # label=1 → [0,1] cost only
+                    # label=[0,1] → [1,1] both objectives
                     sl = np.zeros((len(raw_labels), 2), dtype=np.float32)
                     for i, lbl in enumerate(raw_labels):
                         if isinstance(lbl, list):
-                            sl[i, 0] = 1.0  # frontier
-                            sl[i, 1] = 1.0  # also cost
-                        elif lbl == 1:
-                            sl[i, 1] = 1.0  # hard cost only
-                        # else: lbl == 0 → [0, 0] already
+                            for idx in lbl:
+                                sl[i, int(idx)] = 1.0
+                        else:
+                            sl[i, int(lbl)] = 1.0
                     kwargs['safety_label'] = sl
             elif self.guidance_mode:
                 guidance_labels = [info.get('guidance_active', None) for info in infos]
@@ -751,17 +753,17 @@ class SPLIT_RL(OnPolicyAlgorithm):
 
         if self.safety_mode and hasattr(rollout_buffer, 'safety_labels'):
             sl = rollout_buffer.safety_labels  # shape (buf, n_envs, 2)
-            frontier_col = sl[..., 0]
-            hard_col = sl[..., 1]
-            # label_rate: any non-default (frontier or hard cost)
-            label_rate = float(np.mean((frontier_col > 0) | (hard_col > 0)))
-            # frontier: shared [0,1] states
-            frontier_rate = float(np.mean(frontier_col > 0))
-            # hard: cost-only states
-            hard_rate = float(np.mean(hard_col > 0))
+            reward_col = sl[..., 0]  # 1 when reward objective active
+            cost_col = sl[..., 1]    # 1 when cost objective active
+            # label_rate: fraction of samples with cost objective active
+            label_rate = float(np.mean(cost_col > 0))
+            # multi_label_rate: fraction with BOTH objectives active [1,1]
+            multi_rate = float(np.mean((reward_col > 0) & (cost_col > 0)))
+            # cost_only_rate: fraction with cost only [0,1]
+            cost_only_rate = float(np.mean((reward_col < 1) & (cost_col > 0)))
             self.logger.record("rollout/safety_label_rate", label_rate)
-            self.logger.record("rollout/frontier_label_rate", frontier_rate)
-            self.logger.record("rollout/hard_cost_label_rate", hard_rate)
+            self.logger.record("rollout/multi_label_rate", multi_rate)
+            self.logger.record("rollout/cost_only_label_rate", cost_only_rate)
 
         callback.on_rollout_end()
 

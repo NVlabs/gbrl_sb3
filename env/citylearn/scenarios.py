@@ -244,39 +244,31 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Three-way label:
-            1        = cost-only (conflict: sell temptation / emergency)
-            [0, 1]   = both (aligned: prep reserve building)
-            0        = reward-only
+        """Shared label at in-peak conflict states only.
+
+        B's always-on cost makes label expansion dangerous — three prior
+        attempts to add prep/new states all increased cost.  Instead of
+        adding states, we soften existing conflict states from cost-only
+        to shared [0,1], giving reward its gradient back at the same
+        ~3-4% of states without touching any new ones.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # --- In-peak states ---
-        if ts in self._peak_timesteps:
-            # Conflict: high price sell temptation during peak
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
-
-            # Conflict: critically low SOC during peak
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._emergency_soc:
-                return 1
-
+        if ts not in self._peak_timesteps:
             return 0
 
-        # --- Prep states (pre-peak, not overlapping peak) ---
-        if ts in self._prep_timesteps:
-            # High price during prep: reward wants to sell, safety wants reserves
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1  # conflict: sell temptation vs reserve building
-            return [0, 1]  # aligned: both want reserves before peak
+        # Shared: high price sell temptation during peak
+        if self._high_price_threshold is not None:
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if price is not None and price > self._high_price_threshold:
+                return [0, 1]
+
+        # Shared: critically low SOC during peak
+        mean_soc = self._mean_electrical_soc_pre_step()
+        if mean_soc is not None and mean_soc < self._emergency_soc:
+            return [0, 1]
 
         return 0
 
