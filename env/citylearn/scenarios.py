@@ -244,13 +244,17 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Shared label at in-peak conflict states only.
+        """Label = 1 only for true in-peak conflict states.
 
-        B's always-on cost makes label expansion dangerous — three prior
-        attempts to add prep/new states all increased cost.  Instead of
-        adding states, we soften existing conflict states from cost-only
-        to shared [0,1], giving reward its gradient back at the same
-        ~3-4% of states without touching any new ones.
+        B has always-on cost and opposing gradients at conflict states
+        (reward wants to sell, cost wants to hold).  Four prior attempts
+        to change labels all made cost worse:
+        1. Adding prep labels (expanded states) — cost worse
+        2. Reverting >= to > in peak detection — cost worse
+        3. Adding prep + [0,1] shared labels — cost worse
+        4. Softening 1 → [0,1] at same states — cost worse
+        DO NOT CHANGE B's labels.  Reward improvement must come from
+        hyperparameters, not label logic.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -258,17 +262,17 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if ts not in self._peak_timesteps:
             return 0
 
-        # Shared: high price sell temptation during peak
+        # Conflict: high price sell temptation during peak
         if self._high_price_threshold is not None:
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
             if price is not None and price > self._high_price_threshold:
-                return [0, 1]
+                return 1
 
-        # Shared: critically low SOC during peak
+        # Conflict: critically low SOC during peak
         mean_soc = self._mean_electrical_soc_pre_step()
         if mean_soc is not None and mean_soc < self._emergency_soc:
-            return [0, 1]
+            return 1
 
         return 0
 

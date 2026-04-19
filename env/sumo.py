@@ -154,7 +154,7 @@ class SumoRewardCostWrapper(ParallelEnv):
         premium_count_per_injection: int = 1,
         premium_headway: float = 2.0,
         # Scenario event probability (0.0 = events every episode, 0.25 = 25% clean)
-        clean_episode_prob: float = 0.0,
+        clean_episode_prob: float = 0.5,
     ):
         if cost_fn not in COST_FN_REGISTRY:
             raise ValueError(
@@ -1262,48 +1262,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         """Label for bus priority.
 
         Returns:
-          0     = default (no bus conflict)
-          [0,1] = shared frontier (urgent, blocked, pre-violation)
-          1     = hard cost (overdue bus, blocked)
-        Aggregates over ALL lanes before returning.
+          0 = no bus present (reward head only)
+          1 = bus present at this intersection (cost head)
         """
         has_bus = self._has_bus.get(agent_id)
-        bus_wait = self._bus_wait.get(agent_id)
-        stopped = self._bus_stopped.get(agent_id)
-        if has_bus is None or bus_wait is None:
+        if has_bus is None or not np.any(has_bus > 0):
             return 0
-        if not np.any(has_bus > 0):
-            return 0
-
-        ts = self._get_traffic_signal(agent_id)
-        if not self._can_switch_now(ts):
-            return 0
-
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-        warn_norm = self._bus_warn_threshold / max(self._bus_cost_threshold, 1e-6)
-
-        any_hard = False
-        any_frontier = False
-
-        for i in range(len(has_bus)):
-            if has_bus[i] <= 0 or bus_wait[i] < warn_norm - 1e-6:
-                continue
-
-            on_red = i not in served_lanes
-            blocked_on_green = stopped is not None and stopped[i] > 0
-
-            if on_red or blocked_on_green:
-                if bus_wait[i] >= 1.0 - 1e-6:
-                    any_hard = True
-                else:
-                    any_frontier = True
-
-        if any_hard:
-            return 1
-        if any_frontier:
-            return [0, 1]
-        return 0
+        return 1
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
@@ -1340,55 +1305,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         """Label for convoy priority.
 
         Returns:
-          0     = default (no convoy conflict)
-          [0,1] = shared frontier (red pre-split, green active-split hold)
-          1     = hard cost (red active split — damage happening)
-        Aggregates over ALL lanes before returning.
+          0 = no convoy present (reward head only)
+          1 = convoy present at this intersection (cost head)
         """
         has_convoy = self._has_convoy.get(agent_id)
-        convoy_progress = self._convoy_progress.get(agent_id)
-        convoy_count = self._convoy_count.get(agent_id)
-        if has_convoy is None or convoy_progress is None:
+        if has_convoy is None or not np.any(has_convoy > 0):
             return 0
-        if not np.any(has_convoy > 0):
-            return 0
-
-        ts = self._get_traffic_signal(agent_id)
-        if not self._can_switch_now(ts):
-            return 0
-
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-        seen_frac = self._convoy_seen_frac.get(agent_id)
-
-        any_hard = False
-        any_frontier = False
-
-        for i in range(len(has_convoy)):
-            if has_convoy[i] <= 0:
-                continue
-
-            prog = float(convoy_progress[i])
-            sf = float(seen_frac[i]) if seen_frac is not None and i < len(seen_frac) else 0.0
-            visible_tail = float(convoy_count[i]) if convoy_count is not None and i < len(convoy_count) else 0.0
-
-            pre_split = prog <= 1e-6 and sf >= 0.33
-            active_split = 1e-6 < prog < 1.0 - 1e-6
-
-            if i not in served_lanes:
-                if active_split:
-                    any_hard = True
-                elif pre_split:
-                    any_frontier = True
-            else:
-                if active_split and prog < 0.75 and visible_tail >= 0.15:
-                    any_frontier = True
-
-        if any_hard:
-            return 1
-        if any_frontier:
-            return [0, 1]
-        return 0
+        return 1
 
     # ── Premium priority cost/label ──────────────────────────────────────
 
@@ -1412,52 +1335,13 @@ class SumoRewardCostWrapper(ParallelEnv):
         """Label for premium priority.
 
         Returns:
-          0     = default (no premium conflict)
-          [0,1] = shared frontier (urgent, blocked, pre-violation)
-          1     = hard cost (actual violation, blocked)
-        Aggregates over ALL lanes before returning.
+          0 = no premium vehicle present (reward head only)
+          1 = premium vehicle present at this intersection (cost head)
         """
         has_premium = self._has_premium.get(agent_id)
-        premium_wait = self._premium_wait.get(agent_id)
-        stopped = self._premium_stopped.get(agent_id)
-        if has_premium is None or premium_wait is None:
+        if has_premium is None or not np.any(has_premium > 0):
             return 0
-        if not np.any(has_premium > 0):
-            return 0
-
-        ts = self._get_traffic_signal(agent_id)
-        if not self._can_switch_now(ts):
-            return 0
-
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-        warn_norm = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
-
-        any_hard = False
-        any_frontier = False
-
-        for i in range(len(has_premium)):
-            if has_premium[i] <= 0:
-                continue
-
-            w = float(premium_wait[i])
-            if w < warn_norm - 1e-6:
-                continue
-
-            on_red = i not in served_lanes
-            blocked_on_green = stopped is not None and stopped[i] > 0
-
-            if on_red or blocked_on_green:
-                if w >= 1.0 - 1e-6:
-                    any_hard = True
-                else:
-                    any_frontier = True
-
-        if any_hard:
-            return 1
-        if any_frontier:
-            return [0, 1]
-        return 0
+        return 1
 
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.
