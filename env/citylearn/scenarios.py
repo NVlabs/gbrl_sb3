@@ -92,6 +92,7 @@ DEFAULT_AVB_SOC_SAFETY_LEVEL = 0.50
 DEFAULT_AVB_PEAK_PRICE_QUANTILE = 0.92
 DEFAULT_AVB_HIGH_PRICE_QUANTILE = 0.75
 DEFAULT_AVB_EMERGENCY_SOC = 0.35
+DEFAULT_AVB_PREP_HOURS = 6
 
 
 class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
@@ -112,30 +113,27 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     (``steps_until / episode_length``).  1.0 = far away, 0.0 = imminent
     or currently in peak.
 
-    Cost — battery depletion (event-gated)
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Cost — battery depletion (always-on)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        if timestep ∈ peak_window:
-            cost = clamp((safety − mean_soc) / safety, 0, 1)
-        else:
-            cost = 0
+        cost = clamp((safety − mean_soc) / safety, 0, 1)
 
-    Cost fires only during peak-price periods.  Outside peaks,
-    cost is zero — the reward branch owns freely.
+    Cost fires at every timestep.  All algorithms see the same
+    always-on constraint signal.
 
-    Label — hard-routing state partition
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    label=1 routes only in-peak conflict states to the cost branch:
+    Label — three-way routing
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ::
 
-    1. **In-peak + high price** (frontier): sell temptation during
-       peak — cost branch holds reserves.  The high-price threshold
-       is Q(0.75) of *peak-hour* prices (not global), so it is
-       discriminative within peak periods.
-    2. **In-peak + emergency low SOC** (backstop): reserves critically
-       depleted during peak — cost branch owns corrective control.
+        label = 1       if in-peak + high price or in-peak + emergency SOC
+        label = [0, 1]  if in prep window (before peak)
+        label = 0       otherwise
 
-    Off-peak states are always label=0: reward branch owns freely.
+    Prep-window ``[0,1]`` labels let the cost branch influence
+    pre-peak charging decisions (both branches active).  Without
+    them the reward branch drains SOC freely off-peak and cost
+    only increases.
     """
 
     def __init__(
@@ -145,16 +143,19 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         peak_price_quantile: float = DEFAULT_AVB_PEAK_PRICE_QUANTILE,
         high_price_quantile: float = DEFAULT_AVB_HIGH_PRICE_QUANTILE,
         emergency_soc: float = DEFAULT_AVB_EMERGENCY_SOC,
+        prep_hours: int = DEFAULT_AVB_PREP_HOURS,
     ):
         super().__init__(env)
         self._soc_safety_level = soc_safety_level
         self._peak_price_quantile = peak_price_quantile
         self._emergency_soc = emergency_soc
         self._high_price_quantile = high_price_quantile
+        self._prep_hours = prep_hours
 
         self._high_price_threshold: Optional[float] = None
         self._episode_length: int = 720
         self._peak_timesteps: set = set()
+        self._prep_timesteps: set = set()
         self._peak_starts: list = []
 
         # Extend observation space by 1 (normalised steps-until-peak)
@@ -211,6 +212,10 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
             for h in range(start, end):
                 self._peak_timesteps.add(h)
             self._peak_starts.append(start)
+            prep_start = max(0, start - self._prep_hours)
+            for h in range(prep_start, start):
+                if h not in self._peak_timesteps:
+                    self._prep_timesteps.add(h)
         self._peak_starts.sort()
 
         # High-price threshold from *peak-hour* prices only.
@@ -268,18 +273,8 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Cost ----------------------------------------------------------
 
     def _compute_cost(self, obs) -> float:
-        """Battery depletion cost ∈ [0, 1], fires only during peak windows.
-
-        Cost is event-gated: zero outside peak-price periods.  This makes
-        cost sparse (~8% of timesteps) and aligned with the label region.
-        A global learner is tempted to discharge during peak (profitable)
-        and ignore the sparse reserve-depletion signal — exactly the
-        pathology SPLIT should fix.
-        """
+        """Battery depletion cost ∈ [0, 1]."""
         self._ensure_base_init()
-        ts = self._get_time_step() - 1  # post-step timestep
-        if ts not in self._peak_timesteps:
-            return 0.0
         mean_soc = self._mean_electrical_soc()
         if mean_soc is None:
             return 0.0
@@ -293,29 +288,33 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Label = 1 only for in-peak conflict states.
-
-        label=1 when peak + high price (discharge temptation) or
-        peak + critically low SOC (emergency).  DO NOT CHANGE —
-        four prior attempts all made cost worse.
+        """Three-way label:
+            1        = cost-only (peak + high price, or peak + emergency SOC)
+            [0, 1]   = both (prep window before peak)
+            0        = reward-only (off-peak, no prep)
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        if ts not in self._peak_timesteps:
-            return 0
+        # --- Peak states ---
+        if ts in self._peak_timesteps:
+            # Conflict: high price sell temptation during peak
+            if self._high_price_threshold is not None:
+                buildings = self._get_buildings()
+                price = self._max_pre_step_price(buildings)
+                if price is not None and price > self._high_price_threshold:
+                    return 1
 
-        # Conflict: high price sell temptation during peak
-        if self._high_price_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price > self._high_price_threshold:
+            # Conflict: critically low SOC during peak
+            mean_soc = self._mean_electrical_soc_pre_step()
+            if mean_soc is not None and mean_soc < self._emergency_soc:
                 return 1
 
-        # Conflict: critically low SOC during peak
-        mean_soc = self._mean_electrical_soc_pre_step()
-        if mean_soc is not None and mean_soc < self._emergency_soc:
-            return 1
+            return 0
+
+        # --- Prep states ---
+        if ts in self._prep_timesteps:
+            return [0, 1]
 
         return 0
 
