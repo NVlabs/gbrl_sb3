@@ -1058,55 +1058,57 @@ def make_dirty_window_reserve_vec_env(
 # Scenario PeakRatchet — Peak Import Ratchet
 # ###########################################################################
 
-DEFAULT_PR_PEAK_TARGET_QUANTILE = 0.75
-DEFAULT_PR_PEAK_CAP_MARGIN = 1.20
+DEFAULT_PR_PEAK_TARGET_QUANTILE = 0.90  # quantile of net baseline import
+DEFAULT_PR_PEAK_CAP_MARGIN = 1.0       # factor on charge_power added to target
 DEFAULT_PR_PRICE_LOW_QUANTILE = 0.35
-DEFAULT_PR_CHARGE_HEADROOM_FRAC = 0.30
+DEFAULT_PR_CHARGE_HEADROOM_FRAC = 0.10
 DEFAULT_PR_RATCHET_MARGIN = 1.05
 
 
 class PeakRatchetWrapper(CityLearnBaseWrapper):
-    """CMDP: minimise electricity cost subject to peak import ratchet.
+    """CMDP: minimise electricity cost subject to peak import exceedance.
 
-    The district pays a *peak demand charge* proportional to the highest
-    hourly import during the episode.  Once a new peak is set, it never
-    decreases within the episode — every subsequent hour below that peak
-    is effectively "free" from cost.  This creates a **non-stationary
-    decision boundary** that shifts as the episode progresses.
+    Each hour, the district pays a *demand charge* proportional to how
+    much its net import exceeds a capacity target.  The running peak
+    (highest import so far) is tracked in the observation so the agent
+    can learn the irreversible consequences of its charging decisions.
 
     Observation augmentation
     ~~~~~~~~~~~~~~~~~~~~~~~~
     Appends one feature to the observation: normalised running peak
-    (``running_peak / peak_cap``).  The agent must observe the current
-    peak to decide whether importing at this step would set a new record.
+    (``running_peak / peak_cap``).  The running peak never decreases
+    within an episode and resets to 0 on ``env.reset()``.
 
-    Cost — incremental peak penalty
+    Cost — per-step peak exceedance
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
         district_import = max(Σ_i NEC_i, 0)
-        if district_import > running_peak:
-            running_peak = district_import
+        running_peak = max(running_peak, district_import)   # observation only
+
+        if district_import > peak_target:
             cost = clamp((district_import − peak_target) / (peak_cap − peak_target), 0, 1)
         else:
             cost = 0
 
-    Cost is only positive when a *new* peak above peak_target is set.
-    Running peak resets to 0 on ``env.reset()``.
+    Cost fires each step where the *current* import exceeds the target.
+    A zero-action policy sees cost only during natural NSL spikes
+    (~10 % at Q90).  A greedy charge policy pushes many more steps
+    over the target, producing dramatically higher cumulative cost.
 
-    Label — dynamic headroom frontier
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — static headroom frontier
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        current_limit = max(running_peak, peak_target)
-        label = 1   iff   headroom tight (NSL + charge ≈ limit)
-                          AND price is cheap
-        label = [0, 1]  if tight headroom but not cheap
-        label = 0       if plenty of headroom
+        headroom = peak_target − baseline_import[t]
+        label = 1        if headroom < charge_push  AND  price is cheap
+        label = [0, 1]   if headroom < charge_push  AND  price not cheap
+        label = 0        if headroom >= charge_push
 
-    The label uses the running peak to define a **non-stationary**
-    decision boundary.  Label=1 marks the dynamic frontier where
-    cheap charging would risk setting an irreversible new peak.
+    The label marks steps where baseline import is close enough to
+    the target that charging would push the district over.  Label=1
+    identifies the conflict frontier: price is cheap (reward wants
+    to charge) but headroom is tight (cost wants to abstain).
     """
 
     def __init__(
@@ -1130,6 +1132,7 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
         self._price_low_threshold: Optional[float] = None
         self._total_charge_power: float = 0.0
         self._running_peak: float = 0.0
+        self._baseline_import: Optional[np.ndarray] = None
 
         # Extend observation space by 1 (normalised running peak)
         low = np.append(self.observation_space.low, np.float32(0.0))
@@ -1147,10 +1150,21 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
         # District NSL schedule
         n_hours, hourly_totals = self._read_nsl_schedule(buildings)
 
-        # Peak target and cap
-        base = float(np.quantile(hourly_totals, self._peak_target_quantile))
-        self._peak_target = base
-        self._peak_cap = self._peak_cap_margin * base
+        # District solar schedule
+        hourly_solar = np.zeros(n_hours)
+        for b in buildings:
+            es = getattr(b, "energy_simulation", None)
+            sg = getattr(es, "_solar_generation", None)
+            if sg is not None and hasattr(sg, "__len__") and len(sg) >= n_hours:
+                hourly_solar += np.asarray(sg[:n_hours], dtype=float)
+
+        # Net baseline import: what NEC would be with zero battery action
+        self._baseline_import = np.maximum(hourly_totals - hourly_solar, 0.0)
+
+        # Peak target from baseline import (solar-adjusted, not raw NSL)
+        self._peak_target = float(
+            np.quantile(self._baseline_import, self._peak_target_quantile)
+        )
 
         # Total fleet charge power
         for b in buildings:
@@ -1159,6 +1173,12 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
                     and hasattr(es, 'nominal_power')
                     and es.nominal_power is not None):
                 self._total_charge_power += es.nominal_power
+
+        # Cap: target + battery's max import contribution
+        self._peak_cap = (
+            self._peak_target
+            + self._peak_cap_margin * self._total_charge_power
+        )
 
         # Price threshold — per-timestep max across buildings
         # (matches _max_pre_step_price used at decision time)
@@ -1235,12 +1255,11 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
         if district_import is None:
             return 0.0
 
-        if district_import <= self._running_peak:
-            return 0.0  # below current peak — free
+        # Update running peak (ratchet — never decreases, observation only)
+        if district_import > self._running_peak:
+            self._running_peak = district_import
 
-        # New peak being set
-        self._running_peak = district_import
-
+        # Per-step cost: fires when current import exceeds target
         if district_import <= self._peak_target:
             return 0.0
 
@@ -1252,31 +1271,32 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Dynamic headroom label — uses running peak, not just static schedule.
+        """Static headroom label — uses peak_target, not running peak.
 
-            1        = cost-only (cheap + tight headroom to new peak)
+            1        = cost-only (cheap + tight headroom to target)
             [0, 1]   = both (tight headroom + not-cheap)
             0        = reward-only
 
-        Uses max(running_peak, peak_target) as the current danger
-        threshold.  If NSL + charge_push > threshold, charging now
-        risks setting an irreversible new peak.  Label=1 only when
-        cheap AND headroom is actually tight — marks the true
-        dynamic frontier where the global learner is tempted to
-        charge (cheap!) but doing so would set a permanent ratchet.
+        Marks steps where baseline import is close enough to peak_target
+        that charging would push import over.  Label=1 when price is
+        also cheap — the true conflict frontier where reward wants to
+        charge but cost wants to abstain.
         """
         self._ensure_base_init()
         if self._peak_target is None:
             return 0
 
-        nsl = self._district_pre_step_nsl()
-        if nsl is None:
-            return 0
+        # Use baseline import (solar-adjusted) for headroom check
+        ts = self._get_time_step()
+        if (self._baseline_import is not None
+                and 0 <= ts < len(self._baseline_import)):
+            current_import = float(self._baseline_import[ts])
+        else:
+            current_import = self._district_pre_step_nsl() or 0.0
 
-        # Dynamic headroom: would charging now risk a new peak?
-        current_limit = max(self._running_peak, self._peak_target)
+        # Would charging now push import above peak_target?
         charge_push = self._charge_headroom_frac * self._total_charge_power
-        risk_headroom = current_limit - nsl
+        risk_headroom = self._peak_target - current_import
 
         if risk_headroom > charge_push * self._ratchet_margin:
             return 0  # plenty of headroom — reward-only
