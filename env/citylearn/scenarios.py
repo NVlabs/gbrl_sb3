@@ -13,60 +13,40 @@ and differ only in cost function and label logic.
 
 Scenarios
 ---------
-Each scenario creates a genuine **gradient conflict** at specific states —
-not just a reward-vs-cost tradeoff that a Lagrangian multiplier can solve.
-At conflict states the reward and cost gradients point in opposite directions
-on the *same* battery action variable.  A global learner averages them →
-the gradients cancel and the policy stalls.  Split-RL labels route these
-states to a dedicated cost branch, preventing cancellation.
+Labels follow a strict pre-violation decision frontier principle:
+**label=1 ONLY at state-observable, action-contingent, pre-violation
+decision points where the next action changes the reward-vs-cost
+tradeoff.**  The agent's state must be close enough to the cost
+boundary that the next action determines whether cost fires.
 
 PeakGuard — **Arbitrage vs Buffer**
-    Conflict: peak price hours.  Reward gradient → DISCHARGE (sell expensive).
-    Cost gradient → HOLD SOC (preserve reserves).  Opposite signs on the same
-    action.  A global learner compromises by partially discharging — selling
-    poorly AND depleting reserves.  Label=1 isolates peak+expensive states
-    so the cost branch holds reserves while the reward branch freely
-    arbitrages off-peak.
+    Frontier: peak price + SOC in [safety, safety+margin].
+    Reward wants to discharge (sell expensive), but one more discharge
+    would push SOC below the safety level.  Label=1 at this narrow
+    pre-violation band only.
 
 CapFrontier — **Contract Demand**
-    Conflict: congestion + cheap price + tight cap headroom.  Reward gradient
-    → CHARGE (buy cheap electricity).  Cost gradient → DON'T CHARGE (would
-    push district import past the contracted cap).  The frontier is exactly
-    where charging would breach the cap — not just "high demand."  Label=1
-    marks only these triple-condition states; the reward branch still charges
-    freely when headroom is ample.
+    Frontier: congestion + cheap price + import headroom tight.
+    Reward wants to charge (cheap), but charging would push district
+    import past the contracted cap.  Label=1 at this triple condition.
 
 DirtyReserve — **Dirty Window Reserve**
-    Conflict: dirty-grid hours + expensive price.  Reward gradient →
-    DISCHARGE (sell at high price).  Cost gradient → HOLD SOC (preserve
-    reserves so the district doesn't import dirty grid power later).
-    During cheap dirty hours both branches agree to charge, so no conflict.
-    Label=1 fires only on the expensive+dirty intersection where the
-    gradients actually oppose.
+    Frontier: dirty hours + SOC in [target, target+margin] + expensive
+    price.  Reward wants to discharge (sell high), but discharge would
+    deplete reserves needed during dirty grid hours.
 
 PeakRatchet — **Peak Ratchet**
-    Conflict: cheap price + tight headroom to the running peak.  Reward
-    gradient → CHARGE (buy cheap).  Cost gradient → DON'T CHARGE (would set
-    an irreversible new peak demand record).  The decision boundary is
-    **non-stationary** — it shifts with the running peak, so no fixed
-    Lagrangian weight can track it.  Label=1 marks the dynamic frontier
-    where cheap charging risks a permanent ratchet.
+    Frontier: baseline import near target + cheap price.  Reward wants
+    to charge (cheap), but charging would push import above the peak
+    target.  Import must be BELOW target (pre-violation).
 
 EventReserve — **Demand Response**
-    Conflict: during DR event windows.  Reward gradient → normal arbitrage
-    (discharge if profitable).  Cost gradient → HOLD SOC (reserves required
-    by the grid event).  Events are sparse (~3% of timesteps) — the global
-    learner sees mostly non-event data and averages away the event signal.
-    Label=1 owns the entire event window so the cost branch controls
-    reserve policy without dilution.
+    Frontier: event window + SOC in [target, target+margin].  During
+    DR events, discharge would cross the reserve boundary.
 
 SunsetBridge — **Solar Ramp Reserve**
-    Conflict: post-sunset buffer hours.  Reward gradient → DISCHARGE (sell
-    stored energy at evening prices).  Cost gradient → HOLD SOC (bridge the
-    grid transition from solar to imports).  The conflict is daily and
-    predictable from the solar schedule.  Label=1 owns the buffer window;
-    prep hours get [0,1] only when SOC is low (both branches agree to
-    charge while solar is still available).
+    Frontier: post-sunset buffer + SOC in [reserve, reserve+margin].
+    During buffer hours, discharge would cross the reserve boundary.
 """
 
 from __future__ import annotations
@@ -122,18 +102,19 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     Cost fires at every timestep.  All algorithms see the same
     always-on constraint signal.
 
-    Label — three-way routing
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — pre-violation decision frontier
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        label = 1       if in-peak + high price or in-peak + emergency SOC
-        label = [0, 1]  if in prep window (before peak)
-        label = 0       otherwise
+        label = 1   if in-peak AND SOC ∈ [safety, safety+margin]
+                     AND price > high_price_threshold
+        label = 0   otherwise
 
-    Prep-window ``[0,1]`` labels let the cost branch influence
-    pre-peak charging decisions (both branches active).  Without
-    them the reward branch drains SOC freely off-peak and cost
-    only increases.
+    Label fires at the narrow SOC band just above the safety level
+    during peak hours when expensive prices make discharge attractive.
+    This is the exact pre-decision point: one more discharge would
+    cross the cost boundary.  NOT reactive — already-violated states
+    (SOC < safety) get label=0.
     """
 
     def __init__(
@@ -288,33 +269,48 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Three-way label:
-            1        = cost-only (peak + high price, or peak + emergency SOC)
-            [0, 1]   = both (prep window before peak)
-            0        = reward-only (off-peak, no prep)
+        """Pre-violation decision frontier label.
+
+            1   = SOC just above safety boundary during peak AND price
+                  makes discharge attractive (next discharge action would
+                  cross the cost boundary)
+            0   = otherwise
+
+        The frontier is where SOC is close enough to the safety level
+        that one discharge step would push it below — but SOC is still
+        ABOVE safety (cost is not yet firing).  Combined with high price
+        (reward wants to discharge), this is the exact pre-decision point
+        where the next action determines whether cost activates.
+
+        NOT reactive: if SOC is already below safety, cost is already
+        firing and the damage is done.  Label=0 there — let the cost
+        advantage (via the cost critic) handle damage control.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # --- Peak states ---
-        if ts in self._peak_timesteps:
-            # Conflict: high price sell temptation during peak
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
-
-            # Conflict: critically low SOC during peak
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._emergency_soc:
-                return 1
-
+        if ts not in self._peak_timesteps:
             return 0
 
-        # --- Prep states ---
-        if ts in self._prep_timesteps:
-            return [0, 1]
+        mean_soc = self._mean_electrical_soc_pre_step()
+        if mean_soc is None:
+            return 0
+
+        # Pre-violation frontier: SOC in the danger zone just above safety
+        # One discharge action depletes roughly 5-15% SOC per step
+        soc_margin = 0.15
+        if mean_soc > self._soc_safety_level + soc_margin:
+            return 0  # plenty of SOC headroom — no risk
+        if mean_soc < self._soc_safety_level:
+            return 0  # already in violation — reactive, not pre-violation
+
+        # SOC is in [safety, safety + margin] during peak — frontier zone
+        # Check if price creates discharge temptation
+        if self._high_price_threshold is not None:
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if price is not None and price > self._high_price_threshold:
+                return 1  # frontier: about to cross + discharge temptation
 
         return 0
 
@@ -580,18 +576,16 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Headroom-aware label — marks the actual frontier, not just a regime.
+        """Pre-violation decision frontier label.
 
-            1        = cost-only (congestion + cheap + headroom tight)
-            [0, 1]   = both (congestion + not-cheap, or cheap but plenty of room)
-            0        = reward-only
+            1   = congestion + cheap price + headroom tight (charging
+                  would push import past the frontier)
+            0   = otherwise
 
-        Label=1 only when all three hold:
-          1. In congestion window (high base demand)
-          2. Price is cheap (reward tempted to charge)
-          3. Cap headroom is tight (charging would push import near cap)
-        This marks the true decision frontier where the global learner
-        is tempted to charge (cheap!) but doing so risks cap violation.
+        The frontier is where base demand is high enough that the
+        agent's charge action would push district import above the
+        contracted cap frontier.  Combined with cheap price (reward
+        wants to charge), this is the exact pre-decision point.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -601,22 +595,21 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 
         # Check actual headroom to frontier
         nsl = self._district_pre_step_nsl()
-        charge_push = 0.5 * self._total_charge_power  # moderate charge estimate
-        headroom_tight = False
-        if nsl is not None and self._frontier is not None:
-            headroom = self._frontier - nsl
-            headroom_tight = (headroom <= charge_push)
+        if nsl is None or self._frontier is None:
+            return 0
+        charge_push = 0.5 * self._total_charge_power
+        headroom = self._frontier - nsl
+        if headroom > charge_push:
+            return 0  # plenty of room — charging is safe
 
+        # Tight headroom — check if price creates charge temptation
         if self._low_price_threshold is not None:
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
             if price is not None and price <= self._low_price_threshold:
-                if headroom_tight:
-                    return 1  # conflict: cheap + tight headroom
-                return [0, 1]  # cheap but plenty of room — aligned
+                return 1  # frontier: cheap + tight headroom
 
-        # Not cheap during congestion — aligned
-        return [0, 1]
+        return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
 
@@ -851,31 +844,39 @@ class DirtyWindowReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Three-way label:
-            1        = cost-only (conflict: dirty + expensive price)
-            [0, 1]   = both (aligned: dirty + cheap, or prep)
-            0        = reward-only
+        """Pre-violation decision frontier label.
+
+            1   = dirty window + SOC just above safety target + expensive
+                  price (discharge temptation would deplete reserves)
+            0   = otherwise
+
+        The frontier is where SOC is close enough to the target that
+        one discharge step would push it below — during dirty hours
+        when high price makes discharge attractive.  SOC must be ABOVE
+        the target (pre-violation, not post-violation).
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # --- Dirty-grid states ---
-        if ts in self._dirty_timesteps:
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1  # conflict: expensive + dirty → discharge temptation vs hold SOC
-            # Cheap during dirty → aligned: both ok with charging
-            return [0, 1]
+        if ts not in self._dirty_timesteps:
+            return 0
 
-        # --- Prep states ---
-        if ts in self._prep_timesteps:
-            if self._low_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price <= self._low_price_threshold:
-                    return [0, 1]  # aligned: cheap clean charging before dirty
+        # SOC must be in the pre-violation zone
+        mean_soc = self._mean_electrical_soc_pre_step()
+        if mean_soc is None:
+            return 0
+        soc_margin = 0.15
+        if mean_soc > self._soc_target + soc_margin:
+            return 0  # plenty of SOC — no risk
+        if mean_soc < self._soc_target:
+            return 0  # already violated — reactive
+
+        # Price must create discharge temptation
+        if self._high_price_threshold is not None:
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if price is not None and price > self._high_price_threshold:
+                return 1  # frontier: about to cross + discharge temptation
 
         return 0
 
@@ -1270,22 +1271,21 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Static headroom label — uses peak_target, not running peak.
+        """Pre-violation decision frontier label.
 
-            1        = cost-only (cheap + tight headroom to target)
-            [0, 1]   = both (tight headroom + not-cheap)
-            0        = reward-only
+            1   = baseline import near peak_target + cheap price
+                  (charge action would push import over target)
+            0   = otherwise
 
-        Marks steps where baseline import is close enough to peak_target
-        that charging would push import over.  Label=1 when price is
-        also cheap — the true conflict frontier where reward wants to
-        charge but cost wants to abstain.
+        The frontier is where baseline import is close enough to the
+        target that charging (attracted by cheap price) would push
+        district import above the peak target.  Baseline import must
+        be BELOW the target (pre-violation).
         """
         self._ensure_base_init()
         if self._peak_target is None:
             return 0
 
-        # Use baseline import (solar-adjusted) for headroom check
         ts = self._get_time_step()
         if (self._baseline_import is not None
                 and 0 <= ts < len(self._baseline_import)):
@@ -1293,22 +1293,24 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
         else:
             current_import = self._district_pre_step_nsl() or 0.0
 
-        # Would charging now push import above peak_target?
+        # Already above target — violation in progress, not pre-violation
+        if current_import >= self._peak_target:
+            return 0
+
+        # Check if charging would push import over target
         charge_push = self._charge_headroom_frac * self._total_charge_power
-        risk_headroom = self._peak_target - current_import
+        headroom = self._peak_target - current_import
+        if headroom > charge_push * self._ratchet_margin:
+            return 0  # plenty of headroom
 
-        if risk_headroom > charge_push * self._ratchet_margin:
-            return 0  # plenty of headroom — reward-only
-
-        # Tight headroom — split by price
+        # Tight headroom — check cheap price (charge temptation)
         if self._price_low_threshold is not None:
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
             if price is not None and price <= self._price_low_threshold:
-                return 1  # conflict: cheap charge during tight headroom
+                return 1  # frontier: cheap + tight headroom
 
-        # Not cheap → aligned: both avoid expensive charging
-        return [0, 1]
+        return 0
 
     # -- Gymnasium API overrides (obs augmentation + ratchet reset) -----
 
@@ -1513,31 +1515,35 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Three-way label:
-            1        = cost-only (event window always conflict)
-            [0, 1]   = both (aligned: prep + not-high-price)
-            0        = reward-only
+        """Pre-violation decision frontier label.
+
+            1   = event window + SOC just above target (discharge
+                  would cross the cost boundary)
+            0   = otherwise
+
+        During DR events, the frontier is where SOC is close enough
+        to the target that one discharge would push it below.  SOC
+        must be ABOVE target (pre-violation).  Events are sparse
+        (~3% of steps) and the cost branch needs to own only the
+        actual decision frontier within those events.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # --- During event: always conflict ---
-        # Even at moderate prices, reward still prefers discharging
-        # while safety needs reserves.  The conflict does not disappear.
-        if self._in_event_window(ts):
-            return 1
+        if not self._in_event_window(ts):
+            return 0
 
-        # --- Pre-event prep ---
-        steps_until = self._steps_until_next_event(ts)
-        if 0 < steps_until <= self._prep_window:
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 0  # high price prep = reward territory
-            return [0, 1]  # aligned: reserve building
+        # SOC must be in the pre-violation zone
+        mean_soc = self._mean_electrical_soc_pre_step()
+        if mean_soc is None:
+            return 0
+        soc_margin = 0.15
+        if mean_soc > self._soc_target + soc_margin:
+            return 0  # plenty of SOC — no risk
+        if mean_soc < self._soc_target:
+            return 0  # already violated
 
-        return 0
+        return 1  # frontier: event + SOC about to cross target
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
 
@@ -1743,27 +1749,33 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Three-way label:
-            1        = cost-only (buffer window always conflict)
-            [0, 1]   = both (aligned: prep + low SOC)
-            0        = reward-only
+        """Pre-violation decision frontier label.
+
+            1   = buffer window + SOC just above reserve target
+                  (discharge would cross the cost boundary)
+            0   = otherwise
+
+        During post-sunset buffer windows, the frontier is where SOC
+        is close enough to the reserve level that one discharge would
+        push it below.  SOC must be ABOVE reserve (pre-violation).
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        # --- Post-sunset buffer: always conflict ---
-        # Even at moderate prices, reward wants to spend battery
-        # while safety wants to preserve reserves.  Conflict persists.
-        if ts in self._buffer_timesteps:
-            return 1
+        if ts not in self._buffer_timesteps:
+            return 0
 
-        # --- Pre-sunset prep + low SOC ---
-        if ts in self._prep_timesteps:
-            mean_soc = self._mean_electrical_soc_pre_step()
-            if mean_soc is not None and mean_soc < self._soc_reserve:
-                return [0, 1]  # aligned: fill reserves while solar
+        # SOC must be in the pre-violation zone
+        mean_soc = self._mean_electrical_soc_pre_step()
+        if mean_soc is None:
+            return 0
+        soc_margin = 0.15
+        if mean_soc > self._soc_reserve + soc_margin:
+            return 0  # plenty of SOC — no risk
+        if mean_soc < self._soc_reserve:
+            return 0  # already violated
 
-        return 0
+        return 1  # frontier: buffer + SOC about to cross reserve
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
 

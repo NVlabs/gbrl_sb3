@@ -37,6 +37,10 @@ RUN pip install --no-build-isolation gfootball
 RUN pip install -r requirements.txt
 # CityLearn dataset + PV/battery sizing data (must exist in Docker build context)
 COPY datasets/citylearn/ datasets/citylearn/
+# MiniGrid expert demonstrations (used by baselines: SQIL, RLPD, BC, AWR+expert)
+COPY datasets/minigrid/moveball_expert.npz datasets/minigrid/moveball_expert.npz
+COPY datasets/minigrid/keydoor_expert.npz datasets/minigrid/keydoor_expert.npz
+COPY datasets/minigrid/boxkey_expert.npz datasets/minigrid/boxkey_expert.npz
 # Place misc data in CityLearn cache so it never downloads from GitHub at runtime
 RUN mkdir -p /root/.cache/citylearn/v2.3.1/misc && \
     cp datasets/citylearn/misc/* /root/.cache/citylearn/v2.3.1/misc/
