@@ -35,6 +35,8 @@ WORKDIR /gbrl_sb3
 RUN git fetch; git checkout dev; git pull
 RUN pip install --no-build-isolation gfootball
 RUN pip install -r requirements.txt
+# imitation requires gymnasium~=0.29 but we use 1.0.0; install without deps
+RUN pip install --no-deps imitation==1.0.0
 # CityLearn dataset + PV/battery sizing data (must exist in Docker build context)
 COPY datasets/citylearn/ datasets/citylearn/
 # MiniGrid expert demonstrations (used by baselines: SQIL, RLPD, BC, AWR+expert)
