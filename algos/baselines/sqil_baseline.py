@@ -44,6 +44,16 @@ class SQILBaseline:
         if isinstance(expert_datasets, str):
             expert_datasets = json.loads(expert_datasets)
 
+        # imitation's SQILReplayBuffer creates expert_buffer with n_envs=1
+        # but inherits the main buffer's n_envs from the VecEnv.
+        # This causes shape mismatches during sample() if n_envs > 1.
+        n_envs = env.num_envs if hasattr(env, 'num_envs') else 1
+        if n_envs > 1:
+            raise ValueError(
+                f"SQIL requires num_envs=1 (got {n_envs}). "
+                "Add 'num_envs: 1' to your sweep YAML."
+            )
+
         # Get a reference env for observation conversion
         # env is a VecEnv, get the first underlying env
         ref_env = env.envs[0] if hasattr(env, 'envs') else env

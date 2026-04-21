@@ -310,8 +310,12 @@ def _inject_args_from_wandb_config():
     print(f"[SWEEP] Key HPs: {sweep_hps}")
 
     sys.argv = [sys.argv[0]]
+    # Keys injected by wandb itself (not user sweep params) — skip them
+    _WANDB_INTERNAL_KEYS = {'wandb_version'}
     for key, val in config.items():
         if key.startswith('_'):
+            continue
+        if key in _WANDB_INTERNAL_KEYS:
             continue
         if val is None:
             continue

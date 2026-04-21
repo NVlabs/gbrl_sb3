@@ -78,6 +78,12 @@ class RLPDBaseline:
         """Add expert demonstrations to DQN's replay buffer."""
         ref_env = self.env.envs[0] if hasattr(self.env, 'envs') else self.env
 
+        # replay_buffer.add() reshapes arrays to (n_envs, ...).
+        # We add one transition at a time, so temporarily set n_envs=1.
+        buf = self.dqn.replay_buffer
+        orig_n_envs = buf.n_envs
+        buf.n_envs = 1
+
         total_added = 0
         for name, path in self.expert_datasets.items():
             data = npz_to_flat_observations(path, ref_env)
@@ -100,7 +106,7 @@ class RLPDBaseline:
 
             # Add to replay buffer one transition at a time
             for i in range(n):
-                self.dqn.replay_buffer.add(
+                buf.add(
                     obs=obs[i],
                     next_obs=next_obs[i],
                     action=np.array([acts[i]]),
@@ -112,8 +118,9 @@ class RLPDBaseline:
             total_added += n
             print(f"RLPD: Added {n} transitions from {name}")
 
+        buf.n_envs = orig_n_envs
         print(f"RLPD: Total {total_added} expert transitions in replay buffer "
-              f"(buffer pos: {self.dqn.replay_buffer.pos})")
+              f"(buffer pos: {buf.pos})")
 
     def learn(self, total_timesteps: int, callback=None, log_interval: int = 4,
               progress_bar: bool = False, **kwargs):
