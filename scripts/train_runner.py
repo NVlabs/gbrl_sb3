@@ -326,7 +326,9 @@ def _build_env(args):
     from config.args import SAFETY_ENVS
 
     CATEGORICAL_ALGOS = [a for a in ['ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'awr_gbrl',
-                                      'dqn_gbrl', 'split_rl'] if 'gbrl' in a or a == 'split_rl']
+                                      'dqn_gbrl', 'split_rl', 'split_awr_gbrl',
+                                      'awr_gbrl_expert']
+                         if 'gbrl' in a or a == 'split_rl']
 
     if args.env_kwargs is None:
         args.env_kwargs = {}
@@ -511,6 +513,16 @@ def _build_callbacks(args, eval_env):
 
 # ── Algorithm dispatch ───────────────────────────────────────────────────────
 
+# Wrapper baselines (non-SB3 classes) need separate instantiation
+WRAPPER_BASELINES = {'sqil', 'bc', 'bc_ppo', 'rlpd'}
+
+EXPERT_DATASETS_DEFAULT = {
+    "moveball": "datasets/minigrid/moveball_expert.npz",
+    "keydoor": "datasets/minigrid/keydoor_expert.npz",
+    "boxkey": "datasets/minigrid/boxkey_expert.npz",
+}
+
+
 def _get_algo_class(algo_type: str):
     """Return the SB3 algorithm class for the given algo_type string."""
     from stable_baselines3.a2c.a2c import A2C
@@ -523,19 +535,76 @@ def _get_algo_class(algo_type: str):
     from algos.ppo import PPO_GBRL
     from algos.sac import SAC_GBRL
     from algos.split_rl import SPLIT_RL
+    from algos.split_awr import SPLIT_AWR_GBRL
     from algos.safety.ppo import VanillaPPO as PPO
+    from algos.baselines.awr_gbrl_expert import AWR_GBRL_Expert
+    from algos.baselines.awr_nn_expert import AWR_NN_Expert
 
     NAME_TO_ALGO = {
         'ppo_gbrl': PPO_GBRL, 'split_rl': SPLIT_RL,
         'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL,
-        'awr_gbrl': AWR_GBRL, 'ppo_nn': PPO,
+        'awr_gbrl': AWR_GBRL, 'split_awr_gbrl': SPLIT_AWR_GBRL,
+        'ppo_nn': PPO,
         'ppo_lag': PPOLag, 'cpo': CPO, 'cup': CUP, 'ipo': IPO,
         'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL,
         'awr_nn': AWR, 'dqn_nn': DQN,
+        'awr_gbrl_expert': AWR_GBRL_Expert,
+        'awr_nn_expert': AWR_NN_Expert,
     }
     if algo_type not in NAME_TO_ALGO:
         raise ValueError(f"Unknown algo_type: {algo_type}. Choose from {list(NAME_TO_ALGO.keys())}")
     return NAME_TO_ALGO[algo_type]
+
+
+def _build_baseline_algo(args, env):
+    """Build a wrapper-style baseline algo (non-SB3 BaseAlgorithm)."""
+    expert_datasets = getattr(args, 'expert_datasets', None) or EXPERT_DATASETS_DEFAULT
+
+    if args.algo_type == 'sqil':
+        from algos.baselines.sqil_baseline import SQILBaseline
+        return SQILBaseline(
+            env=env, expert_datasets=expert_datasets,
+            learning_rate=args.learning_rate,
+            buffer_size=args.buffer_size, batch_size=args.batch_size,
+            learning_starts=args.learning_starts, gamma=args.gamma,
+            target_update_interval=args.target_update_interval,
+            exploration_fraction=args.exploration_fraction,
+            exploration_final_eps=args.exploration_final_eps,
+            train_freq=args.train_freq, gradient_steps=args.gradient_steps,
+            seed=args.seed, device=args.device, verbose=args.verbose,
+        )
+    elif args.algo_type == 'bc':
+        from algos.baselines.bc_baseline import BCBaseline
+        return BCBaseline(
+            env=env, expert_datasets=expert_datasets,
+            batch_size=args.batch_size, n_epochs=args.bc_epochs,
+            lr=args.bc_lr, ent_weight=args.bc_ent_weight,
+            seed=args.seed, device=args.device, verbose=args.verbose,
+        )
+    elif args.algo_type == 'bc_ppo':
+        from algos.baselines.bc_baseline import BCPPOFinetuneBaseline
+        return BCPPOFinetuneBaseline(
+            env=env, expert_datasets=expert_datasets,
+            bc_epochs=args.bc_epochs, bc_batch_size=args.batch_size,
+            bc_lr=args.bc_lr, bc_ent_weight=args.bc_ent_weight,
+            ppo_lr=args.ppo_lr, ppo_n_steps=args.ppo_n_steps,
+            ppo_batch_size=args.ppo_batch_size, ppo_ent_coef=args.ppo_ent_coef,
+            seed=args.seed, device=args.device, verbose=args.verbose,
+        )
+    elif args.algo_type == 'rlpd':
+        from algos.baselines.rlpd import RLPDBaseline
+        return RLPDBaseline(
+            env=env, expert_datasets=expert_datasets,
+            learning_rate=args.learning_rate,
+            buffer_size=args.buffer_size, batch_size=args.batch_size,
+            learning_starts=0, gamma=args.gamma,
+            target_update_interval=args.target_update_interval,
+            exploration_fraction=args.exploration_fraction,
+            exploration_final_eps=args.exploration_final_eps,
+            train_freq=args.train_freq, gradient_steps=4,
+            seed=args.seed, device=args.device, verbose=args.verbose,
+        )
+    raise ValueError(f"Unknown wrapper baseline: {args.algo_type}")
 
 
 # ============================================================================
@@ -780,6 +849,21 @@ def train_runner():
 
     # ── Build algorithm ──────────────────────────────────────────────────
     set_seed(args.seed)
+
+    if args.algo_type in WRAPPER_BASELINES:
+        # Non-SB3 wrapper baselines (sqil, bc, bc_ppo, rlpd)
+        algo = _build_baseline_algo(args, env)
+        remaining_steps = args.total_n_steps
+
+        print(f"Starting training for {remaining_steps} steps...")
+        algo.learn(total_timesteps=remaining_steps, log_interval=args.log_interval)
+
+        print("Training completed successfully.")
+
+        if wandb_run is not None:
+            wandb_run.finish()
+        return
+
     algo_kwargs = process_policy_kwargs(args)
     AlgoClass = _get_algo_class(args.algo_type)
 

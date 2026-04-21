@@ -170,7 +170,9 @@ def parse_args():
                                                          'sumo', 'highway', 'citylearn'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'split_rl',
                                                           'awr_gbrl', 'split_awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
-                                                          'ppo_lag', 'cpo', 'cup', 'ipo'])
+                                                          'ppo_lag', 'cpo', 'cup', 'ipo',
+                                                          'sqil', 'bc', 'bc_ppo', 'rlpd',
+                                                          'awr_gbrl_expert', 'awr_nn_expert'])
     parser.add_argument('--env_name', type=str)
     # env args
     parser.add_argument('--seed', type=int)
@@ -359,6 +361,14 @@ def parse_args():
     parser.add_argument('--rollouts_player', type=int)
     # openspiel
     parser.add_argument('--openspiel_config', type=json_string_to_dict)
+    # Baseline IL+RL params
+    parser.add_argument('--bc_epochs', type=int)
+    parser.add_argument('--bc_lr', type=float)
+    parser.add_argument('--bc_ent_weight', type=float)
+    parser.add_argument('--ppo_lr', type=float)
+    parser.add_argument('--ppo_n_steps', type=int)
+    parser.add_argument('--ppo_batch_size', type=int)
+    parser.add_argument('--ppo_ent_coef', type=float)
     # safety
     parser.add_argument('--lambda_objs', type=float, nargs='+')
     # split AWR
@@ -424,9 +434,9 @@ def get_defaults(args, defaults):
         defaults['env'].get('no_improvement_kwargs', None)
     # Wrapper kwargs
     if args.wrapper == 'normalize' and args.wrapper_kwargs is None:
-        args.wrapper_kwargs = defaults[args.algo_type]['wrapper_kwargs']
+        args.wrapper_kwargs = defaults.get(args.algo_type, {}).get('wrapper_kwargs', {})
     args.atari_wrapper_kwargs = args.atari_wrapper_kwargs if args.atari_wrapper_kwargs else \
-        defaults[args.algo_type]['atari_wrapper_kwargs']
+        defaults.get(args.algo_type, {}).get('atari_wrapper_kwargs', None)
     # Logging defaults
     args.wandb = args.wandb if args.wandb is not None else False
     args.run_name = args.run_name if args.run_name is not None else defaults['logging']['run_name']
@@ -501,6 +511,14 @@ def get_defaults(args, defaults):
         algo_defaults.get('line_search_shrinking_factor', 0.8)
     args.cup_target_kl = args.cup_target_kl if args.cup_target_kl is not None else algo_defaults.get('cup_target_kl', 0.02)
     args.cup_update_iters = args.cup_update_iters if args.cup_update_iters is not None else algo_defaults.get('cup_update_iters', 10)
+    # Baseline IL+RL defaults
+    args.bc_epochs = args.bc_epochs if args.bc_epochs is not None else algo_defaults.get('bc_epochs', 50)
+    args.bc_lr = args.bc_lr if args.bc_lr is not None else algo_defaults.get('bc_lr', 1e-3)
+    args.bc_ent_weight = args.bc_ent_weight if args.bc_ent_weight is not None else algo_defaults.get('bc_ent_weight', 1e-3)
+    args.ppo_lr = args.ppo_lr if args.ppo_lr is not None else algo_defaults.get('ppo_lr', 3e-4)
+    args.ppo_n_steps = args.ppo_n_steps if args.ppo_n_steps is not None else algo_defaults.get('ppo_n_steps', 2048)
+    args.ppo_batch_size = args.ppo_batch_size if args.ppo_batch_size is not None else algo_defaults.get('ppo_batch_size', 64)
+    args.ppo_ent_coef = args.ppo_ent_coef if args.ppo_ent_coef is not None else algo_defaults.get('ppo_ent_coef', 0.01)
     # NN Params
     args.learning_rate = preprocess_lr(args.learning_rate if args.learning_rate is not None else
                                        algo_defaults.get('learning_rate', 1.e-2))
@@ -1334,6 +1352,91 @@ def process_policy_kwargs(args):
             "seed": args.seed,
             "verbose": args.verbose,
         }
+    elif args.algo_type == 'awr_gbrl_expert':
+        algo_kwargs = {
+            "normalize_advantage": args.normalize_advantage,
+            "max_policy_grad_norm": args.max_policy_grad_norm,
+            "max_value_grad_norm": args.max_value_grad_norm,
+            "ent_coef": args.ent_coef,
+            "batch_size": args.batch_size,
+            "beta": args.beta,
+            "buffer_size": args.buffer_size,
+            "value_batch_size": args.value_batch_size,
+            "reward_mode": args.reward_mode,
+            "gradient_steps": args.gradient_steps,
+            "learning_starts": args.learning_starts,
+            "learning_rate": args.learning_rate,
+            "gae_lambda": args.gae_lambda,
+            "gamma": args.gamma,
+            "train_freq": args.train_freq,
+            "weights_max": args.weights_max,
+            "expert_datasets": getattr(args, 'expert_datasets', None) or {},
+            "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
+                "log_std_init": args.log_std_init,
+                "shared_tree_struct": args.shared_tree_struct,
+                "squash": args.squash,
+                "tree_struct": {
+                    "max_depth": args.max_depth,
+                    "n_bins": args.n_bins,
+                    "min_data_in_leaf": args.min_data_in_leaf,
+                    "par_th": args.par_th,
+                    "grow_policy": args.grow_policy,
+                },
+                "tree_optimizer": {
+                    "params": tree_params,
+                    "policy_optimizer": {
+                        "policy_algo": args.policy_algo,
+                        "policy_lr": args.policy_lr,
+                        "policy_beta_1": args.policy_beta_1,
+                        "policy_beta_2": args.policy_beta_2,
+                        "policy_eps": args.policy_eps,
+                        "policy_shrinkage": args.policy_shrinkage,
+                    },
+                    "value_optimizer": {
+                        "value_algo": args.value_algo,
+                        "value_lr": args.value_lr,
+                        "value_beta_1": args.value_beta_1,
+                        "value_beta_2": args.value_beta_2,
+                        "value_eps": args.value_eps,
+                        "value_shrinkage": args.value_shrinkage,
+                    },
+                },
+            },
+            "fixed_std": args.fixed_std,
+            "log_std_lr": args.log_std_lr,
+            "vf_coef": args.vf_coef,
+            "min_log_std_lr": args.min_log_std_lr,
+            "device": args.device,
+            "seed": args.seed,
+            "verbose": args.verbose,
+        }
+    elif args.algo_type == 'awr_nn_expert':
+        algo_kwargs = {
+            "policy": "MlpPolicy",
+            "learning_rate": args.learning_rate,
+            "train_freq": args.train_freq,
+            "gamma": args.gamma,
+            "beta": args.beta,
+            "gae_lambda": args.gae_lambda,
+            "normalize_advantage": args.normalize_advantage,
+            "weights_max": args.weights_max,
+            "ent_coef": args.ent_coef,
+            "batch_size": args.batch_size,
+            "buffer_size": args.buffer_size,
+            "expert_datasets": getattr(args, 'expert_datasets', None) or {},
+            "policy_kwargs": {
+                "optimizer_kwargs": {
+                    "actor_lr": args.learning_rate,
+                    "critic_lr": args.learning_rate,
+                },
+            },
+            "seed": args.seed,
+            "device": args.device,
+            "verbose": args.verbose,
+        }
+    elif args.algo_type in ('sqil', 'bc', 'bc_ppo', 'rlpd'):
+        # Wrapper baselines: handled by _build_baseline_algo in train_runner
+        algo_kwargs = {}
     if args.env_type in ['sepsis', 'symswap', 'openspiel']:
         if args.env_type == 'openspiel':
             algo_kwargs['rollouts_player'] = args.rollouts_player

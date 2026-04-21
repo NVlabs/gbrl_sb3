@@ -102,21 +102,19 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     Cost fires at every timestep.  All algorithms see the same
     always-on constraint signal.
 
-    Label — pre-violation decision frontier
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — frontier + recovery for always-on cost
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        label = 1      if in-peak AND SOC ∈ [safety, safety+m]
-                        AND price > high_price_threshold
-        label = [0,1]  if in-prep AND SOC < safety+m
-                        AND price ≤ high_price_threshold
-        label = 0      otherwise
+        Peak + SOC ≤ safety+m + expensive price  →  label = 1
+        Peak + SOC ≤ safety+m + cheap price      →  label = [0,1]
+        Prep + SOC < safety+m                    →  label = [0,1]
+        Otherwise                                →  label = 0
 
-    Label=1 fires at the narrow SOC band just above the safety level
-    during peak hours when expensive prices make discharge attractive.
-    [0,1] marks prep-window states where both branches agree to charge
-    (cheap price + approaching the safety zone).  Already-violated
-    states (SOC < safety) always get label=0.
+    Because cost is always-on, violations are persistent — the cost
+    branch must control peak states throughout the violation, not just
+    at the frontier.  Post-violation peak states (SOC < safety) get
+    label=1 (expensive) or [0,1] (cheap), NOT label=0.
     """
 
     def __init__(
@@ -271,21 +269,25 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Pre-violation decision frontier label with prep support.
+        """Frontier + recovery label for always-on cost.
 
-            1      = peak + SOC ∈ [safety, safety+m] + expensive price
-            [0,1]  = prep + SOC < safety+m + cheap price (aligned charging)
-            0      = otherwise
+            Peak hours, SOC < safety (active violation):
+                1      = expensive price  (conflict: reward discharge vs cost recovery)
+                [0,1]  = cheap price      (aligned: both want to charge)
+            Peak hours, SOC ∈ [safety, safety+m] (frontier):
+                1      = expensive price  (conflict: discharge temptation)
+                [0,1]  = cheap price      (aligned: approach charging)
+            Prep window, SOC < safety+m:
+                [0,1]  = any price        (recovery / approach support)
+            Otherwise:
+                0
 
-        Label=1 marks the exact pre-decision frontier: peak hours where
-        SOC is just above the safety level and expensive price creates
-        discharge temptation.  One discharge crosses the cost boundary.
-
-        [0,1] marks prep-window states where both branches agree to
-        charge (cheap price + SOC approaching safety zone).  This gives
-        the cost branch visibility into the approach to the frontier.
-
-        Already-violated states (SOC < safety) always get label=0.
+        Unlike event-gated costs, the always-on cost fires at EVERY
+        step while SOC < safety.  Violations are persistent and require
+        active recovery — the cost branch must stay in control during
+        peak hours until SOC is restored above safety.  Labeling
+        post-violation peak states as 0 would let the reward branch
+        keep discharging, making cost spiral upward indefinitely.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -296,33 +298,29 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
 
         soc_margin = 0.15
 
-        # Already violated — label=0 everywhere
-        if mean_soc < self._soc_safety_level:
-            return 0
-
-        # --- Peak hours: label=1 frontier ---
+        # --- Peak hours ---
         if ts in self._peak_timesteps:
+            # SOC > safety+m: safe, reward-only
             if mean_soc > self._soc_safety_level + soc_margin:
-                return 0  # plenty of SOC headroom — no risk
-            # SOC is in [safety, safety + margin] during peak
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1  # frontier: about to cross + discharge temptation
-            return 0
+                return 0
 
-        # --- Prep window: [0,1] aligned support ---
+            # SOC <= safety+m: frontier zone OR active violation
+            # Both need cost-branch involvement during peak
+            buildings = self._get_buildings()
+            price = self._max_pre_step_price(buildings)
+            if self._high_price_threshold is not None and price is not None:
+                if price > self._high_price_threshold:
+                    return 1   # conflict: discharge temptation
+                else:
+                    return [0, 1]  # aligned: cheap, both charge
+            # No price info — default to cost involvement
+            return [0, 1]
+
+        # --- Prep window ---
         if ts in self._prep_timesteps:
             if mean_soc > self._soc_safety_level + soc_margin:
-                return 0  # SOC already safe — no help needed
-            # Cheap price → both branches agree to charge
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price <= self._high_price_threshold:
-                    return [0, 1]  # aligned: prep + low SOC + cheap
-            return 0
+                return 0  # SOC already safe
+            return [0, 1]  # approach / recovery support
 
         return 0
 
