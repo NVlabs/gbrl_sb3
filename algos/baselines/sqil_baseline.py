@@ -14,6 +14,34 @@ from stable_baselines3.dqn import DQN
 from algos.baselines.data_utils import npz_to_transitions
 
 
+def _make_patched_sqil_sample(sqil_buf):
+    """Return a patched sample() that skips None fields (SB3 ≥2.7 compat).
+
+    SB3 2.7+ added an optional ``discounts`` field to ReplayBufferSamples
+    (default None).  imitation's SQILReplayBuffer.sample() blindly calls
+    ``th.cat`` on *every* field, crashing when the field is None.
+    """
+    import torch as th
+    from imitation.util import util as imit_util
+    from stable_baselines3.common.buffers import ReplayBuffer
+    from stable_baselines3.common.type_aliases import ReplayBufferSamples
+
+    def patched_sample(batch_size, env=None):
+        new_size, expert_size = imit_util.split_in_half(batch_size)
+        new_sample = ReplayBuffer.sample(sqil_buf, new_size, env)
+        expert_sample = sqil_buf.expert_buffer.sample(expert_size, env)
+        return ReplayBufferSamples(
+            *(
+                th.cat((getattr(new_sample, f), getattr(expert_sample, f)))
+                if getattr(new_sample, f) is not None
+                else None
+                for f in new_sample._fields
+            ),
+        )
+
+    return patched_sample
+
+
 class SQILBaseline:
     """SQIL baseline that integrates with our training pipeline.
 
@@ -87,15 +115,20 @@ class SQILBaseline:
             rl_kwargs=rl_kwargs,
         )
 
+        sqil_buf = self.sqil.rl_algo.replay_buffer
+
         # Fix imitation 1.0.0 bug: expert_buffer is created without a device
         # arg, so it defaults to "auto" (→ CUDA if available) while the main
         # buffer uses the device from rl_kwargs. This causes device mismatch
         # in SQILReplayBuffer.sample() → th.cat().
-        sqil_buf = self.sqil.rl_algo.replay_buffer
         if hasattr(sqil_buf, 'expert_buffer'):
-            import torch as th
-            target_device = sqil_buf.device
-            sqil_buf.expert_buffer.device = target_device
+            sqil_buf.expert_buffer.device = sqil_buf.device
+
+        # Fix SB3 ≥2.7 compatibility: ReplayBufferSamples gained a
+        # 'discounts' field (default None) for n-step returns.  imitation's
+        # SQILReplayBuffer.sample() does th.cat on ALL fields, which crashes
+        # on None.  Patch sample() to skip None fields.
+        sqil_buf.sample = _make_patched_sqil_sample(sqil_buf)
 
         # Expose the underlying DQN for compatibility
         self.policy = self.sqil.policy
@@ -103,7 +136,8 @@ class SQILBaseline:
     def learn(self, total_timesteps: int, callback=None, log_interval: int = 4,
               progress_bar: bool = False, **kwargs):
         """Train SQIL agent."""
-        self.sqil.train(total_timesteps=total_timesteps, callback=callback)
+        self.sqil.train(total_timesteps=total_timesteps, callback=callback,
+                        log_interval=log_interval)
         return self
 
     def save(self, path: str):

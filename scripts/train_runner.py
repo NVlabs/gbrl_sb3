@@ -602,7 +602,7 @@ def _get_algo_class(algo_type: str):
     return NAME_TO_ALGO[algo_type]
 
 
-def _build_baseline_algo(args, env):
+def _build_baseline_algo(args, env, tensorboard_log=None):
     """Build a wrapper-style baseline algo (non-SB3 BaseAlgorithm)."""
     expert_datasets = getattr(args, 'expert_datasets', None) or EXPERT_DATASETS_DEFAULT
 
@@ -618,6 +618,7 @@ def _build_baseline_algo(args, env):
             exploration_final_eps=args.exploration_final_eps,
             train_freq=args.train_freq, gradient_steps=args.gradient_steps,
             seed=args.seed, device=args.device, verbose=args.verbose,
+            tensorboard_log=tensorboard_log,
         )
     elif args.algo_type == 'bc':
         from algos.baselines.bc_baseline import BCBaseline
@@ -626,6 +627,7 @@ def _build_baseline_algo(args, env):
             batch_size=args.batch_size, n_epochs=args.bc_epochs,
             lr=args.bc_lr, ent_weight=args.bc_ent_weight,
             seed=args.seed, device=args.device, verbose=args.verbose,
+            tensorboard_log=tensorboard_log,
         )
     elif args.algo_type == 'bc_ppo':
         from algos.baselines.bc_baseline import BCPPOFinetuneBaseline
@@ -636,6 +638,7 @@ def _build_baseline_algo(args, env):
             ppo_lr=args.ppo_lr, ppo_n_steps=args.ppo_n_steps,
             ppo_batch_size=args.ppo_batch_size, ppo_ent_coef=args.ppo_ent_coef,
             seed=args.seed, device=args.device, verbose=args.verbose,
+            tensorboard_log=tensorboard_log,
         )
     elif args.algo_type == 'rlpd':
         from algos.baselines.rlpd import RLPDBaseline
@@ -649,6 +652,7 @@ def _build_baseline_algo(args, env):
             exploration_final_eps=args.exploration_final_eps,
             train_freq=args.train_freq, gradient_steps=4,
             seed=args.seed, device=args.device, verbose=args.verbose,
+            tensorboard_log=tensorboard_log,
         )
     raise ValueError(f"Unknown wrapper baseline: {args.algo_type}")
 
@@ -915,18 +919,23 @@ def train_runner():
 
     if args.algo_type in WRAPPER_BASELINES:
         # Non-SB3 wrapper baselines (sqil, bc, bc_ppo, rlpd)
-        algo = _build_baseline_algo(args, env)
+        algo = _build_baseline_algo(args, env, tensorboard_log=tensorboard_log)
         remaining_steps = args.total_n_steps
 
         # Milestone logging — same rollout metrics as Split-AWR
         from callback.callbacks import patch_milestone_logging, MilestoneLoggingCallback
         _patch_baseline_milestone_logging(algo)
         # For on-policy baselines (bc_ppo), use a callback instead
-        milestone_cb = MilestoneLoggingCallback() if args.algo_type == 'bc_ppo' else None
+        if args.algo_type == 'bc_ppo':
+            callback_list.append(MilestoneLoggingCallback())
+
+        # Merge all callbacks (WandbCallback, milestone, eval, etc.)
+        from stable_baselines3.common.callbacks import CallbackList
+        combined_cb = CallbackList(callback_list) if callback_list else None
 
         print(f"Starting training for {remaining_steps} steps...")
         algo.learn(total_timesteps=remaining_steps, log_interval=args.log_interval,
-                   callback=milestone_cb)
+                   callback=combined_cb)
 
         print("Training completed successfully.")
 
