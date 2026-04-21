@@ -246,10 +246,52 @@ _sweep_config_keys = set()
 
 
 def _inject_args_from_wandb_config():
-    """Bridge wandb sweep config → argparse by rebuilding sys.argv."""
+    """Bridge wandb sweep config → argparse by rebuilding sys.argv.
+
+    Reads sweep params from the YAML file written by the sweep agent
+    (WANDB_SWEEP_PARAM_PATH) as the ground-truth source, because
+    wandb.config may not be fully populated at the time we read it.
+    Falls back to wandb.config if the file is unavailable.
+    """
     global _sweep_config_keys
     wandb.init(sync_tensorboard=True, monitor_gym=True)
-    config = dict(wandb.config)
+
+    # ── Read sweep params from the agent's config file (ground truth) ────
+    sweep_param_path = os.environ.get("WANDB_SWEEP_PARAM_PATH", "")
+    file_config = {}
+    if sweep_param_path and os.path.isfile(sweep_param_path):
+        try:
+            import yaml
+            with open(sweep_param_path) as f:
+                raw = yaml.safe_load(f) or {}
+            # The file format is {key: {value: X}} — extract the values
+            for k, v in raw.items():
+                if isinstance(v, dict) and 'value' in v:
+                    file_config[k] = v['value']
+                else:
+                    file_config[k] = v
+            print(f"[SWEEP] Read {len(file_config)} params from sweep param file: {sweep_param_path}")
+        except Exception as e:
+            print(f"[SWEEP] WARNING: Failed to read sweep param file: {e}")
+
+    # Use file config as primary source, fall back to wandb.config
+    wandb_config = dict(wandb.config)
+    if file_config:
+        # File config is ground truth for sweep-controlled keys
+        config = dict(wandb_config)  # start with wandb.config (may have extras)
+        config.update(file_config)   # override with file values
+        # Also update wandb.config so the UI shows correct values
+        wandb.config.update(file_config, allow_val_change=True)
+        n_overrides = sum(1 for k in file_config
+                          if k in wandb_config and str(wandb_config.get(k)) != str(file_config[k]))
+        if n_overrides > 0:
+            print(f"[SWEEP] WARNING: {n_overrides} keys differed between wandb.config and sweep param file!")
+            for k in file_config:
+                if k in wandb_config and str(wandb_config.get(k)) != str(file_config[k]):
+                    print(f"[SWEEP]   {k}: wandb.config={wandb_config.get(k)} -> file={file_config[k]}")
+    else:
+        config = wandb_config
+        print(f"[SWEEP] No sweep param file found, using wandb.config ({len(config)} params)")
 
     # Remember which keys the sweep controls so config.update() won't clobber them.
     _sweep_config_keys = {k for k in config if not k.startswith('_')}
@@ -264,8 +306,8 @@ def _inject_args_from_wandb_config():
                'policy_lr', 'value_lr', 'cost_lr', 'ent_coef', 'log_std_init',
                'log_std_lr', 'min_log_std_lr', 'gae_lambda', 'fixed_std', 'target_kl'}
     sweep_hps = {k: v for k, v in config.items() if k in hp_keys}
-    print(f"[SWEEP] Received {len(config)} params from sweep controller")
-    print(f"[SWEEP] Key HPs from wandb.config: {sweep_hps}")
+    print(f"[SWEEP] Received {len(config)} params (source: {'file+wandb' if file_config else 'wandb.config'})")
+    print(f"[SWEEP] Key HPs: {sweep_hps}")
 
     sys.argv = [sys.argv[0]]
     for key, val in config.items():
