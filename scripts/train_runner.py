@@ -653,6 +653,23 @@ def _build_baseline_algo(args, env):
     raise ValueError(f"Unknown wrapper baseline: {args.algo_type}")
 
 
+def _patch_baseline_milestone_logging(algo):
+    """Patch the underlying SB3 algo in a wrapper baseline for milestone logging."""
+    from callback.callbacks import patch_milestone_logging
+
+    if hasattr(algo, 'dqn'):
+        # RLPD wraps DQN
+        patch_milestone_logging(algo.dqn)
+    elif hasattr(algo, 'sqil') and hasattr(algo.sqil, 'rl_algo'):
+        # SQIL wraps imitation's SQIL which wraps DQN
+        patch_milestone_logging(algo.sqil.rl_algo)
+    elif hasattr(algo, '_ppo'):
+        # BC+PPO — PPO is created lazily in learn(), patch won't work here
+        # Instead, patch after learn creates it (handled in bc_baseline)
+        pass
+    elif hasattr(algo, 'bc'):
+        # Pure BC — no env interaction, no rollout logging needed
+        pass
 # ============================================================================
 # Main training function
 # ============================================================================
@@ -901,8 +918,15 @@ def train_runner():
         algo = _build_baseline_algo(args, env)
         remaining_steps = args.total_n_steps
 
+        # Milestone logging — same rollout metrics as Split-AWR
+        from callback.callbacks import patch_milestone_logging, MilestoneLoggingCallback
+        _patch_baseline_milestone_logging(algo)
+        # For on-policy baselines (bc_ppo), use a callback instead
+        milestone_cb = MilestoneLoggingCallback() if args.algo_type == 'bc_ppo' else None
+
         print(f"Starting training for {remaining_steps} steps...")
-        algo.learn(total_timesteps=remaining_steps, log_interval=args.log_interval)
+        algo.learn(total_timesteps=remaining_steps, log_interval=args.log_interval,
+                   callback=milestone_cb)
 
         print("Training completed successfully.")
 

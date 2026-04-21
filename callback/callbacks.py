@@ -25,6 +25,44 @@ from stable_baselines3.common.vec_env import VecEnv, sync_envs_normalization
 from utils.helpers import evaluate_policy_and_obs, evaluate_policy_with_noise
 from utils.safety import evaluate_policy as evaluate_policy_safety
 
+
+def patch_milestone_logging(sb3_algo):
+    """Patch an SB3 algo's _dump_logs to include milestone metrics.
+
+    For off-policy algos (DQN, SAC): wraps _dump_logs so log_ep_info_metrics()
+    runs before logger.dump(), giving the same rollout output as Split-AWR.
+    For on-policy algos (PPO): not applicable — use MilestoneLoggingCallback.
+    """
+    from utils.helpers import log_ep_info_metrics
+
+    original_dump_logs = sb3_algo._dump_logs
+
+    def _dump_logs_with_milestones(self_algo=sb3_algo):
+        if self_algo.ep_info_buffer and len(self_algo.ep_info_buffer) > 0:
+            log_ep_info_metrics(self_algo.logger, self_algo.ep_info_buffer)
+        original_dump_logs()
+
+    sb3_algo._dump_logs = _dump_logs_with_milestones
+
+
+class MilestoneLoggingCallback(BaseCallback):
+    """Log milestone metrics on rollout end (for on-policy algos like PPO).
+
+    For on-policy algos, on_rollout_end fires before logger.dump() in learn(),
+    so recorded metrics get included in the same log dump.
+    """
+
+    def __init__(self, verbose: int = 0):
+        super().__init__(verbose)
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        from utils.helpers import log_ep_info_metrics
+        log_ep_info_metrics(self.logger, self.model.ep_info_buffer)
+
+
 class GradientHistogramCallback(BaseCallback):
     def __init__(self, log_dir: str, awr: bool = True, save_freq: int=-1):
         super().__init__()

@@ -87,13 +87,23 @@ class SQILBaseline:
             rl_kwargs=rl_kwargs,
         )
 
+        # Fix imitation 1.0.0 bug: expert_buffer is created without a device
+        # arg, so it defaults to "auto" (→ CUDA if available) while the main
+        # buffer uses the device from rl_kwargs. This causes device mismatch
+        # in SQILReplayBuffer.sample() → th.cat().
+        sqil_buf = self.sqil.rl_algo.replay_buffer
+        if hasattr(sqil_buf, 'expert_buffer'):
+            import torch as th
+            target_device = sqil_buf.device
+            sqil_buf.expert_buffer.device = target_device
+
         # Expose the underlying DQN for compatibility
         self.policy = self.sqil.policy
 
     def learn(self, total_timesteps: int, callback=None, log_interval: int = 4,
               progress_bar: bool = False, **kwargs):
         """Train SQIL agent."""
-        self.sqil.train(total_timesteps=total_timesteps)
+        self.sqil.train(total_timesteps=total_timesteps, callback=callback)
         return self
 
     def save(self, path: str):
