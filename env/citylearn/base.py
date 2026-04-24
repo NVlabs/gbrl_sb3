@@ -232,7 +232,7 @@ class CityLearnBaseWrapper(gym.Wrapper):
     def _compute_cost(self, obs: np.ndarray) -> float:
         raise NotImplementedError
 
-    def _compute_label(self, obs: np.ndarray) -> Union[int, List[int]]:
+    def _compute_label(self, obs: np.ndarray) -> int:
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -256,6 +256,19 @@ class CityLearnBaseWrapper(gym.Wrapper):
         # the tail of live-appended series.
         self._ensure_base_init()
         pre_label = self._compute_label(None)
+
+        # Binary-only validation: catch stale multi-labels or bad values
+        if isinstance(pre_label, (list, tuple, np.ndarray)):
+            raise TypeError(
+                f"{type(self).__name__} returned multi-label {pre_label}; "
+                "Split-RL now expects scalar binary labels only."
+            )
+        pre_label = int(pre_label)
+        if pre_label not in (0, 1):
+            raise ValueError(
+                f"{type(self).__name__} returned invalid label {pre_label}; "
+                "expected 0 or 1."
+            )
 
         # ---- step ----------------------------------------------------
         obs, native_reward, terminated, truncated, info = self.env.step(action)

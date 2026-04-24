@@ -1348,31 +1348,51 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str):
-        """Label for premium priority — presence-warn + violation-escalate.
+        """Label for premium priority — ownership rule.
 
-        Uses premium_wait (normalized local delay, [0,1]):
-          0     = no premium vehicle on any incoming lane (reward only)
-          [0,1] = premium present, delay below cost threshold (multi-label)
-          1     = delay at/above cost threshold (cost only)
+        1 when:
+          - premium delay has reached warn threshold (cost is imminent), OR
+          - premium is on an unserved lane AND controller can switch
+            (actionable decision frontier where next action matters)
+        0 when:
+          - no premium present
+          - premium is already being served (on a green lane)
+          - premium is on a red lane but controller can't switch yet
+            (still in min_green/yellow — action is locked)
 
-        The multi-label fires on mere presence because premium vehicles
-        transit intersections in 1-2 steps (delta_time=5s, speed=50km/h).
-        With premium_cost_threshold=8s and 5s step resolution, there's
-        only ~1 step between warn and violation — too narrow for a
-        threshold-based warn. Presence-based multi gives the cost head
-        consistent gradient signal across all premium-present steps.
+        This avoids pure-presence dilution (95% zero-cost label=1 steps)
+        and noisy premium_wait > 0 (fires on tiny route-delay mismatches).
+        Matches bus logic: label fires only at the decision frontier.
         """
         has_premium = self._has_premium.get(agent_id)
-        if has_premium is None or not np.any(has_premium > 0):
-            return 0
         premium_wait = self._premium_wait.get(agent_id)
-        if premium_wait is None:
-            return [0, 1]  # premium present but no wait data — warn
-        # Check for violation first (cost only)
-        if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)):
+        if has_premium is None or premium_wait is None:
+            return 0
+        if not np.any(has_premium > 0):
+            return 0
+
+        # premium_wait is normalized by _premium_cost_threshold.
+        warn_frac = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
+        warn_frac = float(np.clip(warn_frac, 0.0, 1.0))
+        premium_mask = has_premium > 0
+
+        # Urgent: delay at/above warning or cost already active → cost owns.
+        if np.any(premium_mask & (premium_wait >= warn_frac)):
             return 1
-        # Premium present, below violation → multi-label (both heads)
-        return [0, 1]
+
+        # Below warning: check if premium is on an unserved lane AND
+        # controller can act (past min_green + yellow).
+        ts = self._get_traffic_signal(agent_id)
+        if ts is None:
+            return 0
+        phase = ts.green_phase
+        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
+        if not self._can_switch_now(ts):
+            return 0
+        premium_lanes = np.flatnonzero(premium_mask)
+        if any(int(i) not in served_lanes for i in premium_lanes):
+            return 1
+        return 0
 
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.
@@ -2206,6 +2226,20 @@ class SumoRewardCostWrapper(ParallelEnv):
                     pw = self._premium_wait.get(agent, np.zeros(0))
                     info["dbg_has_premium"] = int(np.any(hp > 0))
                     info["dbg_premium_wait_max"] = float(pw.max()) if len(pw) > 0 else 0.0
+                    ts = self._get_traffic_signal(agent)
+                    if ts is not None and len(hp) > 0:
+                        served_lanes = set(self._phase_to_lanes.get(agent, {}).get(ts.green_phase, []))
+                        premium_lanes = np.flatnonzero(hp > 0)
+                        info["dbg_premium_on_unserved"] = int(
+                            any(int(i) not in served_lanes for i in premium_lanes)
+                        )
+                        info["dbg_premium_can_switch"] = int(self._can_switch_now(ts))
+                        warn_frac = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
+                        info["dbg_premium_warn"] = int(np.any((hp > 0) & (pw >= warn_frac)))
+                    else:
+                        info["dbg_premium_on_unserved"] = 0
+                        info["dbg_premium_can_switch"] = 0
+                        info["dbg_premium_warn"] = 0
 
             self._debug_step_counter += 1
 

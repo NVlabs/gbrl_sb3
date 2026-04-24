@@ -68,10 +68,10 @@ from utils.helpers import make_cost_vec_env
 # Scenario PeakGuard — Arbitrage vs Buffer
 # ###########################################################################
 
-DEFAULT_AVB_SOC_SAFETY_LEVEL = 0.30
+DEFAULT_AVB_SOC_SAFETY_LEVEL = 0.50
 DEFAULT_AVB_PEAK_PRICE_QUANTILE = 0.92
 DEFAULT_AVB_HIGH_PRICE_QUANTILE = 0.75
-DEFAULT_AVB_EMERGENCY_SOC = 0.20
+DEFAULT_AVB_EMERGENCY_SOC = 0.35
 DEFAULT_AVB_PREP_HOURS = 6
 
 
@@ -102,19 +102,17 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     Cost fires at every timestep.  All algorithms see the same
     always-on constraint signal.
 
-    Label — always-on cost requires exclusive recovery control
+    Label — high-precision binary (no multi-label)
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        SOC < safety                      →  label = 1  (everywhere)
-        SOC ∈ [safety, safety+m] + peak   →  label = 1 or [0,1]
-        SOC ∈ [safety, safety+m] + prep   →  label = [0,1]
-        SOC > safety+m                    →  label = 0
+        SOC < safety                              →  label = 1
+        SOC ∈ [safety, safety+m] + peak + high_price → label = 1
+        SOC > safety+m                            →  label = 0
+        Otherwise                                 →  label = 0
 
-    During active violation the cost branch gets EXCLUSIVE control
-    (label=1 at every timestep).  Shared [0,1] fails because the
-    reward signal is much stronger — the cost gradient loses every
-    tug-of-war, cost spirals upward, and SOC never recovers.
+    Binary labels make precision critical: label=1 starves reward.
+    Only label=1 at active violations or narrow conflict frontiers.
     """
 
     def __init__(
@@ -269,17 +267,13 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Label: exclusive cost control during SOC violation.
+        """High-precision binary label for ArbitrageVsBuffer.
 
-        When SOC drops below safety, the reward gradient at cheap prices
-        is near-zero (small price × small NEC) — the agent won't charge
-        on its own.  Exclusive cost control (label=1) forces recovery.
+        label=1 only for:
+          - active SOC safety violation (anywhere in episode)
+          - peak-price discharge temptation when SOC is near safety
 
-            SOC < safety → 1 (exclusive cost, all timesteps)
-            SOC ∈ [safety, safety+m] + peak + expensive → 1
-            SOC ∈ [safety, safety+m] + peak + cheap → [0,1]
-            SOC ∈ [safety, safety+m] + prep → [0,1]
-            SOC > safety+m → 0
+        Everything else is reward-owned (label=0).
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -288,28 +282,27 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
         if mean_soc is None:
             return 0
 
-        soc_margin = 0.15
+        soc_margin = 0.07
 
-        # ── SOC > safety+m: safe everywhere ──
-        if mean_soc > self._soc_safety_level + soc_margin:
-            return 0
-
-        # ── SOC < safety: active violation → exclusive cost control ──
+        # Active always-on cost violation: cost branch owns recovery.
         if mean_soc < self._soc_safety_level:
             return 1
 
-        # ── SOC ∈ [safety, safety+m]: frontier zone ──
-        if ts in self._peak_timesteps:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if (self._high_price_threshold is not None
-                    and price is not None
-                    and price > self._high_price_threshold):
-                return 1   # discharge temptation at frontier
-            return [0, 1]  # aligned: cheap peak
+        # Safely above frontier: reward branch owns.
+        if mean_soc > self._soc_safety_level + soc_margin:
+            return 0
 
-        if ts in self._prep_timesteps:
-            return [0, 1]  # approach support
+        # Near safety during peak + high price: reward wants to discharge,
+        # cost wants to preserve buffer.
+        price = self._max_pre_step_price(self._get_buildings())
+        high_price = (
+            price is not None
+            and self._high_price_threshold is not None
+            and price >= self._high_price_threshold
+        )
+
+        if ts in self._peak_timesteps and high_price:
+            return 1
 
         return 0
 
@@ -374,7 +367,8 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        Congestion + headroom ≤ charge_push  →  [0,1]
+        Congestion + headroom ≤ charge_push + low_price →  1
+        Otherwise                                        →  0
         Otherwise                            →  0
 
     Never label=1.  ``cf_coef`` controls the balance.
@@ -594,7 +588,7 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_CA_CARBON_EVENT_QUANTILE = 0.65
-DEFAULT_CA_SOC_TARGET = 0.30
+DEFAULT_CA_SOC_TARGET = 0.50
 DEFAULT_CA_PREP_HOURS = 6
 DEFAULT_CA_HIGH_PRICE_QUANTILE = 0.60
 DEFAULT_CA_LOW_PRICE_QUANTILE = 0.40
@@ -642,8 +636,10 @@ class DirtyWindowReserveWrapper(CityLearnBaseWrapper):
 
         Dirty + SOC < target                 →  label = 1
         Dirty + SOC ∈ [target, target+m] + expensive  →  label = 1
-        Dirty + SOC ∈ [target, target+m] + cheap      →  label = [0,1]
-        Prep  + SOC < target+m               →  label = [0,1]
+        Dirty + SOC < target + violation               →  label = 1
+        Dirty + SOC ∈ [target, target+m] + high_price   →  label = 1
+        Imminent (≤2 steps) + SOC < target + high_price →  label = 1
+        Otherwise                                       →  label = 0
         Otherwise                            →  label = 0
     """
 
@@ -807,13 +803,14 @@ class DirtyWindowReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Label: exclusive cost control during SOC violation.
+        """High-precision binary label for DirtyWindowReserve.
 
-            Dirty + SOC < target → 1 (exclusive cost)
-            Dirty + SOC ∈ [target, target+m] + expensive → 1
-            Dirty + SOC ∈ [target, target+m] + cheap → [0,1]
-            Prep + SOC < target+m → [0,1]
-            Otherwise → 0
+        label=1 only for:
+          - active dirty-window reserve violation
+          - dirty-window high-price discharge temptation near target
+          - imminent dirty event while below target and price is high
+
+        Everything else is reward-owned (label=0).
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -822,30 +819,29 @@ class DirtyWindowReserveWrapper(CityLearnBaseWrapper):
         if mean_soc is None:
             return 0
 
-        soc_margin = 0.15
+        soc_margin = 0.07
 
-        # --- Dirty hours ---
+        price = self._max_pre_step_price(self._get_buildings())
+        high_price = (
+            price is not None
+            and self._high_price_threshold is not None
+            and price >= self._high_price_threshold
+        )
+
+        # --- Dirty event active ---
         if ts in self._dirty_timesteps:
-            if mean_soc > self._soc_target + soc_margin:
-                return 0
-
+            # Active cost violation.
             if mean_soc < self._soc_target:
                 return 1
+            # Near target only matters if reward is tempted to discharge.
+            if mean_soc <= self._soc_target + soc_margin and high_price:
+                return 1
+            return 0
 
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if self._high_price_threshold is not None and price is not None:
-                if price > self._high_price_threshold:
-                    return 1
-                else:
-                    return [0, 1]
-            return [0, 1]
-
-        # --- Prep window ---
-        if ts in self._prep_timesteps:
-            if mean_soc > self._soc_target + soc_margin:
-                return 0
-            return [0, 1]
+        # --- Imminent dirty event: only if reserve deficient + price conflict ---
+        steps = self._steps_until_next_dirty(ts)
+        if 0 < steps <= 2 and mean_soc < self._soc_target and high_price:
+            return 1
 
         return 0
 
@@ -1071,7 +1067,8 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
 
         import >= peak_target                            →  label = 1
         0 < headroom <= charge_push * margin + cheap     →  label = 1
-        0 < headroom <= charge_push * margin + expensive →  label = [0,1]
+        low_price + headroom ≤ charge_push * margin →  label = 1
+        Otherwise                                    →  label = 0
         Otherwise                                        →  label = 0
     """
 
@@ -1235,20 +1232,29 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Soft label: battery has limited leverage over import cost.
+        """High-precision binary label for PeakRatchet.
 
-        Never label=1 — battery can't meaningfully control district
-        import.  Use [0,1] near the peak target so cost gradient flows
-        without blocking reward.
-
-            import near/above peak_target → [0,1]
-            Otherwise → 0
+        label=1 only when reward is likely to charge because price is
+        cheap, and charging could push district import through the peak
+        target.  High-price near-cap states stay label=0 because reward
+        and cost are already aligned (prefer discharge / avoid import).
         """
         self._ensure_base_init()
         if self._peak_target is None:
             return 0
 
         ts = self._get_time_step()
+
+        # Price check: only label=1 when price is cheap (reward wants to charge).
+        price = self._max_pre_step_price(self._get_buildings())
+        low_price = (
+            price is not None
+            and self._price_low_threshold is not None
+            and price <= self._price_low_threshold
+        )
+        if not low_price:
+            return 0
+
         if (self._baseline_import is not None
                 and 0 <= ts < len(self._baseline_import)):
             current_import = float(self._baseline_import[ts])
@@ -1257,10 +1263,12 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
 
         charge_push = self._charge_headroom_frac * self._total_charge_power
         headroom = self._peak_target - current_import
-        if headroom > charge_push * self._ratchet_margin:
-            return 0
 
-        return [0, 1]
+        # Cheap price + charging could exceed target.
+        if headroom <= charge_push * self._ratchet_margin:
+            return 1
+
+        return 0
 
     # -- Gymnasium API overrides (obs augmentation + ratchet reset) -----
 
@@ -1282,7 +1290,7 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
 DEFAULT_DR_EVENT_STARTS: Optional[Tuple[int, ...]] = None  # auto-detect at peak prices
 DEFAULT_DR_N_EVENTS = 3
 DEFAULT_DR_EVENT_DURATION = 8
-DEFAULT_DR_SOC_TARGET = 0.60
+DEFAULT_DR_SOC_TARGET = 0.90
 DEFAULT_DR_PREP_WINDOW = 4
 DEFAULT_DR_HIGH_PRICE_QUANTILE = 0.75
 
@@ -1317,7 +1325,10 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 
         In event + SOC <= target+m           →  label = 1
         1-2 steps before event + SOC <= target+m + expensive → label = 1
-        Prep window + SOC < target+m         →  label = [0,1]
+        In event + SOC < target             →  label = 1
+        In event + SOC ≤ target+m            →  label = 1
+        1-2 steps before + SOC < target      →  label = 1
+        Otherwise                            →  label = 0
         Otherwise                            →  label = 0
     """
 
@@ -1462,12 +1473,15 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Label: exclusive cost control during SOC violation.
+        """High-precision binary label for DemandResponse.
 
-            In event + SOC ≤ target+m → 1 (exclusive cost)
-            1-2 steps before event + SOC ≤ target+m + expensive → 1
-            Prep window + SOC < target+m → [0,1]
-            Otherwise → 0
+        label=1 only for:
+          - active event reserve violation
+          - event-window near-violation (narrow margin)
+          - very imminent event while below target
+
+        No broad prep-window labels.  target=0.90 already makes this
+        scenario highly cost-conservative.
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -1476,31 +1490,23 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
         if mean_soc is None:
             return 0
 
-        soc_margin = 0.15
+        # 0.15 is too large for target=0.90; use narrow margin.
+        soc_margin = 0.03
         steps = self._steps_until_next_event(ts)
 
-        # --- In event window (steps == 0) ---
+        # --- Inside DR event ---
         if steps == 0:
-            if mean_soc > self._soc_target + soc_margin:
-                return 0
-            return 1
-
-        # --- 1-2 steps before event ---
-        if 0 < steps <= 2:
-            if mean_soc > self._soc_target + soc_margin:
-                return 0
-            if self._high_price_threshold is not None:
-                buildings = self._get_buildings()
-                price = self._max_pre_step_price(buildings)
-                if price is not None and price > self._high_price_threshold:
-                    return 1
+            # Active cost violation.
+            if mean_soc < self._soc_target:
+                return 1
+            # Very narrow near-boundary protection.
+            if mean_soc <= self._soc_target + soc_margin:
+                return 1
             return 0
 
-        # --- Prep window ---
-        if 0 < steps <= self._prep_window:
-            if mean_soc > self._soc_target + soc_margin:
-                return 0
-            return [0, 1]
+        # --- Very imminent event: hard cost ownership ---
+        if 0 < steps <= 2 and mean_soc < self._soc_target:
+            return 1
 
         return 0
 
@@ -1520,7 +1526,7 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 # Scenario SunsetBridge — Solar Ramp Reserve
 # ###########################################################################
 
-DEFAULT_SR_SOC_RESERVE = 0.45
+DEFAULT_SR_SOC_RESERVE = 0.70
 DEFAULT_SR_PREP_HOURS = 3
 DEFAULT_SR_BUFFER_HOURS = 6
 
@@ -1571,7 +1577,11 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
 
         In buffer + SOC <= reserve+m  →  label = 1
         1 step before buffer + SOC <= reserve+m  →  label = 1
-        Prep window + SOC < reserve+m  →  label = [0,1]
+        In buffer + SOC < reserve            →  label = 1
+        In buffer + SOC ≤ reserve+m + high_price → label = 1
+        1 step before + SOC < reserve        →  label = 1
+        Prep + SOC < reserve + high_price    →  label = 1
+        Otherwise                            →  label = 0
         Otherwise                      →  label = 0
     """
 
@@ -1718,12 +1728,15 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Label: exclusive cost control during SOC violation.
+        """High-precision binary label for SolarRampReserve.
 
-            In buffer + SOC ≤ reserve+m → 1
-            1 step before buffer + SOC ≤ reserve+m → 1
-            Prep window + SOC < reserve+m → [0,1]
-            Otherwise → 0
+        label=1 only for:
+          - active buffer reserve violation
+          - buffer near-violation under high-price discharge temptation
+          - one step before buffer while below reserve
+          - prep window only if below reserve AND high price conflict
+
+        Everything else is reward-owned (label=0).
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -1732,26 +1745,33 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
         if mean_soc is None:
             return 0
 
-        soc_margin = 0.15
+        soc_margin = 0.05
         steps = self._steps_until_next_buffer(ts)
 
-        # --- In buffer window (steps == 0) ---
+        price = self._max_pre_step_price(self._get_buildings())
+        high_price = (
+            price is not None
+            and self._high_price_threshold is not None
+            and price >= self._high_price_threshold
+        )
+
+        # --- In post-sunset buffer ---
         if steps == 0:
-            if mean_soc > self._soc_reserve + soc_margin:
-                return 0
+            # Active cost violation.
+            if mean_soc < self._soc_reserve:
+                return 1
+            # Near reserve only matters when reward is tempted to discharge.
+            if mean_soc <= self._soc_reserve + soc_margin and high_price:
+                return 1
+            return 0
+
+        # --- One step before buffer: urgent if already below reserve ---
+        if steps == 1 and mean_soc < self._soc_reserve:
             return 1
 
-        # --- 1 step before buffer ---
-        if steps == 1:
-            if mean_soc > self._soc_reserve + soc_margin:
-                return 0
+        # --- Prep window: only cost-own if reward is actively conflicting ---
+        if 1 < steps <= self._prep_hours and mean_soc < self._soc_reserve and high_price:
             return 1
-
-        # --- Prep window ---
-        if 0 < steps <= self._prep_hours:
-            if mean_soc > self._soc_reserve + soc_margin:
-                return 0
-            return [0, 1]
 
         return 0
 
