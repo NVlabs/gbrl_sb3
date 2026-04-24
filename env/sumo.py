@@ -1262,13 +1262,21 @@ class SumoRewardCostWrapper(ParallelEnv):
         """Label for bus priority.
 
         Returns:
-          0 = no bus present (reward head only)
-          1 = bus present at this intersection (cost head)
+          0 = no bus present OR bus wait below warn threshold (reward head)
+          1 = bus wait approaching violation (cost head)
         """
         has_bus = self._has_bus.get(agent_id)
         if has_bus is None or not np.any(has_bus > 0):
             return 0
-        return 1
+        bus_wait = self._bus_wait.get(agent_id)
+        if bus_wait is None:
+            return 0
+        # bus_wait is already normalized to [0,1] by _bus_cost_threshold
+        # warn fires at bus_warn_threshold / bus_cost_threshold (default 6/15 = 0.4)
+        warn_frac = self._bus_warn_threshold / self._bus_cost_threshold
+        if np.any((has_bus > 0) & (bus_wait >= warn_frac)):
+            return 1
+        return 0
 
     # ── Convoy priority cost/label ───────────────────────────────────────
 
@@ -1302,16 +1310,24 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 0.0
 
     def _convoy_priority_label(self, agent_id: str):
-        """Label for convoy priority.
+        """Label for convoy priority — binary, anticipatory.
 
-        Returns:
-          0 = no convoy present (reward head only)
-          1 = convoy present at this intersection (cost head)
+        Uses convoy_seen_frac (monotonic, phase-independent):
+          0 = no convoy present (reward only)
+          1 = any convoy vehicle visible — decision frontier (cost only)
+
+        Must fire BEFORE cost (which needs progress > 0) so the policy
+        gets cost-head gradients at the moment the action matters.
         """
         has_convoy = self._has_convoy.get(agent_id)
         if has_convoy is None or not np.any(has_convoy > 0):
             return 0
-        return 1
+        seen_frac = self._convoy_seen_frac.get(agent_id)
+        if seen_frac is None:
+            return 0
+        if np.any((has_convoy > 0) & (seen_frac > 0)):
+            return 1
+        return 0
 
     # ── Premium priority cost/label ──────────────────────────────────────
 
@@ -1332,16 +1348,31 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str):
-        """Label for premium priority.
+        """Label for premium priority — presence-warn + violation-escalate.
 
-        Returns:
-          0 = no premium vehicle present (reward head only)
-          1 = premium vehicle present at this intersection (cost head)
+        Uses premium_wait (normalized local delay, [0,1]):
+          0     = no premium vehicle on any incoming lane (reward only)
+          [0,1] = premium present, delay below cost threshold (multi-label)
+          1     = delay at/above cost threshold (cost only)
+
+        The multi-label fires on mere presence because premium vehicles
+        transit intersections in 1-2 steps (delta_time=5s, speed=50km/h).
+        With premium_cost_threshold=8s and 5s step resolution, there's
+        only ~1 step between warn and violation — too narrow for a
+        threshold-based warn. Presence-based multi gives the cost head
+        consistent gradient signal across all premium-present steps.
         """
         has_premium = self._has_premium.get(agent_id)
         if has_premium is None or not np.any(has_premium > 0):
             return 0
-        return 1
+        premium_wait = self._premium_wait.get(agent_id)
+        if premium_wait is None:
+            return [0, 1]  # premium present but no wait data — warn
+        # Check for violation first (cost only)
+        if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)):
+            return 1
+        # Premium present, below violation → multi-label (both heads)
+        return [0, 1]
 
     def _update_service_tracking(self, agent_id: str):
         """Update steps_since_served counters based on current green phase.
@@ -2133,6 +2164,7 @@ class SumoRewardCostWrapper(ParallelEnv):
             info["original_reward"] = original_reward
             info["raw_reward"] = reward
             info["safety_label"] = label
+            info["is_clean_episode"] = int(self._is_clean_episode)
             # Per-agent traffic metrics
             info["queued"] = metrics["queued"]
             info["max_wait"] = metrics["max_wait"]
@@ -2882,6 +2914,7 @@ class VecCostMonitor(VecMonitor):
                     "max_queued": int(self.episode_max_queued[i]),
                     "max_wait": float(self.episode_max_wait[i]),
                     "s": float(self.episode_scalarizations[i]),
+                    "is_clean": int(infos[i].get("is_clean_episode", 0)),
                     "t": round(time.time() - self.t_start, 6),
                 }
                 for key in self.info_keywords:

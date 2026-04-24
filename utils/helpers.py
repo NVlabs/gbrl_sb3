@@ -682,6 +682,20 @@ def log_ep_info_metrics(logger, ep_info_buffer) -> None:
     if "max_wait" in first:
         logger.record("rollout/ep_max_wait_mean",
                        safe_mean([ep["max_wait"] for ep in ep_info_buffer]))
+
+    # ── Split reward/cost by episode type (clean vs event) ──
+    if "is_clean" in first:
+        clean_eps = [ep for ep in ep_info_buffer if ep.get("is_clean", 0)]
+        event_eps = [ep for ep in ep_info_buffer if not ep.get("is_clean", 0)]
+        if clean_eps:
+            logger.record("rollout/ep_rew_clean",
+                           safe_mean([ep["r"] for ep in clean_eps]))
+        if event_eps:
+            logger.record("rollout/ep_rew_event",
+                           safe_mean([ep["r"] for ep in event_eps]))
+            if "c" in first:
+                logger.record("rollout/ep_cost_event",
+                               safe_mean([ep["c"] for ep in event_eps]))
     if "cost_queue" in first:
         logger.record("rollout/ep_cost_queue_mean",
                        safe_mean([ep["cost_queue"] for ep in ep_info_buffer]))

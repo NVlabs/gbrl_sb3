@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import stable_baselines3 as sb3
 import torch as th
 from gbrl.models.actor import ParametricActor
-from gbrl.models.actor_critic import ActorCritic
+from gbrl.models.actor_critic import ActorCritic, CostActorCritic
 from stable_baselines3.common.save_util import (data_to_json, json_to_data,
                                                 open_path)
 from stable_baselines3.common.type_aliases import TensorDict
@@ -115,6 +115,8 @@ def load_from_zip_file(
 
     # set device to cpu if cuda is not available
     device = get_device(device=device)
+    # GBRL C++ expects device as string, not torch.device
+    device_str = str(device) if not isinstance(device, str) else device
 
     # Open the zip archive and load data
     try:
@@ -176,14 +178,22 @@ def load_from_zip_file(
                     with open(temp_file_path, 'wb') as temp_file:
                         temp_file.write(archive.read(gbrl_file))
 
+                # Use CostActorCritic for safety_mode models (3-head: policy+value+cost)
+                _safety_mode = data.get('safety_mode', False)
+                _ac_cls = CostActorCritic if _safety_mode else ActorCritic
+                # GBRL C++ expects device as string, not torch.device
+                _gbrl_device = str(device).replace('cuda:0', 'cuda').replace('cuda:1', 'cuda')
+                if hasattr(device, 'type'):
+                    _gbrl_device = device.type
+
                 if gbrl_files and data['shared_tree_struct']:
-                    gbrl_model = ActorCritic.load_learner(os.path.join(temp_dir, gbrl_files[0]), device)
+                    gbrl_model = _ac_cls.load_learner(os.path.join(temp_dir, gbrl_files[0]), device_str)
                 elif gbrl_files and not data['shared_tree_struct'] and not data['nn_critic']:
-                    gbrl_model = ActorCritic.load_learner(
+                    gbrl_model = _ac_cls.load_learner(
                         os.path.join(temp_dir, gbrl_files[0].replace('_policy.gbrl_model', '').replace(
-                            '_value.gbrl_model', '')), device)
+                            '_value.gbrl_model', '').replace('_cost.gbrl_model', '')), device_str)
                 elif gbrl_files and data['nn_critic']:
-                    gbrl_model = ParametricActor.load_learner(os.path.join(temp_dir, gbrl_files[0]), device)
+                    gbrl_model = ParametricActor.load_learner(os.path.join(temp_dir, gbrl_files[0]), device_str)
 
     except zipfile.BadZipFile as e:
         # load_path wasn't a zip file

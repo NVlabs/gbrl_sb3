@@ -68,10 +68,10 @@ from utils.helpers import make_cost_vec_env
 # Scenario PeakGuard — Arbitrage vs Buffer
 # ###########################################################################
 
-DEFAULT_AVB_SOC_SAFETY_LEVEL = 0.50
+DEFAULT_AVB_SOC_SAFETY_LEVEL = 0.30
 DEFAULT_AVB_PEAK_PRICE_QUANTILE = 0.92
 DEFAULT_AVB_HIGH_PRICE_QUANTILE = 0.75
-DEFAULT_AVB_EMERGENCY_SOC = 0.35
+DEFAULT_AVB_EMERGENCY_SOC = 0.20
 DEFAULT_AVB_PREP_HOURS = 6
 
 
@@ -269,29 +269,17 @@ class ArbitrageVsBufferWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Label for always-on cost: exclusive cost control during violation.
+        """Label: exclusive cost control during SOC violation.
 
-            SOC < safety (violation — cost fires every step):
-                1  everywhere  (cost branch has EXCLUSIVE control
-                                to drive recovery charging)
-            SOC ∈ [safety, safety+m] (frontier):
-                Peak + expensive  →  1      (discharge temptation)
-                Peak + cheap      →  [0,1]  (aligned)
-                Prep              →  [0,1]  (approach)
-            SOC > safety+m (safe):
-                0
+        When SOC drops below safety, the reward gradient at cheap prices
+        is near-zero (small price × small NEC) — the agent won't charge
+        on its own.  Exclusive cost control (label=1) forces recovery.
 
-        Why exclusive (label=1) during violation, not shared [0,1]:
-        The reward signal (electricity price) is much stronger than
-        the cost signal (smooth SOC deficit).  At [0,1] states, both
-        gradients fire — but reward dominates the tug-of-war, so the
-        agent keeps discharging and cost spirals up.  Only with
-        exclusive cost control (label=1, reward gradient = 0) can the
-        cost branch actually push the policy toward charging.
-
-        Once SOC recovers above safety, the frontier zone uses [0,1]
-        for careful balance, and label=0 above safety+m releases
-        full control back to the reward branch.
+            SOC < safety → 1 (exclusive cost, all timesteps)
+            SOC ∈ [safety, safety+m] + peak + expensive → 1
+            SOC ∈ [safety, safety+m] + peak + cheap → [0,1]
+            SOC ∈ [safety, safety+m] + prep → [0,1]
+            SOC > safety+m → 0
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -382,18 +370,14 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
         district_import = max(Σ_i NEC_i, 0)
         cost = clamp((district_import − frontier) / (cap − frontier), 0, 1)
 
-    Label — frontier + exclusive violation control
+    Label — two-tier: cost-relevant vs safe
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        Congestion + headroom <= 0                  ->  label = 1
-        Congestion + 0 < headroom <= charge_push + cheap   -> label = 1
-        Congestion + 0 < headroom <= charge_push + expensive -> label = [0,1]
-        Otherwise                                   ->  label = 0
+        Congestion + headroom ≤ charge_push  →  [0,1]
+        Otherwise                            →  0
 
-    Active violations (headroom <= 0) get exclusive cost control
-    (label=1).  Shared [0,1] during violation lets the reward signal
-    dominate and the agent keeps charging — cost spirals.
+    Never label=1.  ``cf_coef`` controls the balance.
     """
 
     def __init__(
@@ -585,51 +569,13 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Frontier + active-violation label for congestion cost.
+        """Always label=0: battery cannot meaningfully control import cost.
 
-            Congestion + headroom <= 0 (active violation):
-                1      = always  (exclusive cost control to stop charging)
-            Congestion + 0 < headroom <= charge_push (frontier):
-                1      = cheap price  (conflict: charge temptation)
-                [0,1]  = expensive    (approach visibility)
-            Otherwise:
-                0
-
-        During active violation (headroom <= 0), cost branch gets
-        EXCLUSIVE control.  Shared [0,1] fails because the reward
-        signal dominates the tug-of-war.
+        District import is dominated by non-shiftable load; battery
+        charge/discharge is a tiny fraction.  Labels only interfere
+        with reward learning without reducing cost.
         """
-        self._ensure_base_init()
-        ts = self._get_time_step()  # pre-step
-
-        if ts not in self._congestion_timesteps:
-            return 0
-
-        # Check actual headroom to frontier
-        nsl = self._district_pre_step_nsl()
-        if nsl is None or self._frontier is None:
-            return 0
-        charge_push = 0.5 * self._total_charge_power
-        headroom = self._frontier - nsl
-
-        # Plenty of room — charging is safe
-        if headroom > charge_push:
-            return 0
-
-        # Active violation: exclusive cost control
-        if headroom <= 0:
-            return 1
-
-        # Frontier: 0 < headroom <= charge_push
-        if self._low_price_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price <= self._low_price_threshold:
-                return 1  # conflict: cheap price = charge temptation
-            if price is not None and price > self._low_price_threshold:
-                return [0, 1]  # approach visibility
-
-        return [0, 1]
+        return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
 
@@ -648,7 +594,7 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
 # ###########################################################################
 
 DEFAULT_CA_CARBON_EVENT_QUANTILE = 0.65
-DEFAULT_CA_SOC_TARGET = 0.50
+DEFAULT_CA_SOC_TARGET = 0.30
 DEFAULT_CA_PREP_HOURS = 6
 DEFAULT_CA_HIGH_PRICE_QUANTILE = 0.60
 DEFAULT_CA_LOW_PRICE_QUANTILE = 0.40
@@ -694,15 +640,11 @@ class DirtyWindowReserveWrapper(CityLearnBaseWrapper):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        Dirty + SOC < target                 ->  label = 1
-        Dirty + SOC ∈ [target, target+m] + expensive  ->  label = 1
-        Dirty + SOC ∈ [target, target+m] + cheap      ->  label = [0,1]
-        Prep  + SOC < target+m               ->  label = [0,1]
-        Otherwise                            ->  label = 0
-
-    Active violations (SOC < target during dirty) get exclusive cost
-    control (label=1).  Shared [0,1] during violation lets the reward
-    signal dominate — cost spirals.
+        Dirty + SOC < target                 →  label = 1
+        Dirty + SOC ∈ [target, target+m] + expensive  →  label = 1
+        Dirty + SOC ∈ [target, target+m] + cheap      →  label = [0,1]
+        Prep  + SOC < target+m               →  label = [0,1]
+        Otherwise                            →  label = 0
     """
 
     def __init__(
@@ -865,21 +807,13 @@ class DirtyWindowReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Frontier + active-violation label for dirty-window cost.
+        """Label: exclusive cost control during SOC violation.
 
-            Dirty + SOC < target (active violation):
-                1      = always  (exclusive cost control for recovery)
-            Dirty + SOC ∈ [target, target+m] (frontier):
-                1      = expensive price  (conflict: discharge temptation)
-                [0,1]  = cheap price      (aligned: approach charging)
-            Prep + SOC < target+m:
-                [0,1]  = any price        (approach / recovery support)
-            Otherwise:
-                0
-
-        During active violation (SOC < target in dirty window), cost
-        branch gets EXCLUSIVE control.  Shared [0,1] fails because
-        the reward signal dominates the tug-of-war.
+            Dirty + SOC < target → 1 (exclusive cost)
+            Dirty + SOC ∈ [target, target+m] + expensive → 1
+            Dirty + SOC ∈ [target, target+m] + cheap → [0,1]
+            Prep + SOC < target+m → [0,1]
+            Otherwise → 0
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -892,29 +826,26 @@ class DirtyWindowReserveWrapper(CityLearnBaseWrapper):
 
         # --- Dirty hours ---
         if ts in self._dirty_timesteps:
-            # SOC > target+m: safe, no risk
             if mean_soc > self._soc_target + soc_margin:
                 return 0
 
-            # Active violation: exclusive cost control
             if mean_soc < self._soc_target:
                 return 1
 
-            # Frontier: SOC ∈ [target, target+m]
             buildings = self._get_buildings()
             price = self._max_pre_step_price(buildings)
             if self._high_price_threshold is not None and price is not None:
                 if price > self._high_price_threshold:
-                    return 1   # conflict: discharge temptation
+                    return 1
                 else:
-                    return [0, 1]  # aligned: cheap, both charge
+                    return [0, 1]
             return [0, 1]
 
         # --- Prep window ---
         if ts in self._prep_timesteps:
             if mean_soc > self._soc_target + soc_margin:
-                return 0  # SOC already safe
-            return [0, 1]  # approach / recovery support
+                return 0
+            return [0, 1]
 
         return 0
 
@@ -1134,18 +1065,14 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     (~10 % at Q90).  A greedy charge policy pushes many more steps
     over the target, producing dramatically higher cumulative cost.
 
-    Label — frontier + active-violation for peak exceedance
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Label — frontier + exclusive violation control
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        import >= peak_target                            ->  label = 1
-        0 < headroom <= charge_push * margin + cheap     ->  label = 1
-        0 < headroom <= charge_push * margin + expensive ->  label = [0,1]
-        Otherwise                                        ->  label = 0
-
-    Active violations (import >= target) get label=1 — the cost branch
-    must stop the agent from charging further.  Frontier states with
-    tight headroom also get cost-branch involvement.
+        import >= peak_target                            →  label = 1
+        0 < headroom <= charge_push * margin + cheap     →  label = 1
+        0 < headroom <= charge_push * margin + expensive →  label = [0,1]
+        Otherwise                                        →  label = 0
     """
 
     def __init__(
@@ -1308,19 +1235,14 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Frontier + active-violation label for peak exceedance cost.
+        """Soft label: battery has limited leverage over import cost.
 
-            import >= peak_target (violation — cost is firing):
-                1      = any price  (cost branch must stop charging)
-            0 < headroom <= charge_push * margin (frontier):
-                1      = cheap price  (conflict: charge temptation)
-                [0,1]  = expensive    (approach visibility)
-            Otherwise:
-                0
+        Never label=1 — battery can't meaningfully control district
+        import.  Use [0,1] near the peak target so cost gradient flows
+        without blocking reward.
 
-        Cost fires each step where import > target.  If baseline import
-        already exceeds the target, the violation is active — any
-        charging makes it worse.  The cost branch must have full control.
+            import near/above peak_target → [0,1]
+            Otherwise → 0
         """
         self._ensure_base_init()
         if self._peak_target is None:
@@ -1333,24 +1255,10 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
         else:
             current_import = self._district_pre_step_nsl() or 0.0
 
-        # Already above target — active violation, cost branch takes over
-        if current_import >= self._peak_target:
-            return 1
-
-        # Check headroom
         charge_push = self._charge_headroom_frac * self._total_charge_power
         headroom = self._peak_target - current_import
         if headroom > charge_push * self._ratchet_margin:
-            return 0  # plenty of headroom
-
-        # Tight headroom: 0 < headroom <= charge_push * margin
-        if self._price_low_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price <= self._price_low_threshold:
-                return 1  # frontier: cheap + tight headroom
-            if price is not None and price > self._price_low_threshold:
-                return [0, 1]  # approach: tight headroom but no charge temptation
+            return 0
 
         return [0, 1]
 
@@ -1374,7 +1282,7 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
 DEFAULT_DR_EVENT_STARTS: Optional[Tuple[int, ...]] = None  # auto-detect at peak prices
 DEFAULT_DR_N_EVENTS = 3
 DEFAULT_DR_EVENT_DURATION = 8
-DEFAULT_DR_SOC_TARGET = 0.90
+DEFAULT_DR_SOC_TARGET = 0.60
 DEFAULT_DR_PREP_WINDOW = 4
 DEFAULT_DR_HIGH_PRICE_QUANTILE = 0.75
 
@@ -1407,14 +1315,10 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        In event + SOC <= target+m           ->  label = 1
-        1-2 steps before event + SOC <= target+m + expensive -> label = 1
-        Prep window + SOC < target+m         ->  label = [0,1]
-        Otherwise                            ->  label = 0
-
-    Active violations during events (SOC < target) AND frontier states
-    both get exclusive cost control (label=1).  Shared [0,1] during
-    violation lets reward dominate — cost spirals.
+        In event + SOC <= target+m           →  label = 1
+        1-2 steps before event + SOC <= target+m + expensive → label = 1
+        Prep window + SOC < target+m         →  label = [0,1]
+        Otherwise                            →  label = 0
     """
 
     def __init__(
@@ -1558,22 +1462,12 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Frontier + active-violation label for event cost.
+        """Label: exclusive cost control during SOC violation.
 
-            In event + SOC < target (active violation):
-                1      = always  (exclusive cost control for recovery)
-            In event + SOC ∈ [target, target+m] (frontier):
-                1      = always  (one discharge crosses)
-            1-2 steps before event + SOC <= target+m:
-                1      = expensive price  (last-chance frontier)
-            Prep window + SOC < target+m:
-                [0,1]  = any price        (approach / recovery support)
-            Otherwise:
-                0
-
-        During active violation (SOC < target in event), cost branch
-        gets EXCLUSIVE control.  Shared [0,1] fails because the reward
-        signal dominates the tug-of-war.
+            In event + SOC ≤ target+m → 1 (exclusive cost)
+            1-2 steps before event + SOC ≤ target+m + expensive → 1
+            Prep window + SOC < target+m → [0,1]
+            Otherwise → 0
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -1587,10 +1481,8 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 
         # --- In event window (steps == 0) ---
         if steps == 0:
-            # SOC > target+m: safe, no risk
             if mean_soc > self._soc_target + soc_margin:
                 return 0
-            # SOC <= target+m: frontier or violation — exclusive cost
             return 1
 
         # --- 1-2 steps before event ---
@@ -1601,14 +1493,14 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
                 buildings = self._get_buildings()
                 price = self._max_pre_step_price(buildings)
                 if price is not None and price > self._high_price_threshold:
-                    return 1  # last-chance frontier
+                    return 1
             return 0
 
         # --- Prep window ---
         if 0 < steps <= self._prep_window:
             if mean_soc > self._soc_target + soc_margin:
                 return 0
-            return [0, 1]  # approach / recovery support
+            return [0, 1]
 
         return 0
 
@@ -1628,7 +1520,7 @@ class DemandResponseWrapper(CityLearnBaseWrapper):
 # Scenario SunsetBridge — Solar Ramp Reserve
 # ###########################################################################
 
-DEFAULT_SR_SOC_RESERVE = 0.70
+DEFAULT_SR_SOC_RESERVE = 0.45
 DEFAULT_SR_PREP_HOURS = 3
 DEFAULT_SR_BUFFER_HOURS = 6
 
@@ -1673,18 +1565,14 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     Cost only fires during the specific post-sunset windows, not during
     all solar hours.  This makes the cost sparse and event-driven.
 
-    Label — frontier + active-violation for buffer
+    Label — frontier + exclusive violation control
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ::
 
-        In buffer + SOC <= reserve+m  ->  label = 1
-        1 step before buffer + SOC <= reserve+m  ->  label = 1
-        Prep window + SOC < reserve+m  ->  label = [0,1]
-        Otherwise                      ->  label = 0
-
-    Active violations during buffer (SOC < reserve, cost firing) AND
-    frontier states (SOC near reserve) both get label=1.  Prep states
-    get [0,1] for approach support.
+        In buffer + SOC <= reserve+m  →  label = 1
+        1 step before buffer + SOC <= reserve+m  →  label = 1
+        Prep window + SOC < reserve+m  →  label = [0,1]
+        Otherwise                      →  label = 0
     """
 
     def __init__(
@@ -1705,6 +1593,7 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
         self._buffer_timesteps: set = set()
         # Sorted list of buffer-start timesteps (for steps_until computation)
         self._buffer_starts: list = []
+        self._high_price_threshold: Optional[float] = None
 
         # Extend observation space (normalised hours-until-buffer)
         low = np.append(self.observation_space.low, np.float32(0.0))
@@ -1756,6 +1645,19 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
             self._buffer_starts.append(sunset_ts)
 
         self._buffer_starts.sort()
+
+        # ---- Price threshold for discharge-temptation detection ----
+        raw_price_arrays = []
+        for b in buildings:
+            if hasattr(b, "pricing") and b.pricing is not None:
+                ep = b.pricing.electricity_pricing
+                if hasattr(ep, "__len__") and len(ep) > 0:
+                    raw_price_arrays.append(np.asarray(ep[:n_hours], dtype=float))
+        if raw_price_arrays:
+            max_price_series = np.max(raw_price_arrays, axis=0)
+            self._high_price_threshold = float(
+                np.quantile(max_price_series, 0.65)
+            )
 
     # -- Helpers -------------------------------------------------------
 
@@ -1816,22 +1718,12 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs):
-        """Frontier + active-violation label for buffer cost.
+        """Label: exclusive cost control during SOC violation.
 
-            In buffer + SOC < reserve (violation — cost is firing):
-                1      = always  (cost branch must drive recovery)
-            In buffer + SOC in [reserve, reserve+m] (frontier):
-                1      = always  (one discharge crosses)
-            1 step before buffer + SOC <= reserve+m:
-                1      = always  (last chance to top up)
-            Prep window + SOC < reserve+m:
-                [0,1]  = always  (approach / recovery support)
-            Otherwise:
-                0
-
-        Cost fires during buffer when SOC < reserve.  If SOC is already
-        below reserve during buffer, the violation is active — the cost
-        branch must have full control to drive recovery.
+            In buffer + SOC ≤ reserve+m → 1
+            1 step before buffer + SOC ≤ reserve+m → 1
+            Prep window + SOC < reserve+m → [0,1]
+            Otherwise → 0
         """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
@@ -1845,13 +1737,11 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
 
         # --- In buffer window (steps == 0) ---
         if steps == 0:
-            # SOC > reserve+m: safe, no risk
             if mean_soc > self._soc_reserve + soc_margin:
                 return 0
-            # SOC <= reserve+m: frontier or active violation
             return 1
 
-        # --- 1 step before buffer: last chance to top up ---
+        # --- 1 step before buffer ---
         if steps == 1:
             if mean_soc > self._soc_reserve + soc_margin:
                 return 0
@@ -1861,7 +1751,7 @@ class SolarRampReserveWrapper(CityLearnBaseWrapper):
         if 0 < steps <= self._prep_hours:
             if mean_soc > self._soc_reserve + soc_margin:
                 return 0
-            return [0, 1]  # approach / recovery support
+            return [0, 1]
 
         return 0
 

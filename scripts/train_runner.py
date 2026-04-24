@@ -449,8 +449,11 @@ def _build_env(args):
         env = make_sumo_vec_env(env_name=args.env_name, n_envs=args.num_envs,
                                 seed=args.seed, **sumo_kwargs)
         if args.evaluate:
+            # Eval uses clean episodes only for stable policy-quality metric
+            eval_sumo_kwargs = dict(sumo_kwargs)
+            eval_sumo_kwargs['clean_episode_prob'] = 1.0
             eval_env = make_sumo_vec_env(env_name=args.env_name, n_envs=1,
-                                        seed=args.seed, **sumo_kwargs)
+                                        seed=args.seed, **eval_sumo_kwargs)
 
     elif args.env_type == 'citylearn':
         citylearn_kwargs = dict(args.env_kwargs or {})
