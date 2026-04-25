@@ -547,17 +547,48 @@ class ContractDemandWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """label=1 during congestion hours, label=2 for 3h pre-congestion prep."""
+        """Binary ContractDemand label.
+
+        Congestion: route low/mid-price charge-risk states to cost
+        (broader gate — import pressure is immediate).
+        Prep: route only cheap-price charge temptation to cost
+        (narrow gate — only cheap charging is dangerous).
+        """
         self._ensure_base_init()
-        ts = self._get_time_step()  # pre-step
-        if ts in self._congestion_timesteps:
-            return 1
-        # 3-hour prep window before each congestion event
+        ts = self._get_time_step()
+
+        in_congestion = ts in self._congestion_timesteps
+
+        in_short_prep = False
         for cs in self._congestion_starts:
             if cs > ts + 3:
-                break  # sorted — no further starts within 3h
-            if ts < cs:  # within 3h before this congestion start
-                return 2
+                break
+            if ts < cs:
+                in_short_prep = True
+                break
+
+        if not in_congestion and not in_short_prep:
+            return 0
+
+        price = self._max_pre_step_price(self._get_buildings())
+
+        # If price unavailable, preserve previous-best regime label.
+        if price is None:
+            return 1
+
+        # Active congestion: broader gate, import pressure is immediate.
+        if in_congestion:
+            if self._high_price_threshold is not None:
+                return 1 if price <= self._high_price_threshold else 0
+            if self._low_price_threshold is not None:
+                return 1 if price <= self._low_price_threshold else 0
+            return 0
+
+        # Prep: narrow gate, only cheap charging temptation.
+        if in_short_prep:
+            if self._low_price_threshold is not None:
+                return 1 if price <= self._low_price_threshold else 0
+
         return 0
 
     # -- Gymnasium API overrides (obs augmentation) --------------------
@@ -857,21 +888,38 @@ class CarbonAwareWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """label=1 during dirty windows when price is cheap,
-        label=2 during prep windows when price is cheap."""
+        """Binary CarbonAware label.
+
+        Dirty windows: cost-own when price <= high_price_threshold
+        (broader net — dirty import is immediately costly).
+        Prep windows: cost-own only when price <= low_price_threshold
+        (narrow — anticipatory, only cheap-charge temptation).
+        """
         self._ensure_base_init()
         ts = self._get_time_step()  # pre-step
 
-        if ts not in self._dirty_timesteps and ts not in self._prep_timesteps:
+        in_dirty = ts in self._dirty_timesteps
+        in_prep = ts in self._prep_timesteps
+
+        if not in_dirty and not in_prep:
             return 0
 
-        if self._low_price_threshold is not None:
-            buildings = self._get_buildings()
-            price = self._max_pre_step_price(buildings)
-            if price is not None and price <= self._low_price_threshold:
-                if ts in self._prep_timesteps:
-                    return 2
-                return 1
+        price = self._max_pre_step_price(self._get_buildings())
+        if price is None:
+            return 0
+
+        # In actual dirty window, mid-price import can still be bad.
+        if in_dirty:
+            if self._high_price_threshold is not None:
+                return 1 if price <= self._high_price_threshold else 0
+            if self._low_price_threshold is not None:
+                return 1 if price <= self._low_price_threshold else 0
+            return 0
+
+        # Prep remains narrow: only cheap-price temptation.
+        if in_prep:
+            if self._low_price_threshold is not None:
+                return 1 if price <= self._low_price_threshold else 0
 
         return 0
 
@@ -1080,7 +1128,7 @@ make_dirty_window_reserve_vec_env = make_carbon_aware_vec_env
 
 DEFAULT_PR_PEAK_TARGET_QUANTILE = 0.75
 DEFAULT_PR_PEAK_CAP_MARGIN = 1.5
-DEFAULT_PR_PRICE_LOW_QUANTILE = 0.35
+DEFAULT_PR_PRICE_LOW_QUANTILE = 0.75
 DEFAULT_PR_CHARGE_HEADROOM_FRAC = 0.50
 DEFAULT_PR_RATCHET_MARGIN = 1.15
 
@@ -1272,61 +1320,42 @@ class PeakRatchetWrapper(CityLearnBaseWrapper):
     # -- Label ---------------------------------------------------------
 
     def _compute_label(self, obs) -> int:
-        """PeakRatchet label with running-peak-aware routing.
+        """Binary PeakRatchet label: high-load + not-high-price regime.
 
-        label=1: hard cost ownership when cheap-price reward pressure
-                 would likely increase or create a new ratchet peak.
-        label=2: blended reward/cost for near-frontier or already-risky
-                 states where cost matters but reward may be partially aligned.
-        label=0: normal reward-owned state.
+        label=1 when district base demand is near/above the peak target
+        AND price is not in the top quartile (i.e. reward doesn't
+        naturally discourage charging).
+        label=0 when price is high (reward/cost aligned) or demand
+        is safely low.
         """
         self._ensure_base_init()
         if self._peak_target is None:
             return 0
 
-        ts = self._get_time_step()
-
         nsl = self._district_pre_step_nsl()
         if nsl is None:
             return 0
 
-        # Estimate baseline import: NSL minus scheduled solar.
-        solar = 0.0
-        have_solar = False
-        for b in self._get_buildings():
-            es = getattr(b, "energy_simulation", None)
-            sg = getattr(es, "_solar_generation", None)
-            if sg is not None and hasattr(sg, "__len__") and ts < len(sg):
-                solar += float(sg[ts])
-                have_solar = True
-
-        baseline_import = max(nsl - solar, 0.0) if have_solar else nsl
-
-        # Cost boundary: larger of fixed target and running peak.
-        # Import below this cannot create positive ratchet cost.
-        boundary = max(float(self._peak_target), float(self._running_peak))
-        headroom = boundary - baseline_import
-
-        # Cheap price is when the reward branch is most tempted to charge.
         price = self._max_pre_step_price(self._get_buildings())
+
+        # If price data is unavailable, fall back to the original high-demand label.
         if self._price_low_threshold is None or price is None:
-            low_price = True
-        else:
-            low_price = price <= self._price_low_threshold
+            return 1 if nsl > self._peak_target else 0
 
+        low_or_moderate_price = price <= self._price_low_threshold
+
+        # Hard cost ownership in high-load hours only when reward may still charge.
+        if nsl > self._peak_target and low_or_moderate_price:
+            return 1
+
+        # Pre-threshold danger: cheap charging can push import above target.
         charge_push = self._charge_headroom_frac * self._total_charge_power
-
-        # Already at/above the ratchet boundary.
-        if headroom <= 0.0:
-            return 1 if low_price else 2
-
-        # Near-frontier: cheap charging can create a new ratchet peak.
         if (
-            low_price
+            low_or_moderate_price
             and charge_push > 0.0
-            and headroom <= charge_push * self._ratchet_margin
+            and nsl > self._peak_target - charge_push * self._ratchet_margin
         ):
-            return 2
+            return 1
 
         return 0
 
