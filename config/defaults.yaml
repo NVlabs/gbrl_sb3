@@ -186,6 +186,38 @@ ppo_lag:
   lagrangian_multiplier_init: 0.001
   lambda_optimizer: 'Adam'
   lagrangian_upper_bound: null
+ppo_lag_gbrl:
+  wrapper_kwargs:
+    training: True
+    norm_obs: False
+    norm_reward: True
+  n_steps: 256
+  gamma: 0.99
+  nn_critic: False
+  gae_lambda: 0.95
+  normalize_advantage: True
+  learning_rate: 3.0e-4
+  target_kl: null
+  batch_size: 512
+  n_epochs: 20
+  clip_range: 0.2
+  clip_range_vf: null
+  log_std_lr: lin_0.0017
+  min_log_std_lr: 0.000475
+  ent_coef: 0.08
+  vf_coef: 0.5
+  cf_coef: 0.5
+  max_policy_grad_norm: null
+  max_value_grad_norm: null
+  max_cost_grad_norm: null
+  policy_bound_loss_weight: null
+  fixed_std: False
+  log_std_init: -2
+  cost_limit: 0.1
+  lambda_lr: 0.035
+  lagrangian_multiplier_init: 0.001
+  lambda_optimizer: 'Adam'
+  lagrangian_upper_bound: null
 cup:
   wrapper_kwargs:
     training: True

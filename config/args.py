@@ -37,7 +37,7 @@ SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0',
                'citylearn_challenge_2023_phase_2_local_evaluation']
 GUIDANCE_ENVS = ['MiniGrid-GuidedLockedRoom-v0']
 GUIDANCE_ALGOS = ['split_rl']
-SAFETY_ALGOS = ['split_rl']
+SAFETY_ALGOS = ['split_rl', 'ppo_lag_gbrl']
 
 def get_value(x):
     if isinstance(x, dict):
@@ -170,7 +170,7 @@ def parse_args():
                                                          'sumo', 'highway', 'citylearn'])
     parser.add_argument('--algo_type', type=str, choices=['ppo_nn', 'ppo_gbrl', 'a2c_gbrl', 'sac_gbrl', 'split_rl',
                                                           'awr_gbrl', 'split_awr_gbrl', 'dqn_gbrl', 'a2c_nn', 'awr_nn', 'dqn_nn',
-                                                          'ppo_lag', 'cpo', 'cup', 'ipo',
+                                                          'ppo_lag', 'ppo_lag_gbrl', 'cpo', 'cup', 'ipo',
                                                           'sqil', 'bc', 'bc_ppo', 'rlpd',
                                                           'awr_gbrl_expert', 'awr_nn_expert'])
     parser.add_argument('--env_name', type=str)
@@ -847,6 +847,78 @@ def process_policy_kwargs(args):
             "guidance_mode": guidance_mode,
             "blend_coeffs": getattr(args, 'blend_coeffs', None),
 
+        }
+    elif args.algo_type == 'ppo_lag_gbrl':
+        algo_kwargs = {
+            "clip_range": args.clip_range,
+            "clip_range_vf": args.clip_range_vf,
+            "normalize_advantage": args.normalize_advantage,
+            "target_kl": args.target_kl,
+            "n_epochs": args.n_epochs,
+            "max_policy_grad_norm": args.max_policy_grad_norm,
+            "max_value_grad_norm": args.max_value_grad_norm,
+            "max_cost_grad_norm": args.max_cost_grad_norm,
+            "ent_coef": args.ent_coef,
+            "vf_coef": args.vf_coef,
+            "cf_coef": args.cf_coef,
+            "n_steps": args.n_steps,
+            "batch_size": args.batch_size,
+            "gae_lambda": args.gae_lambda,
+            "gamma": args.gamma,
+            "total_n_steps": args.total_n_steps,
+            "policy_kwargs": args.policy_kwargs if args.policy_kwargs is not None else {
+                "log_std_init": args.log_std_init,
+                "squash": args.squash,
+                "nn_critic": args.nn_critic,
+                "shared_tree_struct": args.shared_tree_struct,
+                "tree_struct": {
+                    "max_depth": args.max_depth,
+                    "n_bins": args.n_bins,
+                    "min_data_in_leaf": args.min_data_in_leaf,
+                    "par_th": args.par_th,
+                    "grow_policy": args.grow_policy,
+                },
+                "tree_optimizer": {
+                    "params": tree_params,
+                    "policy_optimizer": {
+                        "policy_algo": args.policy_algo,
+                        "policy_lr": args.policy_lr,
+                        "policy_beta_1": args.policy_beta_1,
+                        "policy_beta_2": args.policy_beta_2,
+                        "policy_eps": args.policy_eps,
+                        "policy_shrinkage": args.policy_shrinkage,
+                    },
+                    "value_optimizer": {
+                        "value_algo": args.value_algo,
+                        "value_lr": args.value_lr,
+                        "value_beta_1": args.value_beta_1,
+                        "value_beta_2": args.value_beta_2,
+                        "value_eps": args.value_eps,
+                        "value_shrinkage": args.value_shrinkage,
+                    },
+                    "cost_optimizer": {
+                        "cost_algo": args.cost_algo,
+                        "cost_lr": args.cost_lr,
+                        "cost_beta_1": args.cost_beta_1,
+                        "cost_beta_2": args.cost_beta_2,
+                        "cost_eps": args.cost_eps,
+                        "cost_shrinkage": args.cost_shrinkage,
+                    },
+                },
+            },
+            "fixed_std": args.fixed_std,
+            "log_std_lr": args.log_std_lr,
+            "learning_rate": args.learning_rate,
+            "min_log_std_lr": args.min_log_std_lr,
+            "policy_bound_loss_weight": args.policy_bound_loss_weight,
+            "device": args.device,
+            "seed": args.seed,
+            "verbose": args.verbose,
+            "cost_limit": args.cost_limit,
+            "lagrangian_multiplier_init": args.lagrangian_multiplier_init,
+            "lambda_lr": args.lambda_lr,
+            "lambda_optimizer": args.lambda_optimizer,
+            "lagrangian_upper_bound": args.lagrangian_upper_bound,
         }
     elif args.algo_type == 'a2c_gbrl':
         algo_kwargs = {

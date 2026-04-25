@@ -48,6 +48,7 @@ from algos.a2c import A2C_GBRL
 from algos.awr import AWR_GBRL
 from algos.awr_nn import AWR
 from algos.safety import PPOLag, CPO, CUP, IPO
+from algos.safety.ppo_lag_gbrl import PPOLagGBRL
 from algos.dqn import DQN_GBRL
 from algos.ppo import PPO_GBRL
 from algos.sac import SAC_GBRL
@@ -61,11 +62,12 @@ NAME_TO_ALGO = {'ppo_gbrl': PPO_GBRL, 'split_rl': SPLIT_RL,
                 'a2c_gbrl': A2C_GBRL, 'sac_gbrl': SAC_GBRL,
                 'awr_gbrl': AWR_GBRL, 'split_awr_gbrl': SPLIT_AWR_GBRL,
                 'ppo_nn': PPO,
-                'ppo_lag': PPOLag, "cpo": CPO, 'cup': CUP, 'ipo': IPO,
+                'ppo_lag': PPOLag, 'ppo_lag_gbrl': PPOLagGBRL,
+                "cpo": CPO, 'cup': CUP, 'ipo': IPO,
                 'a2c_nn': A2C, 'dqn_gbrl': DQN_GBRL,
                 'awr_nn': AWR, 'dqn_nn': DQN}
 CATEGORICAL_ALGOS = [algo for algo in NAME_TO_ALGO if 'gbrl' in algo or algo in ('split_rl', 'split_awr_gbrl')]
-ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl', 'split_rl']
+ON_POLICY_ALGOS = ['ppo_gbrl', 'a2c_gbrl', 'split_rl', 'ppo_lag_gbrl']
 OFF_POLICY_ALGOS = ['sac_gbrl', 'dqn_gbrl', 'awr_gbrl', 'split_awr_gbrl']
 
 if __name__ == '__main__':
