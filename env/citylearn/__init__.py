@@ -80,6 +80,7 @@ SCENARIO_VEC_FACTORIES = {
     "arbitrage_vs_buffer": make_arbitrage_vs_buffer_vec_env,
     "contract_demand": make_contract_demand_vec_env,
     "carbon_aware": make_carbon_aware_vec_env,
+    "dirty_window_reserve": make_carbon_aware_vec_env,
     "peak_ratchet": make_peak_ratchet_vec_env,
     "demand_response": make_demand_response_vec_env,
     "solar_ramp_reserve": make_solar_ramp_reserve_vec_env,

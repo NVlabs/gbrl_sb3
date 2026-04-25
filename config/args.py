@@ -37,7 +37,7 @@ SAFETY_ENVS = ['MiniGrid-DynamicCrossing-v1', 'MiniGrid-DynamicCrossing-v0',
                'citylearn_challenge_2023_phase_2_local_evaluation']
 GUIDANCE_ENVS = ['MiniGrid-GuidedLockedRoom-v0']
 GUIDANCE_ALGOS = ['split_rl']
-SAFETY_ALGOS = ['split_rl', 'ppo_lag_gbrl']
+SAFETY_ALGOS = ['split_rl']
 
 def get_value(x):
     if isinstance(x, dict):
@@ -408,7 +408,7 @@ def get_defaults(args, defaults):
     # args.env_type = args.env_type if args.env_type else 'equation'
     args.env_type = args.env_type if args.env_type else 'minigrid'
     # args.algo_type = args.algo_type if args.algo_type else 'ppo_gbrl'
-    args.algo_type = args.algo_type if args.algo_type else 'split_rl'
+    args.algo_type = args.algo_type if args.algo_type else 'ppo_lag_gbrl'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-SimpleObstacleFetch-16x16-N1-v1'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMaze-2Dlh-v0'
     # args.env_name = args.env_name if args.env_name else 'MiniGrid-ObstructedMazeCompliance_1Dl-v0'
@@ -849,6 +849,10 @@ def process_policy_kwargs(args):
 
         }
     elif args.algo_type == 'ppo_lag_gbrl':
+        # PPOLagGBRL merges reward/cost into ONE gradient stream via Lagrangian,
+        # so n_objs=1 (no multi-objective label routing like Split-RL)
+        tree_params['n_objs'] = 1
+        tree_params['lambda_objs'] = [1.0]
         algo_kwargs = {
             "clip_range": args.clip_range,
             "clip_range_vf": args.clip_range_vf,
