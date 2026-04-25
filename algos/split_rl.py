@@ -156,6 +156,7 @@ class SPLIT_RL(OnPolicyAlgorithm):
                  tensorboard_log: str = None,
                  safety_mode: bool = False,
                  guidance_mode: bool = False,
+                 blend_coeffs: Optional[List[float]] = None,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -174,6 +175,10 @@ class SPLIT_RL(OnPolicyAlgorithm):
         assert 'tree_optimizer' in policy_kwargs, "tree_optimizer must be a dictionary within policy_kwargs"
         assert 'params' in policy_kwargs['tree_optimizer'], \
             "params must be a dictionary within policy_kwargs['tree_optimizer]"
+        self.blend_coeffs = blend_coeffs
+        # Auto-bump n_objs when blend_coeffs is set
+        if blend_coeffs is not None:
+            policy_kwargs['tree_optimizer']['params']['n_objs'] = 3
         policy_kwargs['tree_optimizer']['policy_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['value_optimizer']['T'] = int(total_num_updates)
         policy_kwargs['tree_optimizer']['cost_optimizer']['T'] = int(total_num_updates)
@@ -478,7 +483,12 @@ class SPLIT_RL(OnPolicyAlgorithm):
                     cost_grad_mins.append(cost_grad.min().item())
                     safety_policy_losses.append(safety_policy_loss.item())
 
-                    policy_grads = (policy_grad, safety_grads)
+                    if self.blend_coeffs is not None:
+                        # 3rd objective: blended reward + cost gradient
+                        blended_grads = self.blend_coeffs[0] * policy_grad + self.blend_coeffs[1] * safety_grads
+                        policy_grads = (policy_grad, safety_grads, blended_grads)
+                    else:
+                        policy_grads = (policy_grad, safety_grads)
                         
                     safety = {'safety_labels': rollout_data.safety_labels,
                               'cost_grads': cost_grad,
@@ -710,17 +720,8 @@ class SPLIT_RL(OnPolicyAlgorithm):
                 kwargs['cost'] = th.tensor([info.get('cost', 0.0) for info in infos])
                 kwargs['value_cost'] = value_costs
                 if raw_labels[0] is not None:
-                    # Convert to (n_envs, 2) bitmap: [reward_active, cost_active]
-                    # label=0 → [1,0] reward only
-                    # label=1 → [0,1] cost only
-                    # label=[0,1] → [1,1] both objectives
-                    sl = np.zeros((len(raw_labels), 2), dtype=np.float32)
-                    for i, lbl in enumerate(raw_labels):
-                        if isinstance(lbl, list):
-                            for idx in lbl:
-                                sl[i, int(idx)] = 1.0
-                        else:
-                            sl[i, int(lbl)] = 1.0
+                    # Scalar labels: 0=reward-only, 1=cost-only, 2=blended
+                    sl = np.array([float(lbl) for lbl in raw_labels], dtype=np.float32)
                     kwargs['safety_label'] = sl
             elif self.guidance_mode:
                 guidance_labels = [info.get('guidance_active', None) for info in infos]
@@ -752,18 +753,16 @@ class SPLIT_RL(OnPolicyAlgorithm):
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones, **kwargs)
 
         if self.safety_mode and hasattr(rollout_buffer, 'safety_labels'):
-            sl = rollout_buffer.safety_labels  # shape (buf, n_envs, 2)
-            reward_col = sl[..., 0]  # 1 when reward objective active
-            cost_col = sl[..., 1]    # 1 when cost objective active
-            # label_rate: fraction of samples with cost objective active
-            label_rate = float(np.mean(cost_col > 0))
-            # multi_label_rate: fraction with BOTH objectives active [1,1]
-            multi_rate = float(np.mean((reward_col > 0) & (cost_col > 0)))
-            # cost_only_rate: fraction with cost only [0,1]
-            cost_only_rate = float(np.mean((reward_col < 1) & (cost_col > 0)))
+            sl = rollout_buffer.safety_labels  # shape (buf, n_envs) scalar labels
+            # label_rate: fraction of samples with cost objective (label=1)
+            label_rate = float(np.mean(sl == 1))
+            # blend_label_rate: fraction with blended objective (label=2)
+            blend_rate = float(np.mean(sl == 2))
+            # reward_only_rate: fraction with reward only (label=0)
+            reward_only_rate = float(np.mean(sl == 0))
             self.logger.record("rollout/safety_label_rate", label_rate)
-            self.logger.record("rollout/multi_label_rate", multi_rate)
-            self.logger.record("rollout/cost_only_label_rate", cost_only_rate)
+            self.logger.record("rollout/blend_label_rate", blend_rate)
+            self.logger.record("rollout/reward_only_label_rate", reward_only_rate)
 
         callback.on_rollout_end()
 

@@ -291,10 +291,8 @@ class CostRolloutBuffer(RolloutBuffer):
 
     def reset(self) -> None:
         super().reset()
-        # Bitmap: [reward_active, cost_active] per sample.
-        # Default [1,0] = reward-only (label=0).
-        self.safety_labels = np.zeros((self.buffer_size, self.n_envs, 2), dtype=np.float32)
-        self.safety_labels[..., 0] = 1.0  # default: reward objective active
+        # Scalar labels: 0=reward-only, 1=cost-only, 2=blended objective
+        self.safety_labels = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.value_costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -343,7 +341,7 @@ class CostRolloutBuffer(RolloutBuffer):
         self.costs[self.pos] = cost.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
         if safety_label is not None:
-            # safety_label is already a (n_envs, 2) bitmap from collect_rollouts.
+            # safety_label is (n_envs,) scalar labels from collect_rollouts.
             self.safety_labels[self.pos] = np.asarray(safety_label)
 
         self.pos += 1
@@ -441,7 +439,7 @@ class CostRolloutBuffer(RolloutBuffer):
             self.advantages_costs[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
             self.cost_returns[batch_inds].flatten(),
-            self.safety_labels[batch_inds],  # (batch, 2) bitmap for GBRL obj_labels
+            self.safety_labels[batch_inds],  # (batch,) scalar labels for GBRL obj_labels
         )
         return CostRolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
@@ -868,10 +866,8 @@ class CostCategoricalRolloutBuffer(BaseBuffer):
         self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=object if self.is_mixed else categorical_dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        # Bitmap: [reward_active, cost_active] per sample.
-        # Default [1,0] = reward-only (label=0).
-        self.safety_labels = np.zeros((self.buffer_size, self.n_envs, 2), dtype=np.float32)
-        self.safety_labels[..., 0] = 1.0  # default: reward objective active
+        # Scalar labels: 0=reward-only, 1=cost-only, 2=blended objective
+        self.safety_labels = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -974,7 +970,7 @@ class CostCategoricalRolloutBuffer(BaseBuffer):
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
 
         if safety_label is not None:
-            # safety_label is already a (n_envs, 2) bitmap from collect_rollouts.
+            # safety_label is (n_envs,) scalar labels from collect_rollouts.
             self.safety_labels[self.pos] = np.asarray(safety_label)
 
         self.pos += 1
@@ -1045,7 +1041,7 @@ class CostCategoricalRolloutBuffer(BaseBuffer):
             self.advantages_costs[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
             self.cost_returns[batch_inds].flatten(),
-            self.safety_labels[batch_inds],  # (batch, 2) bitmap for GBRL obj_labels
+            self.safety_labels[batch_inds],  # (batch,) scalar labels for GBRL obj_labels
         )
         return CostCategoricalRolloutBufferSamples(*tuple(map(self.categorical_to_torch, data)))
 

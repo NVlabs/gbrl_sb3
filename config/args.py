@@ -371,6 +371,7 @@ def parse_args():
     parser.add_argument('--ppo_ent_coef', type=float)
     # safety
     parser.add_argument('--lambda_objs', type=float, nargs='+')
+    parser.add_argument('--blend_coeffs', type=float, nargs='+', default=None)
     # split AWR
     parser.add_argument('--expert_datasets', type=json_string_to_dict)
     parser.add_argument('--expert_buffer_per_label', type=int)
@@ -844,6 +845,7 @@ def process_policy_kwargs(args):
             "verbose": args.verbose,
             "safety_mode": safety_mode,
             "guidance_mode": guidance_mode,
+            "blend_coeffs": getattr(args, 'blend_coeffs', None),
 
         }
     elif args.algo_type == 'a2c_gbrl':
