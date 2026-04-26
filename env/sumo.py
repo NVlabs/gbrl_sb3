@@ -2350,7 +2350,7 @@ SCENARIO_DEFAULTS: Dict[Tuple[str, str], dict] = {
         "convoy_headway": 2.0,
     },
     ("sumo-arterial4x4-v0", "premium_priority"): {
-        "premium_injection_interval": 10.0,
+        "premium_injection_interval": 30.0,
         "premium_cost_threshold": 8.0,
         "premium_warn_threshold": 3.0,
     },
