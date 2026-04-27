@@ -31,6 +31,7 @@ import numpy as np
 from env.citylearn.base import (
     CityLearnBaseWrapper,
     DEFAULT_SCHEMA,
+    RandomPairwiseFeatureWrapper,
     make_citylearn_inner_env,
 )
 from utils.helpers import make_cost_vec_env
@@ -903,14 +904,14 @@ def make_arbitrage_vs_buffer_env(
     inner = make_citylearn_inner_env(
         schema=env_name, episode_time_steps=episode_time_steps,
     )
-    return ArbitrageVsBufferWrapper(
+    return RandomPairwiseFeatureWrapper(ArbitrageVsBufferWrapper(
         inner,
         soc_safety_level=soc_safety_level,
         peak_price_quantile=peak_price_quantile,
         prep_hours=prep_hours,
         high_price_quantile=high_price_quantile,
         emergency_soc=emergency_soc,
-    )
+    ))
 
 
 def make_arbitrage_vs_buffer_vec_env(
@@ -960,7 +961,7 @@ def make_contract_demand_env(
     inner = make_citylearn_inner_env(
         schema=env_name, episode_time_steps=episode_time_steps,
     )
-    return ContractDemandWrapper(
+    return RandomPairwiseFeatureWrapper(ContractDemandWrapper(
         inner,
         cap_quantile=cap_quantile,
         cap_margin=cap_margin,
@@ -970,7 +971,7 @@ def make_contract_demand_env(
         prep_hours=prep_hours,
         high_price_quantile=high_price_quantile,
         low_price_quantile=low_price_quantile,
-    )
+    ))
 
 
 def make_contract_demand_vec_env(
@@ -1024,7 +1025,7 @@ def make_carbon_aware_env(
     inner = make_citylearn_inner_env(
         schema=env_name, episode_time_steps=episode_time_steps,
     )
-    return CarbonAwareWrapper(
+    return RandomPairwiseFeatureWrapper(CarbonAwareWrapper(
         inner,
         carbon_quantile=carbon_quantile,
         carbon_event_quantile=carbon_event_quantile,
@@ -1032,7 +1033,7 @@ def make_carbon_aware_env(
         prep_hours=prep_hours,
         high_price_quantile=high_price_quantile,
         low_price_quantile=low_price_quantile,
-    )
+    ))
 
 
 def make_carbon_aware_vec_env(
@@ -1727,14 +1728,14 @@ def make_peak_ratchet_env(
     inner = make_citylearn_inner_env(
         schema=env_name, episode_time_steps=episode_time_steps,
     )
-    return PeakRatchetWrapper(
+    return RandomPairwiseFeatureWrapper(PeakRatchetWrapper(
         inner,
         peak_target_quantile=peak_target_quantile,
         peak_cap_margin=peak_cap_margin,
         price_low_quantile=price_low_quantile,
         charge_headroom_frac=charge_headroom_frac,
         ratchet_margin=ratchet_margin,
-    )
+    ))
 
 
 def make_peak_ratchet_vec_env(
@@ -1782,7 +1783,7 @@ def make_demand_response_env(
     inner = make_citylearn_inner_env(
         schema=env_name, episode_time_steps=episode_time_steps,
     )
-    return DemandResponseWrapper(
+    return RandomPairwiseFeatureWrapper(DemandResponseWrapper(
         inner,
         event_starts=event_starts,
         event_duration=event_duration,
@@ -1790,7 +1791,7 @@ def make_demand_response_env(
         prep_window=prep_window,
         high_price_quantile=high_price_quantile,
         emergency_soc=emergency_soc,
-    )
+    ))
 
 
 def make_demand_response_vec_env(
@@ -1839,14 +1840,14 @@ def make_solar_ramp_reserve_env(
     inner = make_citylearn_inner_env(
         schema=env_name, episode_time_steps=episode_time_steps,
     )
-    return SolarRampReserveWrapper(
+    return RandomPairwiseFeatureWrapper(SolarRampReserveWrapper(
         inner,
         soc_reserve=soc_reserve,
         prep_hours=prep_hours,
         buffer_hours=buffer_hours,
         high_price_quantile=high_price_quantile,
         emergency_soc=emergency_soc,
-    )
+    ))
 
 
 def make_solar_ramp_reserve_vec_env(
