@@ -111,10 +111,26 @@ class CityLearnBaseWrapper(gym.Wrapper):
 
     """
 
+    _N_AGGREGATE_FEATURES = 8
+
     def __init__(self, env: gym.Env):
         super().__init__(env)
         self._base_initialized = False
         self._n_buildings = 0
+
+        # Normalization bounds (set in _init_aggregate_features)
+        self._max_district_nsl: float = 1.0
+        self._max_district_solar: float = 1.0
+        self._max_net_base_load: float = 1.0
+
+        # # Extend observation space with aggregate features (disabled)
+        # low = np.append(self.observation_space.low,
+        #                 np.zeros(self._N_AGGREGATE_FEATURES, dtype=np.float32))
+        # high = np.append(self.observation_space.high,
+        #                  np.ones(self._N_AGGREGATE_FEATURES, dtype=np.float32))
+        # self.observation_space = gym.spaces.Box(
+        #     low=low, high=high, dtype=self.observation_space.dtype,
+        # )
 
     # ------------------------------------------------------------------
     # Lazy init (deferred until env is alive)
@@ -126,10 +142,111 @@ class CityLearnBaseWrapper(gym.Wrapper):
         if hasattr(cl, "buildings"):
             self._n_buildings = len(cl.buildings)
         self._scenario_init()
+        # self._init_aggregate_features()  # disabled
         self._base_initialized = True
 
     def _scenario_init(self):
         """Override in subclasses for one-time setup (e.g. price threshold)."""
+
+    # ------------------------------------------------------------------
+    # Cross-building aggregate features
+    # ------------------------------------------------------------------
+    def _init_aggregate_features(self):
+        """Compute normalization bounds from full-horizon schedules."""
+        buildings = self._get_buildings()
+        if not buildings:
+            return
+        n_hours = None
+        for b in buildings:
+            es = getattr(b, "energy_simulation", None)
+            nsl = getattr(es, "_non_shiftable_load", None)
+            if nsl is not None and hasattr(nsl, "__len__") and len(nsl) > 0:
+                n_hours = len(nsl) if n_hours is None else min(n_hours, len(nsl))
+        if n_hours is None or n_hours == 0:
+            return
+        district_nsl = np.zeros(n_hours)
+        district_solar = np.zeros(n_hours)
+        for b in buildings:
+            es = getattr(b, "energy_simulation", None)
+            nsl = getattr(es, "_non_shiftable_load", None)
+            if nsl is not None and hasattr(nsl, "__len__") and len(nsl) >= n_hours:
+                district_nsl += np.asarray(nsl[:n_hours], dtype=float)
+            sg = getattr(es, "_solar_generation", None)
+            if sg is not None and hasattr(sg, "__len__") and len(sg) >= n_hours:
+                district_solar += np.asarray(sg[:n_hours], dtype=float)
+        self._max_district_nsl = max(float(np.max(district_nsl)), 1e-6)
+        self._max_district_solar = max(float(np.max(district_solar)), 1e-6)
+        self._max_net_base_load = max(float(np.max(
+            np.maximum(district_nsl - district_solar, 0.0))), 1e-6)
+
+    def _compute_aggregate_features(self) -> np.ndarray:
+        """8 cross-building summary statistics, all normalized to [0, 1].
+
+        0. district_nsl        Σ NSL_i / max
+        1. district_solar      Σ solar_i / max
+        2. net_base_load       max(Σ NSL − Σ solar, 0) / max
+        3. mean_elec_soc       mean(SOC_i)
+        4. min_elec_soc        min(SOC_i)
+        5. max_elec_soc        max(SOC_i)
+        6. mean_dhw_soc        mean(DHW_SOC_i)
+        7. mean_price          mean(price_i) / max_price  (approx)
+        """
+        self._ensure_base_init()
+        buildings = self._get_buildings()
+        acc = self._at_pre_step
+
+        d_nsl = 0.0
+        d_solar = 0.0
+        for b in buildings:
+            es = getattr(b, "energy_simulation", None)
+            nsl = getattr(es, "_non_shiftable_load", None)
+            if nsl is not None:
+                v = acc(nsl)
+                if v is not None:
+                    d_nsl += v
+            sg = getattr(es, "_solar_generation", None)
+            if sg is not None:
+                v = acc(sg)
+                if v is not None:
+                    d_solar += v
+
+        e_socs = []
+        for b in buildings:
+            if b.electrical_storage is not None:
+                soc = acc(b.electrical_storage.soc)
+                if soc is not None:
+                    e_socs.append(float(soc))
+        mean_e = float(np.mean(e_socs)) if e_socs else 0.5
+        min_e = float(min(e_socs)) if e_socs else 0.5
+        max_e = float(max(e_socs)) if e_socs else 0.5
+
+        dhw_socs = []
+        for b in buildings:
+            dhw = getattr(b, "dhw_storage", None)
+            if dhw is not None and hasattr(dhw, "soc"):
+                soc = acc(dhw.soc)
+                if soc is not None:
+                    dhw_socs.append(float(soc))
+        mean_dhw = float(np.mean(dhw_socs)) if dhw_socs else 0.5
+
+        prices = []
+        for b in buildings:
+            if hasattr(b, "pricing") and b.pricing is not None:
+                p = acc(b.pricing.electricity_pricing)
+                if p is not None:
+                    prices.append(p)
+        mean_price = float(np.mean(prices)) if prices else 0.0
+        # Normalize price by a rough upper bound (max observed ~ 0.06)
+        mean_price_norm = min(1.0, mean_price / 0.06) if mean_price > 0 else 0.0
+
+        return np.array([
+            min(1.0, d_nsl / self._max_district_nsl),
+            min(1.0, d_solar / self._max_district_solar),
+            min(1.0, max(d_nsl - d_solar, 0.0) / self._max_net_base_load),
+            mean_e, min_e, max_e,
+            mean_dhw,
+            mean_price_norm,
+        ], dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Raw building-state helpers
@@ -246,6 +363,7 @@ class CityLearnBaseWrapper(gym.Wrapper):
         info["cost"] = 0.0
         info["original_reward"] = 0.0
         info["safety_label"] = 0
+        # obs = np.append(obs, self._compute_aggregate_features())  # disabled
         return obs, info
 
     def step(self, action):
@@ -268,6 +386,7 @@ class CityLearnBaseWrapper(gym.Wrapper):
         info["cost"] = self._compute_cost(obs)
         info["safety_label"] = pre_label
 
+        # obs = np.append(obs, self._compute_aggregate_features())  # disabled
         return obs, float(reward), terminated, truncated, info
 
 

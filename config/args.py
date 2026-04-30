@@ -402,6 +402,38 @@ def parse_args():
     return get_defaults(args, defaults)
 
 
+# ── Auto cost_limit resolution ──────────────────────────────────────────────
+# When cost_limit is not explicitly provided, infer from env_type + scenario.
+# All constraint-based algos solving the same CMDP should use the same limit.
+
+_SUMO_COST_LIMITS = {
+    "bus_priority": 7.0,
+    "convoy_priority": 6.0,
+    "premium_priority": 15.0,
+}
+
+_CITYLEARN_COST_LIMIT = 5.0
+_MINIGRID_COST_LIMIT = 0.1
+
+
+def _auto_cost_limit(args) -> float:
+    """Infer cost_limit from env_type and env_kwargs when not set explicitly."""
+    env_type = getattr(args, "env_type", None) or ""
+    env_kwargs = getattr(args, "env_kwargs", None) or {}
+
+    if env_type == "sumo":
+        cost_fn = env_kwargs.get("cost_fn", "")
+        return _SUMO_COST_LIMITS.get(cost_fn, 10.0)
+
+    if env_type == "citylearn":
+        return _CITYLEARN_COST_LIMIT
+
+    if env_type == "minigrid":
+        return _MINIGRID_COST_LIMIT
+
+    return 0.0
+
+
 def get_defaults(args, defaults):
     # Set hardcoded defaults
     # args.env_type = args.env_type if args.env_type else 'rickety_bridge'
@@ -500,7 +532,9 @@ def get_defaults(args, defaults):
     args.lagrangian_multiplier_init = args.lagrangian_multiplier_init if args.lagrangian_multiplier_init is not None else algo_defaults.get('lagrangian_multiplier_init', 0.001)
     args.lambda_optimizer = args.lambda_optimizer if args.lambda_optimizer is not None else algo_defaults.get('lambda_optimizer', "Adam")
     args.lagrangian_upper_bound = args.lagrangian_upper_bound if args.lagrangian_upper_bound is not None else algo_defaults.get('lagrangian_upper_bound', None)
-    args.cost_limit = args.cost_limit if args.cost_limit is not None else algo_defaults.get('cost_limit', 0.0)
+    args.cost_limit = args.cost_limit if args.cost_limit is not None else algo_defaults.get('cost_limit', None)
+    if args.cost_limit is None:
+        args.cost_limit = _auto_cost_limit(args)
     args.cg_damping = args.cg_damping if args.cg_damping is not None else algo_defaults.get('cg_damping', 0.1)
     args.cg_max_steps = args.cg_max_steps if args.cg_max_steps is not None else algo_defaults.get('cg_max_steps', 10)
     args.kappa = args.kappa if args.kappa is not None else algo_defaults.get('kappa', 0.01)
