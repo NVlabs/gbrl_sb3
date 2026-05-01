@@ -457,6 +457,8 @@ class PPOLag(PPO):
                         self.logger.record("rollout/normalized_score", safe_mean([ep_info["normalized_score"] for ep_info in self.ep_info_buffer]))
                     if "completion_rate" in self.ep_info_buffer[0]:
                         self.logger.record("rollout/completion_rate", safe_mean([ep_info["completion_rate"] for ep_info in self.ep_info_buffer]))
+                    from utils.helpers import log_ep_info_metrics
+                    log_ep_info_metrics(self.logger, self.ep_info_buffer)
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
