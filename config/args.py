@@ -372,6 +372,19 @@ def parse_args():
     # safety
     parser.add_argument('--lambda_objs', type=float, nargs='+')
     parser.add_argument('--blend_coeffs', type=float, nargs='+', default=None)
+    # ── Label ablations (all off by default) ──────────────────────────────
+    parser.add_argument('--label_noise_prob', type=float, default=0.0,
+                        help='Split-RL only: probability of discarding a guidance label and '
+                             'redrawing it uniformly. Corruption is applied once at rollout '
+                             'storage. Binary labels => effective flip rate is half this value; '
+                             'log rollout/label_flip_rate for the realised rate.')
+    parser.add_argument('--label_mask', type=str2bool, default=False,
+                        help='PPO-Lag (NN and GBT): route reward/cost advantages by guidance '
+                             'label instead of blending them, rescaling each term by its own '
+                             'rollout activation rate. Label-aware control for the baselines.')
+    parser.add_argument('--label_in_obs', type=str2bool, default=False,
+                        help='Append the one-hot guidance label to the observation. Works with '
+                             'any algorithm; requires a flat Box observation space.')
     # split AWR
     parser.add_argument('--expert_datasets', type=json_string_to_dict)
     parser.add_argument('--expert_buffer_per_label', type=int)
@@ -880,6 +893,7 @@ def process_policy_kwargs(args):
             "safety_mode": safety_mode,
             "guidance_mode": guidance_mode,
             "blend_coeffs": getattr(args, 'blend_coeffs', None),
+            "label_noise_prob": getattr(args, 'label_noise_prob', 0.0),
 
         }
     elif args.algo_type == 'ppo_lag_gbrl':
@@ -957,6 +971,7 @@ def process_policy_kwargs(args):
             "lambda_lr": args.lambda_lr,
             "lambda_optimizer": args.lambda_optimizer,
             "lagrangian_upper_bound": args.lagrangian_upper_bound,
+            "label_mask": getattr(args, 'label_mask', False),
         }
     elif args.algo_type == 'a2c_gbrl':
         algo_kwargs = {
@@ -1296,7 +1311,8 @@ def process_policy_kwargs(args):
             "lambda_lr": args.lambda_lr,
             "lambda_optimizer": args.lambda_optimizer,
             "lagrangian_upper_bound": args.lagrangian_upper_bound,
-            "cf_coef": args.cf_coef
+            "cf_coef": args.cf_coef,
+            "label_mask": getattr(args, 'label_mask', False),
         }
     elif args.algo_type == 'ipo':
         from policies.cost_actor_critic import CostActorCriticPolicy

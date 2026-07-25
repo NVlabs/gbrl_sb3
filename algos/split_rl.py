@@ -37,6 +37,7 @@ from buffers.rollout_buffer import (CategoricalRolloutBuffer,
                                     CostRolloutBuffer,
                                     GuidedCategoricalRolloutBuffer,
                                     GuidedRolloutBuffer, RolloutBuffer)
+from algos.safety.label_ablation import apply_label_noise
 from policies.actor_critic_policy import ActorCriticPolicy
 from policies.cost_actor_critic import CostActorCriticPolicyGBRL
 from utils.io_util import load_from_zip_file, save_to_zip_file
@@ -157,6 +158,7 @@ class SPLIT_RL(OnPolicyAlgorithm):
                  safety_mode: bool = False,
                  guidance_mode: bool = False,
                  blend_coeffs: Optional[List[float]] = None,
+                 label_noise_prob: float = 0.0,
                  _init_setup_model: bool = False):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
@@ -176,6 +178,10 @@ class SPLIT_RL(OnPolicyAlgorithm):
         assert 'params' in policy_kwargs['tree_optimizer'], \
             "params must be a dictionary within policy_kwargs['tree_optimizer]"
         self.blend_coeffs = blend_coeffs
+        # Guidance-label corruption (robustness ablation); 0.0 leaves labels intact.
+        assert 0.0 <= label_noise_prob <= 1.0, "label_noise_prob must be in [0, 1]"
+        self.label_noise_prob = label_noise_prob
+        self._label_noise_rng = np.random.default_rng(seed)
         # Auto-bump n_objs when blend_coeffs is set
         if blend_coeffs is not None:
             policy_kwargs['tree_optimizer']['params']['n_objs'] = 3
@@ -659,7 +665,11 @@ class SPLIT_RL(OnPolicyAlgorithm):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
-        
+
+        # Realised label corruption this rollout (only non-zero under ablation).
+        n_label_flips = 0.0
+        n_labels_seen = 0
+
         value_costs = None
 
         while n_steps < n_rollout_steps:
@@ -722,6 +732,18 @@ class SPLIT_RL(OnPolicyAlgorithm):
                 if raw_labels[0] is not None:
                     # Scalar labels: 0=reward-only, 1=cost-only, 2=blended
                     sl = np.array([float(lbl) for lbl in raw_labels], dtype=np.float32)
+                    if self.label_noise_prob > 0.0:
+                        # Corrupt once, here, so the noise is baked into the rollout.
+                        # Re-drawing inside train() would let it average out over
+                        # the n_epochs passes and understate the effect.
+                        sl, flip_rate = apply_label_noise(
+                            sl,
+                            prob=self.label_noise_prob,
+                            rng=self._label_noise_rng,
+                            n_label_values=3 if self.blend_coeffs is not None else 2,
+                        )
+                        n_label_flips += flip_rate * sl.size
+                        n_labels_seen += sl.size
                     kwargs['safety_label'] = sl
             elif self.guidance_mode:
                 guidance_labels = [info.get('guidance_active', None) for info in infos]
@@ -763,6 +785,12 @@ class SPLIT_RL(OnPolicyAlgorithm):
             self.logger.record("rollout/safety_label_rate", label_rate)
             self.logger.record("rollout/blend_label_rate", blend_rate)
             self.logger.record("rollout/reward_only_label_rate", reward_only_rate)
+
+        if self.label_noise_prob > 0.0 and n_labels_seen > 0:
+            # Effective flip rate, not the redraw probability: with a binary
+            # alphabet a redraw keeps the original label half the time, so this
+            # settles near label_noise_prob / 2. Plot this, not the flag.
+            self.logger.record("rollout/label_flip_rate", n_label_flips / n_labels_seen)
 
         callback.on_rollout_end()
 

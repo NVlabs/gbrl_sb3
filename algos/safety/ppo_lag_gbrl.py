@@ -44,6 +44,9 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.patch_gym import _convert_space
 from torch.nn import functional as F
 
+from algos.safety.label_ablation import (buffer_safety_labels,
+                                         label_objective_rates,
+                                         masked_lagrangian_advantages)
 from buffers.rollout_buffer import CostRolloutBuffer, CostCategoricalRolloutBuffer
 from policies.cost_actor_critic import CostActorCriticPolicyGBRL
 from utils.io_util import load_from_zip_file, save_to_zip_file
@@ -164,6 +167,7 @@ class PPOLagGBRL(OnPolicyAlgorithm):
         seed: Optional[int] = None,
         verbose: int = 1,
         tensorboard_log: str = None,
+        label_mask: bool = False,
         _init_setup_model: bool = False,
     ):
         self.clip_range = clip_range
@@ -177,6 +181,15 @@ class PPOLagGBRL(OnPolicyAlgorithm):
         self.max_cost_grad_norm = max_cost_grad_norm
         self.batch_size = batch_size
         self.cf_coef = cf_coef
+        # Label-aware control: route reward/cost advantages by guidance label
+        # instead of blending them into one Lagrangian stream. This is the
+        # same-function-class counterpart to Split-RL's structural routing.
+        self.label_mask = label_mask
+        # Set once the env is seen to emit guidance labels. Tracked explicitly
+        # because an env that emits none leaves the buffer all-zeros, which is
+        # indistinguishable from "every sample is legitimately reward-only" and
+        # would silently rescale the cost term by 1/min_rate.
+        self._saw_safety_labels = False
 
         # --- Lagrangian multiplier ---
         self.cost_limit = cost_limit
@@ -373,6 +386,25 @@ class PPOLagGBRL(OnPolicyAlgorithm):
         self.logger.record("train/lagrangian_multiplier", penalty)
         self.logger.record("train/cost_limit", self.cost_limit)
 
+        # Objective activation rates over the *whole* rollout. Computing these
+        # per minibatch would blow up when a minibatch holds 0 or 1 cost-labelled
+        # samples; see label_objective_rates.
+        p_reward, p_cost = (1.0, 1.0)
+        if self.label_mask:
+            labels = buffer_safety_labels(self.rollout_buffer)
+            if labels is None or not self._saw_safety_labels:
+                # All-zero labels are a well-defined degenerate case: every
+                # sample is reward-only, the cost weights vanish, and the update
+                # reduces to plain PPO. Warn rather than fail, since silently
+                # dropping the constraint is rarely what was intended.
+                warnings.warn(
+                    "label_mask=True but this env never emitted info['safety_label']; "
+                    "every sample is treated as reward-only and the cost term drops out."
+                )
+            p_reward, p_cost = label_objective_rates(labels if labels is not None else np.zeros(1))
+            self.logger.record("train/label_reward_rate", p_reward)
+            self.logger.record("train/label_cost_rate", p_cost)
+
         entropy_losses = []
         policy_losses, value_losses, cost_losses = [], [], []
         clip_fractions = []
@@ -400,15 +432,29 @@ class PPOLagGBRL(OnPolicyAlgorithm):
                 costs = costs.flatten() if costs.ndim > 1 else costs
 
                 # --- Combine advantages via Lagrangian penalty ---
-                advantages_reward = rollout_data.advantages
-                if self.normalize_advantage and len(advantages_reward) > 1:
-                    advantages_reward = (advantages_reward - advantages_reward.mean()) / (advantages_reward.std() + 1e-8)
+                if self.label_mask:
+                    # Label-routed advantage: each sample feeds only the objective
+                    # its guidance label selects. Normalisation happens inside,
+                    # per subset, so the two streams stay decoupled.
+                    advantages = masked_lagrangian_advantages(
+                        advantages_reward=rollout_data.advantages,
+                        advantages_costs=rollout_data.advantages_costs,
+                        labels=rollout_data.safety_labels,
+                        penalty=penalty,
+                        p_reward=p_reward,
+                        p_cost=p_cost,
+                        normalize_advantage=self.normalize_advantage,
+                    )
+                else:
+                    advantages_reward = rollout_data.advantages
+                    if self.normalize_advantage and len(advantages_reward) > 1:
+                        advantages_reward = (advantages_reward - advantages_reward.mean()) / (advantages_reward.std() + 1e-8)
 
-                advantages_costs = rollout_data.advantages_costs
-                if self.normalize_advantage and len(advantages_costs) > 1:
-                    advantages_costs = advantages_costs - advantages_costs.mean()
+                    advantages_costs = rollout_data.advantages_costs
+                    if self.normalize_advantage and len(advantages_costs) > 1:
+                        advantages_costs = advantages_costs - advantages_costs.mean()
 
-                advantages = (advantages_reward - penalty * advantages_costs) / (1 + penalty)
+                    advantages = (advantages_reward - penalty * advantages_costs) / (1 + penalty)
 
                 # --- PPO clipped surrogate loss ---
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -643,6 +689,14 @@ class PPOLagGBRL(OnPolicyAlgorithm):
 
             costs = th.tensor([info.get('cost', 0.0) for info in infos])
 
+            # Guidance labels are stored but unused unless label_mask is on, so
+            # the default run is byte-identical to before.
+            raw_labels = [info.get('safety_label', None) for info in infos]
+            safety_label = None
+            if raw_labels[0] is not None:
+                safety_label = np.array([float(lbl) for lbl in raw_labels], dtype=np.float32)
+                self._saw_safety_labels = True
+
             rollout_buffer.add(
                 obs=self._last_obs,
                 action=actions,
@@ -652,6 +706,7 @@ class PPOLagGBRL(OnPolicyAlgorithm):
                 value_cost=value_costs,
                 log_prob=log_probs,
                 cost=costs,
+                safety_label=safety_label,
             )
 
             self._last_obs = new_obs

@@ -34,6 +34,7 @@ from env.register_minigrid import register_minigrid_tests
 from env.wrappers import (CategoricalDummyVecEnv,
                           MiniGridCategoricalObservationWrapper)
 from env.mujoco_wrappers import MujocoTreeObsWrapper
+from env.label_obs_wrapper import VecLabelObsWrapper
 from env.highway import make_highway_vec_env
 from env.sumo import make_sumo_vec_env
 from env.citylearn import SCENARIO_VEC_FACTORIES as CITYLEARN_SCENARIOS
@@ -166,6 +167,15 @@ if __name__ == '__main__':
                                    seed=args.seed, **citylearn_kwargs)
     else:
         print("Invalid env_type!")
+    # Label-aware control: hand the baselines the same guidance label Split-RL
+    # routes on, as a one-hot appended to the observation. Applied before
+    # VecNormalize so the appended dimensions are normalised like any other.
+    if getattr(args, 'label_in_obs', False):
+        n_label_values = 3 if getattr(args, 'blend_coeffs', None) is not None else 2
+        env = VecLabelObsWrapper(env, n_label_values=n_label_values)
+        if eval_env is not None:
+            eval_env = VecLabelObsWrapper(eval_env, n_label_values=n_label_values)
+
     if args.wrapper == 'normalize':
         args.wrapper_kwargs['gamma'] = args.gamma
         env = VecNormalize(env, **args.wrapper_kwargs)
