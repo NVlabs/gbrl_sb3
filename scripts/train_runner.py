@@ -97,10 +97,12 @@ sys.path.insert(0, str(ROOT_PATH))
 _RESUME_DIR = Path(os.environ.get("TRAIN_LOG_DIR", str(ROOT_PATH)))
 
 def _resume_state_path(sweep_id=None):
+    worker_id = os.environ.get('WORKER_ID', '')
+    w = f"_w{worker_id}" if worker_id else ""
     if sweep_id:
         safe = sweep_id.replace("/", "_")
-        return _RESUME_DIR / f".resume_state_{safe}.json"
-    return _RESUME_DIR / ".resume_state.json"
+        return _RESUME_DIR / f".resume_state_{safe}{w}.json"
+    return _RESUME_DIR / f".resume_state{w}.json"
 
 
 def _save_local_resume(details, sweep_id=None):
