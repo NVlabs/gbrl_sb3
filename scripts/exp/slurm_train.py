@@ -87,7 +87,7 @@ def process_slurm_logging(args, callback_list):
 
     if wandb_run_id:
         print(f"WANDB RESUMING RUN: {wandb_run_id}")
-        os.environ["WANDB_RUN_ID "] = wandb_run_id
+        os.environ["WANDB_RUN_ID"] = wandb_run_id
 
     # run_name = args.project
     run = wandb.init(project=args.project, group=None if args.group_name is None else
@@ -196,7 +196,7 @@ class SLURMCheckpointCallback(CheckpointCallback):
                     self.run.mark_preempting()
                     self.run.finish(exit_code=PREEMTING_EXIT_CODE)
                     # Kill wandb agent processes before exiting
-                exit(PREEMTING_EXIT_CODE)  # exit with 0 for auto-resume to launch next slurm job
+                os._exit(PREEMTING_EXIT_CODE)
 
         return True
 

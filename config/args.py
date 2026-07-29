@@ -378,6 +378,12 @@ def parse_args():
                              'redrawing it uniformly. Corruption is applied once at rollout '
                              'storage. Binary labels => effective flip rate is half this value; '
                              'log rollout/label_flip_rate for the realised rate.')
+    parser.add_argument('--label_adversarial_prob', type=float, default=0.0,
+                        help='Split-RL only: probability of replacing a guidance label with a '
+                             'DIFFERENT one (structured inversion, guaranteed wrong). Unlike '
+                             '--label_noise_prob this misdirects the purity term rather than '
+                             'making it uninformative; effective flip rate equals this value. '
+                             'Mutually exclusive with --label_noise_prob.')
     parser.add_argument('--label_mask', type=str2bool, default=False,
                         help='PPO-Lag (NN and GBT): route reward/cost advantages by guidance '
                              'label instead of blending them, rescaling each term by its own '
@@ -894,6 +900,7 @@ def process_policy_kwargs(args):
             "guidance_mode": guidance_mode,
             "blend_coeffs": getattr(args, 'blend_coeffs', None),
             "label_noise_prob": getattr(args, 'label_noise_prob', 0.0),
+            "label_adversarial_prob": getattr(args, 'label_adversarial_prob', 0.0),
 
         }
     elif args.algo_type == 'ppo_lag_gbrl':

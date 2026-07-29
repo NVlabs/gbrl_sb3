@@ -1134,6 +1134,7 @@ if __name__ == "__main__":
                 if args_file.exists():
                     saved = json.loads(args_file.read_text())
                     _inject_args_from_dict(saved)
+                    sys.argv.extend(['--resume_dir', log_dir_env])
                     print("Injected args from checkpoint_args.json")
 
                     os.environ.pop("SWEEP_ID", None)
