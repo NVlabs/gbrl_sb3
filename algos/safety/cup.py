@@ -58,6 +58,7 @@ class CUP(PPOLag):
         lambda_lr: float = 0.035,
         lambda_optimizer: str = 'Adam',
         lagrangian_upper_bound: float | None = None,
+        label_mask: bool = False,
         # CUP-specific parameters
         cup_update_iters: int = 10,
         cup_kl_early_stop: bool = True,
@@ -95,8 +96,9 @@ class CUP(PPOLag):
             lambda_lr=lambda_lr,
             lambda_optimizer=lambda_optimizer,
             lagrangian_upper_bound=lagrangian_upper_bound,
+            label_mask=label_mask,
         )
-        
+
         self.cup_update_iters = cup_update_iters
         self.cup_kl_early_stop = cup_kl_early_stop
         self.cup_target_kl = cup_target_kl
@@ -132,6 +134,10 @@ class CUP(PPOLag):
         self.lambda_optimizer.step()
         self.lagrangian_multiplier.data.clamp_(0.0, self.lagrangian_upper_bound)
 
+        assert not self.label_mask or self._saw_safety_labels, (
+            "label_mask=True but this env never emitted info['safety_label']"
+        )
+
         # --- Step 1: Standard PPO update (reward-only, no cost scalarization) ---
         # NOTE: Unlike PPOLag, CUP uses PURE REWARD advantage in Step 1
         # The cost constraint is handled in Step 2 (projection step)
@@ -155,6 +161,16 @@ class CUP(PPOLag):
                 advantages = rollout_data.advantages
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                if self.label_mask:
+                    # Label mask, step 1 is the reward objective so only
+                    # reward-labelled samples (label 0 or 2) drive it. The
+                    # n / m.sum() factor makes the .mean() below a mean over the
+                    # samples that objective owns:
+                    #     (x * m * n / m.sum()).mean() == (x * m).sum() / m.sum()
+                    labels = rollout_data.safety_labels.reshape(-1)
+                    m_reward = (labels != 1).float()
+                    advantages = advantages * m_reward * labels.numel() / m_reward.sum().clamp(min=1)
 
                 # Ratio between old and new policy
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -238,7 +254,7 @@ class CUP(PPOLag):
 
         # --- Step 2: CUP projection step ---
         self._cup_projection_update()
-        
+
     def _get_actor_parameters(self) -> List[th.nn.Parameter]:
         """
         Get all actor parameters for CUP Step 2 optimization.
@@ -328,7 +344,17 @@ class CUP(PPOLag):
                 adv_c = rollout_data.advantages_costs
                 if len(adv_c.shape) == 1:
                     adv_c = adv_c.unsqueeze(-1)
-                loss = (self.lagrangian_multiplier * coef * ratio.unsqueeze(-1) * adv_c + kl).mean()
+                cost_surrogate = self.lagrangian_multiplier * coef * ratio.unsqueeze(-1) * adv_c
+                if self.label_mask:
+                    # Label mask, step 2 is the cost objective so only
+                    # cost-labelled samples (label 1 or 2) drive it. The KL anchor
+                    # is left over every sample: it is a trust region, not an
+                    # objective, and masking it would let the policy drift without
+                    # limit on reward-labelled states.
+                    labels = rollout_data.safety_labels.reshape(adv_c.shape)
+                    m_cost = (labels != 0).float()
+                    cost_surrogate = cost_surrogate * m_cost * labels.numel() / m_cost.sum().clamp(min=1)
+                loss = (cost_surrogate + kl).mean()
 
                 # F. Optimize (only actor parameters, matching omnisafe)
                 self.policy.optimizer.zero_grad()

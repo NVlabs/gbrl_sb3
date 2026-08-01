@@ -385,9 +385,13 @@ def parse_args():
                              'making it uninformative; effective flip rate equals this value. '
                              'Mutually exclusive with --label_noise_prob.')
     parser.add_argument('--label_mask', type=str2bool, default=False,
-                        help='PPO-Lag (NN and GBT): route reward/cost advantages by guidance '
-                             'label instead of blending them, rescaling each term by its own '
-                             'rollout activation rate. Label-aware control for the baselines.')
+                        help='PPO-Lag (NN and GBT), IPO, CUP, CPO: route each sample to the '
+                             'single objective its guidance label selects, so reward-labelled '
+                             'transitions only drive the reward update and cost-labelled ones '
+                             'only the cost-reduction update, rescaling each term by its own '
+                             'rollout activation rate. Applied at loss computation only; '
+                             'advantages, critics, KL/trust region and the episodic cost '
+                             'constraint are untouched. Label-aware control for the baselines.')
     parser.add_argument('--label_in_obs', type=str2bool, default=False,
                         help='Append the one-hot guidance label to the observation. Works with '
                              'any algorithm; requires a flat Box observation space.')
@@ -1349,6 +1353,7 @@ def process_policy_kwargs(args):
             "cost_limit": args.cost_limit,
             "kappa": args.kappa,
             "penalty_max": args.penalty_max,
+            "label_mask": getattr(args, 'label_mask', False),
         }
     elif args.algo_type == 'cup':
         from policies.cost_actor_critic import CostActorCriticPolicy
@@ -1382,7 +1387,8 @@ def process_policy_kwargs(args):
             "lagrangian_upper_bound": args.lagrangian_upper_bound,
             "cf_coef": args.cf_coef,
             "cup_target_kl": args.cup_target_kl,
-            "cup_update_iters": args.cup_update_iters
+            "cup_update_iters": args.cup_update_iters,
+            "label_mask": getattr(args, 'label_mask', False),
         }
     elif args.algo_type == 'cpo':
         from policies.cost_actor_critic import CostActorCriticPolicy
@@ -1409,6 +1415,7 @@ def process_policy_kwargs(args):
             "cg_damping": args.cg_damping,
             "line_search_shrinking_factor": args.line_search_shrinking_factor,
             "line_search_max_iter": args.line_search_max_iter,
+            "label_mask": getattr(args, 'label_mask', False),
         }
     elif args.algo_type == 'a2c_nn':
         from stable_baselines3.common.policies import ActorCriticPolicy

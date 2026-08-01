@@ -1310,34 +1310,23 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 0.0
 
     def _convoy_priority_label(self, agent_id: str):
-        """Label for convoy priority — conflict window only.
+        """Label for convoy priority — binary, anticipatory.
 
-        Fires when a convoy is visible on an unserved lane and has not yet
-        started crossing (progress == 0). This is the only window where
-        reward and cost objectives conflict: reward says switch phase,
-        cost says hold to avoid splitting the convoy.
+        Uses convoy_seen_frac (monotonic, phase-independent):
+          0 = no convoy present (reward only)
+          1 = any convoy vehicle visible — decision frontier (cost only)
 
-        Once crossing starts (progress > 0) the objectives align — both
-        favour serving the convoy lane — so label returns 0 and gradients mix.
+        Must fire BEFORE cost (which needs progress > 0) so the policy
+        gets cost-head gradients at the moment the action matters.
         """
         has_convoy = self._has_convoy.get(agent_id)
         if has_convoy is None or not np.any(has_convoy > 0):
             return 0
         seen_frac = self._convoy_seen_frac.get(agent_id)
-        convoy_progress = self._convoy_progress.get(agent_id)
-        if seen_frac is None or convoy_progress is None:
+        if seen_frac is None:
             return 0
-        ts = self._get_traffic_signal(agent_id)
-        if ts is None:
-            return 0
-        phase = ts.green_phase
-        served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-        for i in range(len(has_convoy)):
-            if (has_convoy[i] > 0
-                    and i not in served_lanes
-                    and seen_frac[i] > 0
-                    and convoy_progress[i] == 0):
-                return 1
+        if np.any((has_convoy > 0) & (seen_frac > 0)):
+            return 1
         return 0
 
     # ── Premium priority cost/label ──────────────────────────────────────
@@ -1359,26 +1348,48 @@ class SumoRewardCostWrapper(ParallelEnv):
         return 1.0 if np.any((has_premium > 0) & (premium_wait >= 1.0 - 1e-6)) else 0.0
 
     def _premium_priority_label(self, agent_id: str):
-        """Label for premium priority — unserved-lane conflict.
+        """Label for premium priority — ownership rule.
 
-        Fires whenever a premium vehicle is present on an unserved lane.
-        Reward and cost objectives conflict throughout: reward favours
-        holding the current phase for throughput, cost favours switching
-        to serve the premium vehicle. This conflict persists regardless of
-        wait level or whether the controller can act right now, so no
-        urgency threshold or can_switch gate is needed.
+        1 when:
+          - premium delay has reached warn threshold (cost is imminent), OR
+          - premium is on an unserved lane AND controller can switch
+            (actionable decision frontier where next action matters)
+        0 when:
+          - no premium present
+          - premium is already being served (on a green lane)
+          - premium is on a red lane but controller can't switch yet
+            (still in min_green/yellow — action is locked)
 
-        Label stays 0 when premium is on a served lane (no conflict) or absent.
+        This avoids pure-presence dilution (95% zero-cost label=1 steps)
+        and noisy premium_wait > 0 (fires on tiny route-delay mismatches).
+        Matches bus logic: label fires only at the decision frontier.
         """
         has_premium = self._has_premium.get(agent_id)
-        if has_premium is None or not np.any(has_premium > 0):
+        premium_wait = self._premium_wait.get(agent_id)
+        if has_premium is None or premium_wait is None:
             return 0
+        if not np.any(has_premium > 0):
+            return 0
+
+        # premium_wait is normalized by _premium_cost_threshold.
+        warn_frac = self._premium_warn_threshold / max(self._premium_cost_threshold, 1e-6)
+        warn_frac = float(np.clip(warn_frac, 0.0, 1.0))
+        premium_mask = has_premium > 0
+
+        # Urgent: delay at/above warning or cost already active → cost owns.
+        if np.any(premium_mask & (premium_wait >= warn_frac)):
+            return 1
+
+        # Below warning: check if premium is on an unserved lane AND
+        # controller can act (past min_green + yellow).
         ts = self._get_traffic_signal(agent_id)
         if ts is None:
             return 0
         phase = ts.green_phase
         served_lanes = set(self._phase_to_lanes.get(agent_id, {}).get(phase, []))
-        premium_lanes = np.flatnonzero(has_premium > 0)
+        if not self._can_switch_now(ts):
+            return 0
+        premium_lanes = np.flatnonzero(premium_mask)
         if any(int(i) not in served_lanes for i in premium_lanes):
             return 1
         return 0

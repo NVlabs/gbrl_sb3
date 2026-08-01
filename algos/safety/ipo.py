@@ -50,12 +50,20 @@ class IPO(PPO):
         _init_setup_model: bool = True,
         cost_limit: float = 25.0,
         kappa: float = 0.01,
-        penalty_max: float = 1.0
+        penalty_max: float = 1.0,
+        label_mask: bool = False,
     ):
-        
+
         self.clip_range_cf = clip_range_cf
         self.cost_limit = cost_limit
-        
+        # Label-aware control: route each sample to the single objective its
+        # guidance label selects instead of blending both into every sample.
+        self.label_mask = label_mask
+        # Set once the env is seen to emit guidance labels. Tracked explicitly
+        # because an env that emits none leaves the buffer all-zeros, which is
+        # indistinguishable from "every sample is legitimately reward-only".
+        self._saw_safety_labels = False
+
         self.kappa = kappa
         self.penalty_max = penalty_max
         self.ep_cost_mean = 0.0
@@ -147,6 +155,10 @@ class IPO(PPO):
 
         continue_training = True
 
+        assert not self.label_mask or self._saw_safety_labels, (
+            "label_mask=True but this env never emitted info['safety_label']"
+        )
+
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
@@ -182,6 +194,19 @@ class IPO(PPO):
                     penalty = self.penalty_max
                     
                 
+                if self.label_mask:
+                    # Label mask: a reward-labelled sample updates only the reward
+                    # objective, a cost-labelled sample only the cost objective
+                    # (label 2 = both). The n / m.sum() factor makes the .mean()
+                    # below a mean over the samples that objective owns:
+                    #     (x * m * n / m.sum()).mean() == (x * m).sum() / m.sum()
+                    labels = rollout_data.safety_labels.reshape(-1)
+                    n = labels.numel()
+                    m_reward = (labels != 1).float()
+                    m_cost = (labels != 0).float()
+                    advantages_reward = advantages_reward * m_reward * n / m_reward.sum().clamp(min=1)
+                    advantages_costs = advantages_costs * m_cost * n / m_cost.sum().clamp(min=1)
+
                 advantages = (advantages_reward - penalty * advantages_costs) / (1 + penalty)
                 penalties.append(penalty)
                 # clipped surrogate loss
@@ -355,6 +380,13 @@ class IPO(PPO):
 
             costs = th.tensor([info.get('cost', 0.0) for info in infos])
 
+            # Guidance labels are stored but unused unless label_mask is on, so
+            # the default run is byte-identical to before.
+            safety_label = None
+            if infos and infos[0].get('safety_label', None) is not None:
+                safety_label = np.array([float(i['safety_label']) for i in infos], dtype=np.float32)
+                self._saw_safety_labels = True
+
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,
@@ -364,6 +396,7 @@ class IPO(PPO):
                 value_costs,
                 log_probs,
                 costs,
+                safety_label,
             )
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones

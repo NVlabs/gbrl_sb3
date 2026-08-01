@@ -52,11 +52,19 @@ class CPO(TRPO):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        label_mask: bool = False,
     ):
-        
+
         self.cost_limit = cost_limit
         self.ep_cost_mean = 0.0
-        
+        # Label-aware control: route each sample to the single objective its
+        # guidance label selects instead of blending both into every sample.
+        self.label_mask = label_mask
+        # Set once the env is seen to emit guidance labels. Tracked explicitly
+        # because an env that emits none leaves the buffer all-zeros, which is
+        # indistinguishable from "every sample is legitimately reward-only".
+        self._saw_safety_labels = False
+
         super().__init__(
             policy,
             env,
@@ -121,6 +129,10 @@ class CPO(TRPO):
         value_losses = []
         cost_losses = []
 
+        assert not self.label_mask or self._saw_safety_labels, (
+            "label_mask=True but this env never emitted info['safety_label']"
+        )
+
         # This will only loop once (get all data in one go)
         for rollout_data in self.rollout_buffer.get(batch_size=None):
             # Optional: sub-sample data for faster computation
@@ -134,8 +146,10 @@ class CPO(TRPO):
                     rollout_data.advantages[:: self.sub_sampling_factor],
                     rollout_data.advantages_costs[:: self.sub_sampling_factor],
                     None,  # type: ignore[arg-type]  # returns, not used here
-                    None,  # type: ignore[arg-type]  # returns, not used here
-                    None,  # type: ignore[arg-type]  # returns, not used here
+                    # Guidance labels must be sub-sampled alongside the
+                    # advantages, otherwise label_mask would index a
+                    # differently-sized tensor.
+                    rollout_data.safety_labels[:: self.sub_sampling_factor],
                 )
 
             actions = rollout_data.actions
@@ -160,6 +174,22 @@ class CPO(TRPO):
             advantages = rollout_data.advantages
             if self.normalize_advantage:
                 advantages = (advantages - advantages.mean()) / (rollout_data.advantages.std() + 1e-8)
+
+            if self.label_mask:
+                # Label mask: a reward-labelled sample updates only the reward
+                # objective, a cost-labelled sample only the cost objective
+                # (label 2 = both). The n / m.sum() factor makes the surrogate's
+                # .mean() a mean over the samples that objective owns:
+                #     (x * m * n / m.sum()).mean() == (x * m).sum() / m.sum()
+                # Both advantage tensors feed nothing but the reward and cost
+                # surrogates, including their recomputation inside the line
+                # search, so the KL / Fisher trust region, the critics and the
+                # episodic cost constraint are untouched.
+                labels = rollout_data.safety_labels.reshape(-1)
+                n = labels.numel()
+                m_reward = (labels != 1).float()
+                m_cost = (labels != 0).float()
+                advantages = advantages * m_reward * n / m_reward.sum().clamp(min=1)
 
             # ratio between old and new policy, should be one at the first iteration
             ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -192,6 +222,12 @@ class CPO(TRPO):
             cost_advantages = rollout_data.advantages_costs
             if self.normalize_advantage:
                 cost_advantages = cost_advantages - cost_advantages.mean()
+            if self.label_mask:
+                # Same rescale as above. It matters most here: b is compared
+                # against the *unmasked* ep_costs in the LQCLP, so shrinking it by
+                # the label rate would break the linearisation's units rather than
+                # just its scale.
+                cost_advantages = cost_advantages * m_cost * n / m_cost.sum().clamp(min=1)
 
             with th.enable_grad():
                 dist_c = self.policy.get_distribution(rollout_data.observations)
@@ -522,6 +558,13 @@ class CPO(TRPO):
 
             costs = th.tensor([info.get('cost', 0.0) for info in infos])
 
+            # Guidance labels are stored but unused unless label_mask is on, so
+            # the default run is byte-identical to before.
+            safety_label = None
+            if infos and infos[0].get('safety_label', None) is not None:
+                safety_label = np.array([float(i['safety_label']) for i in infos], dtype=np.float32)
+                self._saw_safety_labels = True
+
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,
@@ -531,6 +574,7 @@ class CPO(TRPO):
                 value_costs,
                 log_probs,
                 costs,
+                safety_label,
             )
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
