@@ -225,17 +225,15 @@ class PPOLag(PPO):
                     advantages_costs = advantages_costs - advantages_costs.mean()
 
                 if self.label_mask:
-                    # Label mask: a reward-labelled sample updates only the reward
-                    # objective, a cost-labelled sample only the cost objective
-                    # (label 2 = both). The n / m.sum() factor makes the .mean()
-                    # below a mean over the samples that objective owns:
-                    #     (x * m * n / m.sum()).mean() == (x * m).sum() / m.sum()
+                    # Label mask: route each sample to its labelled objective only.
+                    # No rescaling — gradient magnitude naturally reflects label rate,
+                    # mirroring how Split-RL routes samples into tree leaves without
+                    # amplifying rare objectives.
                     labels = rollout_data.safety_labels.reshape(-1)
-                    n = labels.numel()
                     m_reward = (labels != 1).float()
                     m_cost = (labels != 0).float()
-                    advantages_reward = advantages_reward * m_reward * n / m_reward.sum().clamp(min=1)
-                    advantages_costs = advantages_costs * m_cost * n / m_cost.sum().clamp(min=1)
+                    advantages_reward = advantages_reward * m_reward
+                    advantages_costs = advantages_costs * m_cost
 
                 advantages = (advantages_reward - penalty * advantages_costs) / (1 + penalty)
 

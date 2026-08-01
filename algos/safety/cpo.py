@@ -176,20 +176,14 @@ class CPO(TRPO):
                 advantages = (advantages - advantages.mean()) / (rollout_data.advantages.std() + 1e-8)
 
             if self.label_mask:
-                # Label mask: a reward-labelled sample updates only the reward
-                # objective, a cost-labelled sample only the cost objective
-                # (label 2 = both). The n / m.sum() factor makes the surrogate's
-                # .mean() a mean over the samples that objective owns:
-                #     (x * m * n / m.sum()).mean() == (x * m).sum() / m.sum()
-                # Both advantage tensors feed nothing but the reward and cost
-                # surrogates, including their recomputation inside the line
-                # search, so the KL / Fisher trust region, the critics and the
-                # episodic cost constraint are untouched.
+                # Label mask: route each sample to its labelled objective only.
+                # No rescaling — gradient magnitude naturally reflects label rate,
+                # mirroring how Split-RL routes samples into tree leaves without
+                # amplifying rare objectives.
                 labels = rollout_data.safety_labels.reshape(-1)
-                n = labels.numel()
                 m_reward = (labels != 1).float()
                 m_cost = (labels != 0).float()
-                advantages = advantages * m_reward * n / m_reward.sum().clamp(min=1)
+                advantages = advantages * m_reward
 
             # ratio between old and new policy, should be one at the first iteration
             ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -223,11 +217,7 @@ class CPO(TRPO):
             if self.normalize_advantage:
                 cost_advantages = cost_advantages - cost_advantages.mean()
             if self.label_mask:
-                # Same rescale as above. It matters most here: b is compared
-                # against the *unmasked* ep_costs in the LQCLP, so shrinking it by
-                # the label rate would break the linearisation's units rather than
-                # just its scale.
-                cost_advantages = cost_advantages * m_cost * n / m_cost.sum().clamp(min=1)
+                cost_advantages = cost_advantages * m_cost
 
             with th.enable_grad():
                 dist_c = self.policy.get_distribution(rollout_data.observations)

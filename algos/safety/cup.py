@@ -163,14 +163,14 @@ class CUP(PPOLag):
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 if self.label_mask:
-                    # Label mask, step 1 is the reward objective so only
-                    # reward-labelled samples (label 0 or 2) drive it. The
-                    # n / m.sum() factor makes the .mean() below a mean over the
-                    # samples that objective owns:
-                    #     (x * m * n / m.sum()).mean() == (x * m).sum() / m.sum()
+                    # Label mask: route each sample to its labelled objective only.
+                    # No rescaling — gradient magnitude naturally reflects label rate,
+                    # mirroring how Split-RL routes samples into tree leaves without
+                    # amplifying rare objectives.
                     labels = rollout_data.safety_labels.reshape(-1)
                     m_reward = (labels != 1).float()
-                    advantages = advantages * m_reward * labels.numel() / m_reward.sum().clamp(min=1)
+                    m_cost = (labels != 0).float()
+                    advantages = advantages * m_reward
 
                 # Ratio between old and new policy
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -346,14 +346,10 @@ class CUP(PPOLag):
                     adv_c = adv_c.unsqueeze(-1)
                 cost_surrogate = self.lagrangian_multiplier * coef * ratio.unsqueeze(-1) * adv_c
                 if self.label_mask:
-                    # Label mask, step 2 is the cost objective so only
-                    # cost-labelled samples (label 1 or 2) drive it. The KL anchor
-                    # is left over every sample: it is a trust region, not an
-                    # objective, and masking it would let the policy drift without
-                    # limit on reward-labelled states.
+                    # Label mask: cost objective only on cost-labelled samples, no rescaling.
                     labels = rollout_data.safety_labels.reshape(adv_c.shape)
                     m_cost = (labels != 0).float()
-                    cost_surrogate = cost_surrogate * m_cost * labels.numel() / m_cost.sum().clamp(min=1)
+                    cost_surrogate = cost_surrogate * m_cost
                 loss = (cost_surrogate + kl).mean()
 
                 # F. Optimize (only actor parameters, matching omnisafe)
