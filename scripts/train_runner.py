@@ -1146,9 +1146,9 @@ if __name__ == "__main__":
                     print(f"No checkpoint_args.json at {log_dir_env}, "
                           "skipping resume — will pull a fresh trial.")
 
-                # Clean up resume state regardless
+                # Clean up resume state regardless (keep LOG_DIR — it's user config)
                 for key in [k for k in os.environ
-                            if k.startswith("AUTO_RESUME") or k in ("LOG_DIR", "WANDB_RUN_ID")]:
+                            if k.startswith("AUTO_RESUME") or k == "WANDB_RUN_ID"]:
                     os.environ.pop(key, None)
                 _clear_local_resume(sweep_id=SWEEP_ID)
 
@@ -1220,9 +1220,9 @@ if __name__ == "__main__":
 
                 wandb.agent(sweep_id, function=_sweep_train, count=1)
 
-                # Clean up after the trial
+                # Clean up after the trial (keep LOG_DIR — it's user config)
                 for key in [k for k in os.environ
-                            if k.startswith("AUTO_RESUME") or k in ("LOG_DIR", "WANDB_RUN_ID")]:
+                            if k.startswith("AUTO_RESUME") or k == "WANDB_RUN_ID"]:
                     os.environ.pop(key, None)
                 _clear_local_resume(sweep_id=SWEEP_ID)
 
