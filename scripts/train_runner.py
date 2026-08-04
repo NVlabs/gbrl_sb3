@@ -690,11 +690,11 @@ def train_runner():
     from config.args import parse_args, process_logging, process_policy_kwargs
     from utils.helpers import set_seed
 
-    args = parse_args()
-
     # ── Add --resume_dir support to argparse ─────────────────────────────
-    # parse_args doesn't know about --resume_dir, so we extract it manually
+    # Must strip before parse_args so argparse doesn't die on the unknown flag
     resume_dir = _pop_extra_arg('--resume_dir')
+
+    args = parse_args()
 
     sweep_id_env = os.getenv("SWEEP_ID")
     use_checkpointing = os.getenv("AUTORESUME", "").lower() in ("1", "true", "yes")
