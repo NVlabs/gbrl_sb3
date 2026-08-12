@@ -9,6 +9,18 @@ that the label carries no information the baselines did not already have.
 
 ``info['safety_label']`` describes the observation returned alongside it, so the
 one-hot is simply concatenated onto that observation.
+
+Two observation layouts are supported:
+
+* **Numeric** (flat float ``Box``): the one-hot is concatenated and the array
+  stays float32.  This is the MiniGrid FlatObs path, SUMO, and CityLearn.
+* **Categorical** (MiniGrid's ``MiniGridCategoricalObservationWrapper``, whose
+  columns are byte-string categories): appending numeric columns makes the
+  array *mixed*, so it is rebuilt as ``dtype=object`` and ``is_mixed`` is set.
+  GBRL inspects element dtype per column in ``process_array()``, so the label
+  columns get numerical threshold splits while the grid columns keep equality
+  splits.  Without ``is_mixed`` the downstream buffer would allocate
+  ``categorical_dtype`` and silently stringify the one-hot.
 """
 from typing import Any, Dict, List
 
@@ -31,14 +43,26 @@ class VecLabelObsWrapper(VecEnvWrapper):
         if not isinstance(obs_space, spaces.Box) or len(obs_space.shape) != 1:
             raise ValueError(
                 "VecLabelObsWrapper expects a flat Box observation space, got "
-                f"{obs_space}. Categorical/image observations are not supported."
+                f"{obs_space}. Image/dict observations are not supported."
             )
+
+        # Categorical envs declare a Box space but emit byte-string columns, so
+        # the layout has to be read off the flag rather than the space.
+        self._categorical = bool(getattr(venv, 'is_categorical', False)
+                                 or getattr(venv, 'is_mixed', False))
 
         low = np.concatenate([obs_space.low, np.zeros(n_label_values, dtype=obs_space.dtype)])
         high = np.concatenate([obs_space.high, np.ones(n_label_values, dtype=obs_space.dtype)])
         super().__init__(venv, observation_space=spaces.Box(low=low, high=high, dtype=obs_space.dtype))
 
         self.n_label_values = n_label_values
+        if self._categorical:
+            # Read by the algorithms (e.g. algos/safety/ppo_lag_gbrl.py:224) to
+            # pick an object-dtype rollout buffer. Set on the wrapper itself so
+            # VecEnvWrapper.__getattr__ does not resolve them to the inner env's
+            # is_mixed=False, which is stale once the one-hot is appended.
+            self.is_categorical = True
+            self.is_mixed = True
 
     def _one_hot(self, labels: np.ndarray) -> np.ndarray:
         labels = np.clip(np.asarray(labels, dtype=np.int64), 0, self.n_label_values - 1)
@@ -50,7 +74,19 @@ class VecLabelObsWrapper(VecEnvWrapper):
         return np.array([int(info.get(LABEL_KEY, 0)) for info in infos], dtype=np.int64)
 
     def _augment(self, obs: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        return np.concatenate([np.asarray(obs, dtype=np.float32), self._one_hot(labels)], axis=1)
+        one_hot = self._one_hot(labels)
+        if not self._categorical:
+            return np.concatenate([np.asarray(obs, dtype=np.float32), one_hot], axis=1)
+
+        # Mixed layout: keep the categorical columns as they came (casting them
+        # would destroy the category strings) and append the one-hot as numeric
+        # columns in the same object array.
+        obs = np.asarray(obs)
+        n_obs_cols = obs.shape[1]
+        mixed = np.empty((obs.shape[0], n_obs_cols + self.n_label_values), dtype=object)
+        mixed[:, :n_obs_cols] = obs
+        mixed[:, n_obs_cols:] = one_hot.astype(np.float64)
+        return np.ascontiguousarray(mixed)
 
     def reset(self) -> np.ndarray:
         obs = self.venv.reset()
@@ -66,8 +102,9 @@ class VecLabelObsWrapper(VecEnvWrapper):
         for info in infos:
             terminal = info.get("terminal_observation")
             if terminal is not None:
+                dtype = object if self._categorical else np.float32
                 info["terminal_observation"] = self._augment(
-                    np.asarray(terminal, dtype=np.float32).reshape(1, -1),
+                    np.asarray(terminal, dtype=dtype).reshape(1, -1),
                     np.array([int(info.get(LABEL_KEY, 0))], dtype=np.int64),
                 )[0]
         return obs, rewards, dones, infos
