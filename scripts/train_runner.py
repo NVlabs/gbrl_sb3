@@ -874,7 +874,21 @@ def train_runner():
             )
             if resume_from_str is not None:
                 init_kwargs["resume_from"] = resume_from_str
-            wandb_run = wandb.init(**init_kwargs)
+            try:
+                wandb_run = wandb.init(**init_kwargs)
+            except Exception as e:
+                # resume_from (run "rewind") is a private-preview wandb feature;
+                # accounts without it get HTTP 400 and init raises, killing the
+                # resumed job. Fall back to plain append-resume.
+                if resume_from_str is None:
+                    raise
+                print(f"wandb.init with resume_from={resume_from_str} failed ({e}); "
+                      "falling back to resume='must'")
+                init_kwargs.pop("resume_from", None)
+                init_kwargs["resume"] = "must"
+                if wandb.run is not None:
+                    wandb.finish(quiet=True)
+                wandb_run = wandb.init(**init_kwargs)
 
         if not wandb_run_id_file.exists():
             wandb_run_id_file.write_text(wandb_run.id)
