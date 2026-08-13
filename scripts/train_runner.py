@@ -80,6 +80,11 @@ if not hasattr(wandb, 'START_TIME'):
 
 import inspect as _inspect
 _HAS_RESUME_FROM = 'resume_from' in _inspect.signature(wandb.init).parameters
+# The client always accepts resume_from, but the backend "rewind" feature is a
+# per-org private preview. Without it the call 400s, wandb.init raises, and the
+# broken service connection makes a second init in the same process hang.
+# Opt in explicitly once W&B has enabled it for the entity.
+_ALLOW_WANDB_REWIND = os.getenv("WANDB_ALLOW_REWIND", "").lower() in ("1", "true", "yes")
 
 # ── Optional ADLR AutoResume ────────────────────────────────────────────────
 try:
@@ -820,7 +825,8 @@ def train_runner():
 
     if use_wandb:
         # Determine resume mode
-        if is_resume and effective_wandb_id and checkpoint_step is not None and _HAS_RESUME_FROM:
+        if (is_resume and effective_wandb_id and checkpoint_step is not None
+                and _HAS_RESUME_FROM and _ALLOW_WANDB_REWIND):
             resume_mode = None
             resume_from_str = f"{effective_wandb_id}?_step={checkpoint_step}"
         elif is_resume and effective_wandb_id:
@@ -888,6 +894,13 @@ def train_runner():
                 init_kwargs["resume"] = "must"
                 if wandb.run is not None:
                     wandb.finish(quiet=True)
+                # The failed init leaves the wandb service connection wedged;
+                # a second init on it blocks forever at inform_init. Tear the
+                # service down so the retry gets a fresh one.
+                try:
+                    wandb.teardown()
+                except Exception as te:
+                    print(f"wandb.teardown() before retry failed, continuing: {te}")
                 wandb_run = wandb.init(**init_kwargs)
 
         if not wandb_run_id_file.exists():
