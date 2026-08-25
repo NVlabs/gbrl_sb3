@@ -1009,9 +1009,17 @@ def train_runner():
         vec_norm_path = log_dir_path / "checkpoint_vecnormalize.pkl"
         if vec_norm_path.exists():
             from stable_baselines3.common.vec_env import VecNormalize
-            vec_norm = VecNormalize.load(str(vec_norm_path), env.unwrapped
-                                         if hasattr(env, 'unwrapped') else env)
+            # Re-wrap the venv that VecNormalize already sits on — NOT
+            # env.unwrapped.  `unwrapped` walks past every VecEnvWrapper,
+            # including SuperSuit's SB3VecEnvWrapper (sumo/citylearn), whose
+            # inner env still speaks the gymnasium vector API and returns
+            # (obs, infos) from reset(); VecNormalize.reset() then trips its
+            # `isinstance(obs, (np.ndarray, dict))` assert.
+            base_env = env.venv if isinstance(env, VecNormalize) else env
+            vec_norm = VecNormalize.load(str(vec_norm_path), base_env)
+            vec_norm.training = True
             algo.set_env(vec_norm)
+            env = vec_norm
             print(f"Restored VecNormalize from {vec_norm_path}")
     else:
         print(f"Training with algo_kwargs: {algo_kwargs}")
